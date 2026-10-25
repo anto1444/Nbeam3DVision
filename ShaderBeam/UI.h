@@ -1,0 +1,116 @@
+/*
+ShaderBeam: shader effect overlay
+Copyright (C) 2025 mausimus (mausimus.net)
+https://github.com/mausimus/ShaderBeam
+MIT License
+*/
+
+#pragma once
+
+#include "Common.h"
+#include "ShaderManager.h"
+#include "EmitterUI.h"
+
+struct ImFont;
+struct ImGuiStyle;
+
+namespace ShaderBeam
+{
+
+class UI
+{
+public:
+    UI(Options& options, ShaderManager& shaderManager);
+
+    void Start(HWND window, float scale, winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11DeviceContext> context);
+    bool Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    bool MouseRequired();
+    void Render();
+    void Stop();
+
+    void SetError(const char* message);
+    void SetBenchmark(const BenchmarkResult& result);
+    void AddWindow(HWND hWnd);
+    bool RenderRequired() const;
+    bool Toggle();
+
+    float m_inputFPS { 0 };
+    float m_outputFPS { 0 };
+    float m_captureLag { 0 };
+    float m_gameFps { 0 };      // Auto: measured game frame rate
+    bool  m_lowFps { false };   // Auto: game below the low fps threshold
+    bool  m_lowBypass { false };// ... and BFI is disabled because of it
+    float m_flickerHz { 0 };    // Auto: current flash rate of the BFI
+
+    std::vector<AdapterInfo> m_adapters;
+    std::vector<DisplayInfo> m_displays;
+    std::vector<ShaderInfo>  m_shaders;
+    std::vector<CaptureInfo> m_captures;
+    std::vector<std::string> m_monitorTypes;
+    std::vector<InputInfo>   m_inputs;
+    std::vector<std::string> m_queuedFrames;
+    std::vector<std::string> m_splitScreens;
+    std::vector<std::string> m_emitterStatus; // set by Renderer after the emitters started
+    bool                     m_appearanceDirty { false };
+    std::string              m_aiStatus;      // "2D to 3D (AI)": state of the depth model (set by Renderer)
+    float                    m_aiInferMs { 0 };
+    float                    m_aiFps { 0 };
+
+private:
+    void SetStyle(ImGuiStyle& style);
+    void RenderBanner();
+    void RenderHudHeader(float height); // OSD style status banner of the HUD
+public:
+    void UpdateCaptureTone(bool refreshHdr = false); // black / grey level of the capture; neutral unless Windows HDR is on
+    void ShowBanner(); // "3D emitter on" banner for 3 seconds (when 3D is active)
+    void ShowAdjustBanner(int kind); // banner with the current values, 3 seconds from the last change (kind = which one changed)
+private:
+    bool BannerActive() const;
+    void SetApplyRequired();
+    void ApplyPendingChanges();
+    void ClearPendingChanges();
+    void RefreshHotkeyTexts();
+    void RenderHotkeys();
+    void ScanWindows();
+
+    struct
+    {
+        int  captureAdapterNo;
+        int  shaderAdapterNo;
+        int  captureDisplayNo;
+        HWND captureWindow;
+        int  shaderDisplayNo;
+        bool outputOnProcess;
+        int  subFramesMode;
+        bool hardwareSrgb;
+        int  captureMethod;
+        int  splitScreen;
+        int  monitorType;
+        int  maxQueuedFrames;
+        bool useHdr;
+    } m_pending;
+
+    ImFont*         m_smallFont;
+    ImFont*         m_largeFont;
+    Options&        m_options;
+    ShaderManager&  m_shaderManager;
+    bool            m_ready { false };
+    bool            m_applyRequired { false };
+    bool            m_emitterRestartRequired { false };
+    bool            m_liveReloadRequired { false };
+    StereoSource    m_lastSource { StereoSource::Off }; // 3D source format the renderer is running with
+    volatile unsigned long long m_adjustUntil { 0 }; // adjustment hotkeys: banner shown until this tick count
+    volatile int       m_adjustKind { -1 };
+    unsigned long long m_bannerUntil { 0 }; // tick count until which the "3D emitter on" banner is shown
+    EmitterPanelContext m_emitterPanel;
+    float           m_fontSize { 0 };
+    winrt::com_ptr<ID3D11ShaderResourceView> m_logo; // Nbeam logo for the title bar
+    winrt::com_ptr<ID3D11ShaderResourceView> m_logoSB; // ShaderBeam logo (Render / Shaders category)
+    const char*     m_captureGPUs { nullptr };
+    const char*     m_renderGPUs { nullptr };
+    BenchmarkResult m_benchmarkResult {};
+    bool            m_hasBenchmark { false };
+    bool            m_hasError { false };
+    std::string     m_errorMessage;
+};
+} // namespace ShaderBeam
