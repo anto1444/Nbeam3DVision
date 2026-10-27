@@ -37,6 +37,8 @@ public:
     bool                                   NewInputRequired() const;
     void                                   BufferReset() { if(m_ringPrimed || !m_ringQueue.empty()) DestroyRing(); } // buffer not in use: nothing stale is kept
     void                                   AdaptFrameBuffer(); // Auto buffer size (Options::frameBuffer = -1), called every loop of the render thread
+    int                                    FrameBufferLimit() const; // ring size: 5 frames, or more with the map buffer (as many frames as fit in about 512 MB, up to 30)
+    bool                                   MapSync() const; // 2D to 3D (AI) with "Map buffer": each image waits for its own depth map
     bool                                   BufferActive() const; // anti-stutter buffer in use (Options::frameBuffer)
     void                                   BufferedStep(const std::shared_ptr<CaptureBase>& capture); // replaces PollCapture while the buffer is active
     void                                   RollInput(bool newFrame);
@@ -87,6 +89,8 @@ private:
     bool                                                  m_depthCopyPending { false };
     unsigned                                              m_depthTick { 0 };
     std::chrono::steady_clock::time_point                 m_depthLastStart {};
+    std::chrono::steady_clock::time_point                 m_depthSubmitStamp {}; // when the frame of the map in progress was taken
+    double                                                m_depthLatencyMs { 0.0 }; // frame taken -> depth map ready (smoothed)
     void                                                  CreateDepthResources();
     void                                                  DestroyDepthResources();
     void                                                  UpdateDepth(bool newFrame);
@@ -95,6 +99,7 @@ private:
 
     // anti-stutter buffer: captured game frames wait in a ring of textures and are shown at the content cadence
     std::vector<winrt::com_ptr<ID3D11Texture2D>> m_ring;
+    std::vector<winrt::com_ptr<ID3D11ShaderResourceView>> m_ringSrv; // views of the ring frames (the depth estimation reads the newest one)
     std::deque<int>                              m_ringQueue; // indices of the buffered frames, oldest first
     std::vector<int>                             m_ringFree;
     bool                                         m_ringPrimed { false };
@@ -109,6 +114,11 @@ private:
     bool                                         m_fbUnderrun { false };
     double                                       m_fbMeanMs { 8.0 };
     std::chrono::steady_clock::time_point        m_ringLastArrival {};
+    std::vector<std::chrono::steady_clock::time_point> m_ringTime; // capture time of each ring frame (2D to 3D (AI): pairs images and depth maps)
+    bool                                         m_ringArrived { false };
+    int                                          m_mapFrames { 0 }; // map buffer: extra game frames held so the depth maps match the images
+    std::chrono::steady_clock::time_point        m_mapLowSince {};
+    int                                          m_ringStepCount { 0 }; // content requests since the last game frame was taken (divisor pacing) // a new frame entered the ring since the last depth map was started
     void                                         EnsureRing();
     void                                         DestroyRing();
 
@@ -132,6 +142,18 @@ private:
     winrt::com_ptr<IDXGISwapChain1>         m_swapChain { nullptr };
     bool                                    m_tearing { false };      // swap chain created with tearing allowed (Options::Tearing)
     winrt::com_ptr<IDXGIOutput>             m_tearOutput;             // output waited on for the tearing line
+    // beam racing (tearing + Options::beamRacing): scanout position read through D3DKMTGetScanLine
+    unsigned                                m_kmtAdapter { 0 };
+    unsigned                                m_kmtSource { 0 };
+    unsigned                                m_kmtLines { 0 };         // visible lines of the output
+    winrt::com_ptr<ID3D11Query>             m_gpuDone;                // the frame is drawn: its flip is not delayed by the GPU
+    float                                   m_tearSafe { 0.0f };      // where the tear may land in the frame just rendered (0 = vblank only)
+    double                                  m_brLastF { 1.0 };
+    bool                                    m_brLastVbl { true };
+    bool                                    m_brNewRefresh { true };
+    void                                    OpenScanline();
+    void                                    CloseScanline();
+    bool                                    BeamRacePresent();
     winrt::com_ptr<ID3D11RasterizerState>   m_rasterizerState { nullptr };
     winrt::com_ptr<ID3D11DepthStencilState> m_depthStencilState { nullptr };
     winrt::com_ptr<ID3D11RenderTargetView>  m_uiTargetView { nullptr };

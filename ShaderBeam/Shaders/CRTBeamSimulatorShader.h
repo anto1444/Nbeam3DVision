@@ -154,6 +154,24 @@ public:
         }
     }
 
+    // Beam racing: above the tear the previous output frame stays on screen, below it the new one. The tear must stay above both the band
+    // lit by the previous frame and the band lit by this one: then neither band is shown twice nor skipped. Only for the vertical scan
+    // directions at normal speed; otherwise 0 (vertical blank only).
+    float TearSafeLimit(const RenderContext& renderContext) const override
+    {
+        if(m_fpsDivisor != 1 || m_cycle < 1.5f || (m_params.scanDirection != 1 && m_params.scanDirection != 2))
+            return 0.0f;
+        const double cyc   = m_cycle;
+        const double k     = floor(m_params.crtRasterPos * cyc + 1e-4);            // band of this frame (in output frames)
+        const double kp    = k >= 1.0 ? k - 1.0 : floor(cyc - 1.0 + 1e-3);          // band of the previous frame
+        double       limit = 0.0;
+        if(m_params.scanDirection == 1)
+            limit = (std::min)(k / cyc, kp / cyc);                                   // top to bottom: top of each band
+        else
+            limit = (std::min)(1.0 - (k + 1.0) / cyc, 1.0 - (kp + 1.0) / cyc);       // bottom to top: the band's top is 1 - its end
+        return (float)(std::max)(0.0, limit - 0.02);                                // a small margin
+    }
+
     void Render(const RenderContext& renderContext)
     {
         // linear frame number

@@ -110,7 +110,11 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         else
             ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), "%s", st.c_str());
         if(st.rfind("Ready", 0) == 0)
+        {
             ImGui::TextDisabled(Tr("Depth: %.1f ms per map, %.1f maps/s"), ctx.aiInferMs, ctx.aiFps);
+            if(ctx.aiLatencyMs > 0.0f)
+                ImGui::TextDisabled(Tr("Depth delay: %.0f ms (with Map buffer, the image is held back by this much)"), ctx.aiLatencyMs);
+        }
         Help(Tr("A plain 2D picture is turned into 3D: an AI model estimates the depth of every pixel (needs onnxruntime.dll and the model file next to the exe), then the left and right eyes are built from it."));
 
         ImGui::SliderInt(Tr("3D framerate (fps)"), &s.ai.depthFps, 1, 80);
@@ -132,14 +136,14 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         Help(Tr("Which depth stays on the screen plane. 0 = everything pops out of the screen, 100 = everything goes behind it; 50 splits the depth around the screen."));
         ImGui::SliderFloat(Tr("Depth smoothing (%)"), &s.ai.smoothing, 0.0f, 95.0f, "%.0f");
         Help(Tr("Averages the depth map over time so it does not flicker. Higher = steadier but slower to follow fast changes."));
-        ImGui::SliderFloat(Tr("Anti-halo (%)"), &s.ai.antiHalo, 0.0f, 100.0f, "%.0f");
+        ImGui::SliderFloat(Tr("Anti-halo (%)"), &s.ai.antiHalo, 0.0f, 300.0f, "%.0f");
         Help(Tr("Reduces the halo (smeared edges) around objects: the depth of a foreground object no longer spills onto the background next to it. Too high shrinks thin objects slightly."));
-        ImGui::Checkbox(Tr("Invert depth"), &s.ai.invert);
-        Help(Tr("Swaps near and far if the depth looks reversed."));
         ImGui::Checkbox(Tr("Use GPU (DirectML)"), &s.ai.useGpu);
         Help(Tr("Runs the AI on the graphics card (much faster). If DirectML is not available the processor is used instead. Applied immediately (the model reloads)."));
         ImGui::Checkbox(Tr("Show depth map"), &s.ai.showDepth);
         Help(Tr("Shows the estimated depth (white = near, black = far) instead of the picture, to check the AI and adjust the settings."));
+        ImGui::Checkbox(Tr("Map buffer"), &s.ai.mapBuffer);
+        Help(Tr("Keeps the depth in step with the picture: each picture is held back until the depth map computed from it is ready (adds that delay as latency, shown above). Unchecked: no synchronisation, the latest depth map is used on the current picture (no added latency, the depth can lag behind fast motion). Works on top of the frame buffer. Needs a captured program (.exe)."));
     }
 
     // 3D off: no emitter / 3D adjustment settings
@@ -194,7 +198,7 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
             ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.0f, 1.0f), Tr("Open Duration exceeds the eye period"));
 
         ImGui::Checkbox(Tr("Swap Eyes"), &s.swapEyes);
-        Help(Tr("Reverses the eye order (WibbleWobble: SHIFT+,). Hotkey: see the Hotkeys section."));
+        Help(Tr("Reverses the eye order. With 2D to 3D (AI) it also inverts the depth (near and far are swapped). Hotkey: see the Hotkeys section."));
     }
 
     // ---- ComPort ----

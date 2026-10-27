@@ -246,6 +246,11 @@ void Renderer::Render(bool present, bool ui)
         m_renderContext.subFrameNo = 0;
     }
 
+    // beam racing: where the tear may land in this frame (CRT bands); full-frame effects, 3D, split screen and on-screen emitters: vblank
+    m_tearSafe = 0.0f;
+    if(m_tearing && m_options.beamRacing && !m_stereoActive && !emit && !m_options.splitScreen && !Bypassing() && m_options.subFrames > 1)
+        m_tearSafe = m_shaderManager.TearSafeLimit(m_renderContext);
+
     if(present)
     {
         Present(true);
@@ -340,11 +345,164 @@ float4 PStone(float4 pos : SV_Position) : SV_Target
     ctx->PSSetShaderResources(0, 1, &nullSrv);
 }
 
-// Beam Race Sync (same option as the emitter's) also keeps the BFI frame loop locked to the scanout: after each Present the
-// thread waits until the scanout has reached the chosen line after vblank. Only without the anti-jitter buffer, which owns the timing.
+// ---- beam racing ------------------------------------------------------------------------------------------------------------
+// With tearing (queue 0) the flip happens at once, wherever the scanout is: the tear lands there. Beam racing reads the real scanout
+// line (D3DKMTGetScanLine, gdi32) and sends the flip only when the tear will be invisible for the current effect:
+//  - BFI, 3D, plain picture: in the vertical blank (the flip is sent `beamLead` % of a refresh before it, to make up for its delay);
+//  - CRT Beam Simulator (vertical scan): anywhere above the bands lit by the previous and the new frame (lower latency), else the vblank.
+// One flip per refresh. If the scanout cannot be read, the normal tearing path is used.
+namespace
+{
+struct KmtOpenFromHdc
+{
+    HDC      hDc;
+    unsigned hAdapter;
+    LUID     AdapterLuid;
+    unsigned VidPnSourceId;
+};
+struct KmtGetScanLine
+{
+    unsigned hAdapter;
+    unsigned VidPnSourceId;
+    BOOLEAN  InVerticalBlank;
+    unsigned ScanLine;
+};
+struct KmtClose
+{
+    unsigned hAdapter;
+};
+typedef LONG(APIENTRY* PfnKmtOpen)(KmtOpenFromHdc*);
+typedef LONG(APIENTRY* PfnKmtScan)(KmtGetScanLine*);
+typedef LONG(APIENTRY* PfnKmtClose)(KmtClose*);
+PfnKmtOpen  s_kmtOpen  = nullptr;
+PfnKmtScan  s_kmtScan  = nullptr;
+PfnKmtClose s_kmtClose = nullptr;
+bool LoadKmt()
+{
+    static bool loaded = false;
+    if(!loaded)
+    {
+        loaded = true;
+        if(HMODULE g = GetModuleHandleW(L"gdi32.dll") ? GetModuleHandleW(L"gdi32.dll") : LoadLibraryW(L"gdi32.dll"))
+        {
+            s_kmtOpen  = (PfnKmtOpen)GetProcAddress(g, "D3DKMTOpenAdapterFromHdc");
+            s_kmtScan  = (PfnKmtScan)GetProcAddress(g, "D3DKMTGetScanLine");
+            s_kmtClose = (PfnKmtClose)GetProcAddress(g, "D3DKMTCloseAdapter");
+        }
+    }
+    return s_kmtOpen && s_kmtScan && s_kmtClose;
+}
+} // namespace
+
+void Renderer::OpenScanline()
+{
+    CloseScanline();
+    m_options.beamRacingState = -1;
+    if(!m_tearOutput || !LoadKmt())
+        return;
+    DXGI_OUTPUT_DESC od {};
+    if(FAILED(m_tearOutput->GetDesc(&od)))
+        return;
+    DEVMODEW dm {};
+    dm.dmSize = sizeof(dm);
+    if(!EnumDisplaySettingsW(od.DeviceName, ENUM_CURRENT_SETTINGS, &dm) || dm.dmPelsHeight == 0)
+        return;
+    HDC dc = CreateDCW(od.DeviceName, nullptr, nullptr, nullptr);
+    if(!dc)
+        return;
+    KmtOpenFromHdc o {};
+    o.hDc = dc;
+    if(s_kmtOpen(&o) == 0)
+    {
+        m_kmtAdapter = o.hAdapter;
+        m_kmtSource  = o.VidPnSourceId;
+        m_kmtLines   = (dm.dmDisplayOrientation == DMDO_90 || dm.dmDisplayOrientation == DMDO_270) ? dm.dmPelsWidth : dm.dmPelsHeight;
+        KmtGetScanLine t {};
+        t.hAdapter      = m_kmtAdapter;
+        t.VidPnSourceId = m_kmtSource;
+        if(s_kmtScan(&t) == 0)
+            m_options.beamRacingState = 1;
+        else
+            CloseScanline();
+    }
+    DeleteDC(dc);
+    D3D11_QUERY_DESC qd { D3D11_QUERY_EVENT, 0 };
+    m_gpuDone = nullptr;
+    m_renderContext.device->CreateQuery(&qd, m_gpuDone.put());
+    m_brLastF      = 1.0;
+    m_brLastVbl    = true;
+    m_brNewRefresh = true;
+}
+
+void Renderer::CloseScanline()
+{
+    if(m_kmtAdapter && s_kmtClose)
+    {
+        KmtClose c { m_kmtAdapter };
+        s_kmtClose(&c);
+    }
+    m_kmtAdapter = 0;
+    m_gpuDone    = nullptr;
+}
+
+bool Renderer::BeamRacePresent()
+{
+    if(!m_kmtAdapter || !m_gpuDone || !m_kmtLines)
+        return false;
+    auto* ctx = m_renderContext.deviceContext.get();
+    static LARGE_INTEGER freq = [] { LARGE_INTEGER f; QueryPerformanceFrequency(&f); return f; }();
+    LARGE_INTEGER t0, t;
+    auto elapsedMs = [&] { QueryPerformanceCounter(&t); return (double)(t.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart; };
+
+    // 1. the frame is fully drawn (otherwise the flip waits for the GPU and lands anywhere)
+    ctx->End(m_gpuDone.get());
+    ctx->Flush();
+    QueryPerformanceCounter(&t0);
+    while(ctx->GetData(m_gpuDone.get(), nullptr, 0, 0) == S_FALSE && elapsedMs() < 100.0)
+        YieldProcessor();
+
+    // 2. wait for a place where the tear does not show, in a new refresh
+    const double lead  = std::clamp(m_options.beamLead, 0, 20) / 100.0;
+    const double safe  = m_tearSafe;
+    const double limit = (std::max)(2.0, m_options.vsyncDuration * 2.5);
+    KmtGetScanLine s {};
+    s.hAdapter      = m_kmtAdapter;
+    s.VidPnSourceId = m_kmtSource;
+    double f        = 1.0;
+    bool   vbl      = true;
+    QueryPerformanceCounter(&t0);
+    for(;;)
+    {
+        if(s_kmtScan(&s) != 0)
+        {
+            m_options.beamRacingState = -1;
+            return false; // nothing sent yet: the normal path presents this frame
+        }
+        vbl = s.InVerticalBlank != 0;
+        f   = vbl ? 1.0 : (std::min)(1.0, s.ScanLine / (double)m_kmtLines);
+        if(!m_brNewRefresh && ((vbl && !m_brLastVbl) || (!vbl && f < m_brLastF - 0.005)))
+            m_brNewRefresh = true; // the scanout went through a vblank since the last flip
+        if(m_brNewRefresh && (vbl || f >= 1.0 - lead || f + lead <= safe))
+            break;
+        if(elapsedMs() > limit)
+            break;
+        YieldProcessor();
+    }
+    DXGI_PRESENT_PARAMETERS pp {};
+    m_swapChain->Present1(0, DXGI_PRESENT_ALLOW_TEARING, &pp);
+    const bool atEnd = vbl || f >= 1.0 - lead;
+    m_brLastF        = atEnd ? 1.0 : f;
+    m_brLastVbl      = atEnd;
+    m_brNewRefresh   = false;
+    m_options.beamRacingState = 1;
+    return true;
+}
+
 void Renderer::Present(bool vsync)
 {
     DXGI_PRESENT_PARAMETERS pp {};
+    if(vsync && m_tearing && m_options.beamRacing && BeamRacePresent())
+        return;
     if(vsync && m_tearing)
     {
         // Tearing allowed: no queue, the flip happens at once. The thread is paced on the vblank; "tearing control" delays the flip so the
@@ -550,11 +708,18 @@ void Renderer::UpdateDepth(bool newFrame)
         m_ui.m_aiStatus  = m_depth.Status();
         m_ui.m_aiInferMs = m_depth.InferMs();
         m_ui.m_aiFps     = m_depth.DepthFps();
+        m_ui.m_aiLatencyMs = (float)m_depthLatencyMs;
     }
 
     // a new depth map from the worker goes to the GPU
     if(m_depth.TryGetDepth(m_depthBuf) && m_depthBuf.size() == (size_t)m_depthW * m_depthH)
     {
+        if(m_depthSubmitStamp.time_since_epoch().count() != 0)
+        {
+            // time between the frame the map was computed from and the map being ready: the delay the image needs to match it
+            const double ms  = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - m_depthSubmitStamp).count();
+            m_depthLatencyMs = m_depthLatencyMs <= 0.0 ? ms : m_depthLatencyMs * 0.7 + ms * 0.3;
+        }
         D3D11_MAPPED_SUBRESOURCE m {};
         if(SUCCEEDED(ctx->Map(m_depthGpu.get(), 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
         {
@@ -573,7 +738,7 @@ void Renderer::UpdateDepth(bool newFrame)
         {
             DepthParams p;
             p.smoothing = ai.smoothing * 0.01f;
-            p.invert    = ai.invert;
+            p.invert    = m_options.emitter.swapEyes; // depth inversion follows Swap Eyes (one setting, no conflict between the two)
             m_depth.Submit((const uint8_t*)m.pData, (int)m.RowPitch, p);
             ctx->Unmap(m_depthStaging.get(), 0);
             m_depthCopyPending = false;
@@ -586,10 +751,18 @@ void Renderer::UpdateDepth(bool newFrame)
     // (at most `depthFps` maps per second)
     const auto now      = std::chrono::steady_clock::now();
     const auto interval = std::chrono::microseconds(1000000 / std::clamp(ai.depthFps, 1, 80));
-    if(newFrame && !m_depthCopyPending && m_depth.WantsFrame() && now - m_depthLastStart >= interval)
+    const bool fromRing = MapSync() && BufferActive() && !m_ringQueue.empty() && m_ringSrv.size() == m_ring.size() && m_ringTime.size() == m_ring.size();
+    if((newFrame || (fromRing && m_ringArrived)) && !m_depthCopyPending && m_depth.WantsFrame() && now - m_depthLastStart >= interval)
     {
-        m_depthLastStart = now;
-        m_stereo.Downscale(ctx, m_stereoRawView.get(), m_depthSmallRtv.get(), m_options.outputWidth, m_options.outputHeight, m_depthW, m_depthH, m_options.hardwareSrgb);
+        m_depthLastStart   = now;
+        m_depthSubmitStamp = fromRing ? m_ringTime[m_ringQueue.back()] : now; // the map describes the picture captured at this time
+        m_ringArrived      = false;
+        // with the buffer the map is computed from the NEWEST waiting frame: by the time it is ready, the frame shown (the oldest one,
+        // about `buffer size` frames older) is the one the map describes
+        ID3D11ShaderResourceView* src = m_stereoRawView.get();
+        if(fromRing)
+            src = m_ringSrv[m_ringQueue.back()].get();
+        m_stereo.Downscale(ctx, src, m_depthSmallRtv.get(), m_options.outputWidth, m_options.outputHeight, m_depthW, m_depthH, m_options.hardwareSrgb);
         ctx->CopyResource(m_depthStaging.get(), m_depthSmall.get());
         m_depthCopyPending = true;
     }
@@ -620,13 +793,20 @@ void Renderer::RollInput(bool newFrame)
     m_renderContext.inputSlots[0] = latestInput;
 }
 
+bool Renderer::MapSync() const
+{
+    return m_stereoActive && m_options.emitter.sourceFormat == StereoSource::AiDepth && m_options.emitter.ai.mapBuffer;
+}
+
 bool Renderer::BufferActive() const
 {
-    return m_options.EffectiveFrameBuffer() > 0 && m_options.captureWindow && !m_options.crossAdapter && !Bypassing() && !m_renderContext.inputTextures.empty();
+    return (m_options.EffectiveFrameBuffer() > 0 || MapSync()) && m_options.captureWindow && !m_options.crossAdapter && !Bypassing() && !m_renderContext.inputTextures.empty();
 }
 
 void Renderer::DestroyRing()
 {
+    m_ringSrv.clear();
+    m_ringTime.clear();
     m_ring.clear();
     m_ringQueue.clear();
     m_ringFree.clear();
@@ -634,9 +814,22 @@ void Renderer::DestroyRing()
     m_ringSkip   = 0;
 }
 
+int Renderer::FrameBufferLimit() const
+{
+    if(!MapSync())
+        return 5;
+    const auto& tex = m_stereoActive ? m_stereoRaw : (m_renderContext.inputTextures.empty() ? m_stereoRaw : m_renderContext.inputTextures[0]);
+    if(!tex)
+        return 5;
+    D3D11_TEXTURE2D_DESC d {};
+    tex->GetDesc(&d);
+    const size_t bytes = (size_t)d.Width * d.Height * (d.Format == DXGI_FORMAT_R16G16B16A16_FLOAT ? 8 : 4);
+    return std::clamp((int)((512ull * 1024 * 1024) / (std::max)(bytes, (size_t)1)) - 3, 5, 30);
+}
+
 void Renderer::EnsureRing()
 {
-    const int n    = m_options.frameBuffer < 0 ? 5 : std::clamp(m_options.frameBuffer, 1, 5); // Auto: room for the largest size, no re-creation when it changes
+    const int n    = MapSync() ? FrameBufferLimit() : (m_options.FrameBufferIsAuto() ? 5 : std::clamp(m_options.frameBuffer, 1, 5)); // Auto: room for the largest size, no re-creation when it changes
     const int want = n + 3;
     if((int)m_ring.size() == want)
         return;
@@ -651,17 +844,20 @@ void Renderer::EnsureRing()
     {
         auto& t = m_ring.emplace_back(nullptr);
         THROW(m_renderContext.device->CreateTexture2D(&d, nullptr, t.put()), "Unable to create buffer texture");
+        auto& v = m_ringSrv.emplace_back(nullptr);
+        THROW(m_renderContext.device->CreateShaderResourceView(t.get(), nullptr, v.put()), "Unable to create buffer view");
         m_ringFree.push_back(i);
     }
+    m_ringTime.assign(m_ring.size(), {});
 }
 
 // Adaptive size of the anti-stutter buffer (Auto, 0 to 5): the Watcher gives the gaps between the production times of the game frames.
 // The buffer must bridge the worst gap (beyond the average one) of the last 4 seconds, in content frames. It grows at once (one step per
-// 250 ms, immediately after a stall) and shrinks by one after 6 quiet seconds (10 seconds from 1 down to 0, where the buffer is
+// 100 ms, immediately after a stall) and shrinks by one after 2 quiet seconds (4 seconds from 1 down to 0, where the buffer is
 // switched off), so the size does not hunt up and down.
 void Renderer::AdaptFrameBuffer()
 {
-    if(m_options.frameBuffer >= 0 || !m_options.captureWindow || m_options.crossAdapter)
+    if(!m_options.FrameBufferIsAuto() || !m_options.captureWindow || m_options.crossAdapter)
     {
         m_fbSliceStart = {}; // not in Auto: start from scratch when it is switched on
         return;
@@ -698,21 +894,22 @@ void Renderer::AdaptFrameBuffer()
         m_fbSliceStart = now;
     }
     const double worst   = (std::max)({ m_fbSlices[0], m_fbSlices[1], m_fbSlices[2], m_fbSlices[3], m_fbSliceMax });
-    const double content = 1000.0 * (std::max)(m_options.subFrames, 1) * (m_stereoActive ? 2.0 : 1.0) / (std::max)(m_options.vsyncRate, 1.0f);
+    const double content = 1000.0 * (std::max)(m_options.subFrames, 1) * (m_stereoActive ? 2.0 : 1.0) * (std::max)(1, m_options.frameBufferStep) / (std::max)(m_options.vsyncRate, 1.0f); // one game frame on screen
     const double extra   = (std::max)(0.0, worst - m_fbMeanMs);
     int          target  = (int)std::ceil(extra / (std::max)(content, 1.0) - 0.3); // a jitter under 30 % of a content frame needs no buffer
-    target               = std::clamp(target, 0, 5);
-    int          cur     = std::clamp(m_options.frameBufferAuto, 0, 5);
+    const int    cap     = 5;
+    target               = std::clamp(target, 0, cap);
+    int          cur     = std::clamp(m_options.frameBufferAuto, 0, cap);
     const double sinceChange = std::chrono::duration<double, std::milli>(now - m_fbLastChange).count();
     if(m_fbUnderrun)
     {
         m_fbUnderrun = false;
-        target       = (std::max)(target, (std::min)(cur + 1, 5));
+        target       = (std::max)(target, (std::min)(cur + 1, cap));
         m_fbLowSince = now;
     }
     if(target > cur)
     {
-        if(sinceChange >= 250.0)
+        if(sinceChange >= 100.0)
         {
             cur++;
             m_fbLastChange = now;
@@ -721,7 +918,7 @@ void Renderer::AdaptFrameBuffer()
     }
     else if(target < cur)
     {
-        const double calm = cur == 1 ? 10.0 : 6.0;
+        const double calm = cur == 1 ? 4.0 : 2.0;
         if(std::chrono::duration<double>(now - m_fbLowSince).count() >= calm)
         {
             cur--;
@@ -744,7 +941,31 @@ void Renderer::BufferedStep(const std::shared_ptr<CaptureBase>& capture)
 {
     EnsureRing();
     const auto now = std::chrono::steady_clock::now();
-    const int  n   = std::clamp(m_options.EffectiveFrameBuffer(), 1, 5);
+    // Map buffer (2D to 3D AI): the queue is lengthened by as many game frames as the depth map takes to arrive (rounded up), so the frame
+    // shown is the one the latest map was computed from. It goes through the same smooth queue as the frame buffer (one frame taken per
+    // content step, a frame repeated now and then to grow, never a jump), which is added on top. Grows at once, shrinks to the needed size after 2 calm seconds.
+    if(MapSync() && m_depthLatencyMs > 0.0)
+    {
+        const int want = std::clamp((int)std::ceil(m_depthLatencyMs / (std::max)(m_ringIntervalMs, 2.0) - 0.15), 0, FrameBufferLimit());
+        if(want > m_mapFrames)
+        {
+            m_mapFrames   = want;
+            m_mapLowSince = now;
+        }
+        else if(want < m_mapFrames)
+        {
+            if(std::chrono::duration<double>(now - m_mapLowSince).count() >= 2.0)
+            {
+                m_mapFrames   = want; // (the extra frames are dropped at once: one small skip instead of a long slow drift)
+                m_mapLowSince = now;
+            }
+        }
+        else
+            m_mapLowSince = now;
+    }
+    else if(!MapSync())
+        m_mapFrames = 0;
+    const int n = std::clamp(m_options.EffectiveFrameBuffer() + m_mapFrames, 1, (std::max)(5, FrameBufferLimit()));
 
     // 1. capture into the ring
     if(m_ringFree.empty() && !m_ringQueue.empty())
@@ -766,6 +987,9 @@ void Renderer::BufferedStep(const std::shared_ptr<CaptureBase>& capture)
 
             }
             m_ringLastArrival = now;
+            if(idx < (int)m_ringTime.size())
+                m_ringTime[idx] = now;
+            m_ringArrived = true;
             m_ringQueue.push_back(idx);
             while((int)m_ringQueue.size() > n + 1)
             {
@@ -786,6 +1010,29 @@ void Renderer::BufferedStep(const std::shared_ptr<CaptureBase>& capture)
         ConvertStereoInput(false);
         RollInput(false);
         return;
+    }
+    // Divisor pacing (SubFrames Manual): when the game runs at a divisor of the content rate (content 120 fps, game 60 / 40 / 30 / 15...),
+    // each game frame is shown for exactly K content frames (K eye pairs in 3D), K = content rate / game rate rounded, with some
+    // hysteresis so it does not flip around a half value. The buffer is only asked for a frame every K requests, so a slower game is
+    // neither seen as stutter nor shown unevenly (1 then 3 times instead of 2 and 2).
+    {
+        int k = 1;
+        if(m_options.EffectiveSubFramesMode() == SF_MANUAL && m_options.vsyncRate > 0.0f)
+        {
+            const double pairRate = m_options.vsyncRate / (double)(std::max)(m_options.subFrames, 1) / (m_stereoActive ? 2.0 : 1.0);
+            const double ratio    = pairRate * m_ringIntervalMs / 1000.0;
+            k                     = std::clamp(m_options.frameBufferStep, 1, 16);
+            if(std::abs(ratio - k) > 0.6)
+                k = std::clamp((int)std::lround(ratio), 1, 16);
+        }
+        m_options.frameBufferStep = k;
+        if(k > 1 && ++m_ringStepCount < k)
+        {
+            ConvertStereoInput(false); // the current game frame stays for this content frame
+            RollInput(false);
+            return;
+        }
+        m_ringStepCount = 0;
     }
     const double sinceMs = std::chrono::duration<double, std::milli>(now - m_ringLastArrival).count();
     const bool   idle    = !m_ringQueue.empty() && sinceMs > (std::max)(25.0, m_ringIntervalMs * 2.5);
@@ -939,7 +1186,12 @@ void Renderer::Create()
     }
 
     if(m_tearing)
+    {
         m_swapChain->GetContainingOutput(m_tearOutput.put());
+        OpenScanline();
+    }
+    else
+        m_options.beamRacingState = 0;
 
     THROW(m_swapChain->GetBuffer(0, __uuidof(ID3D11Texture2D), (void**)m_renderContext.outputTexture.put()), "Unable to get display buffer");
 
@@ -1061,6 +1313,7 @@ void Renderer::CreateInputs()
 
 void Renderer::Destroy()
 {
+    CloseScanline();
     m_depthStencilState              = nullptr;
     m_rasterizerState                = nullptr;
     m_swapChain                      = nullptr;

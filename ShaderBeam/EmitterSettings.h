@@ -44,10 +44,10 @@ struct AiDepthConfig
     float strength { 3.0f };     // maximum parallax, % of the screen width
     float convergence { 50.0f }; // depth (0 = far .. 100 = near) that stays on the screen plane
     float smoothing { 50.0f };   // temporal smoothing of the depth map, %
-    float antiHalo { 30.0f };    // keeps foreground depth from bleeding onto the background around objects, %
-    bool  invert { false };      // swap near and far
+    float antiHalo { 60.0f };    // keeps foreground depth from bleeding onto the background around objects, %
     bool  useGpu { true };       // DirectML (GPU); falls back to the CPU
     bool  showDepth { false };   // show the depth map instead of the picture
+    bool  mapBuffer { true };    // map buffer: the image is held back until its own depth map is ready (needs a captured program)
 };
 
 struct StereoEmitterSettings

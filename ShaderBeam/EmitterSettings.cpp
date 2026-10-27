@@ -49,9 +49,9 @@ void SaveEmitterSettings(mINI::INIStructure& ini, const StereoEmitterSettings& s
     Put(e, "aiConvergence", s.ai.convergence);
     Put(e, "aiSmoothing", s.ai.smoothing);
     Put(e, "aiAntiHalo", s.ai.antiHalo);
-    Put(e, "aiInvert", s.ai.invert);
     Put(e, "aiUseGpu", s.ai.useGpu);
     Put(e, "aiShowDepth", s.ai.showDepth);
+    Put(e, "aiMapBuffer", s.ai.mapBuffer);
 }
 
 void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s)
@@ -78,10 +78,10 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
     Get(e, "aiStrength", s.ai.strength, 0.0f, 10.0f);
     Get(e, "aiConvergence", s.ai.convergence, 0.0f, 100.0f);
     Get(e, "aiSmoothing", s.ai.smoothing, 0.0f, 95.0f);
-    Get(e, "aiAntiHalo", s.ai.antiHalo, 0.0f, 100.0f);
-    Get(e, "aiInvert", s.ai.invert);
+    Get(e, "aiAntiHalo", s.ai.antiHalo, 0.0f, 300.0f);
     Get(e, "aiUseGpu", s.ai.useGpu);
     Get(e, "aiShowDepth", s.ai.showDepth);
+    Get(e, "aiMapBuffer", s.ai.mapBuffer);
 }
 
 } // namespace ShaderBeam

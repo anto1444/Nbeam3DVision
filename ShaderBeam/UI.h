@@ -55,6 +55,7 @@ public:
     std::string              m_aiStatus;      // "2D to 3D (AI)": state of the depth model (set by Renderer)
     float                    m_aiInferMs { 0 };
     float                    m_aiFps { 0 };
+    float                    m_aiLatencyMs { 0 };
 
 private:
     void SetStyle(ImGuiStyle& style);
@@ -63,6 +64,7 @@ private:
 public:
     void UpdateCaptureTone(bool refreshHdr = false); // black / grey level of the capture; neutral unless Windows HDR is on
     void ShowBanner(); // "3D emitter on" banner for 3 seconds (when 3D is active)
+    void ShowNote(const std::string& text); // one-line banner for 3 seconds
     void ShowAdjustBanner(int kind); // banner with the current values, 3 seconds from the last change (kind = which one changed)
 private:
     bool BannerActive() const;
@@ -101,6 +103,8 @@ private:
     StereoSource    m_lastSource { StereoSource::Off }; // 3D source format the renderer is running with
     volatile unsigned long long m_adjustUntil { 0 }; // adjustment hotkeys: banner shown until this tick count
     volatile int       m_adjustKind { -1 };
+    std::string        m_noteText;
+    volatile unsigned long long m_noteUntil { 0 };
     unsigned long long m_bannerUntil { 0 }; // tick count until which the "3D emitter on" banner is shown
     EmitterPanelContext m_emitterPanel;
     float           m_fontSize { 0 };

@@ -178,6 +178,7 @@ const char* Options::HotkeyActionName(int id)
     case HOTKEY_SWAPEYES: return "Swap eyes";
     case HOTKEY_DESKTOPOFF: return "Effects always disabled (desktop capture)";
     case HOTKEY_DETECTION: return "Profile detection on/off";
+    case HOTKEY_ADDEXE: return "Add the foreground program";
     case HOTKEY_SUBFRAMES_DEC: return "SubFrames -";
     case HOTKEY_SUBFRAMES_INC: return "SubFrames +";
     case HOTKEY_CLEAR_DEC: return "Clear frames -";
@@ -1043,6 +1044,8 @@ void Options::Save(const ShaderManager& shaderManager) const
             SAVE_BOOL(s, useHdr)
             SAVE_INT(s, maxQueuedFrames)
             SAVE_INT(s, tearingLine)
+            SAVE_BOOL(s, beamRacing)
+            SAVE_INT(s, beamLead)
             SAVE_INT(s, subFramesSetting)
             SAVE_INT(s, subFramesMode)
             s["lowFpsThreshold"] = std::to_string(lowFps.threshold);
@@ -1116,6 +1119,9 @@ void Options::Load(ShaderManager& shaderManager)
                     maxQueuedFrames = 0; // 3 is the default now (shown as "3 (default)")
                 LOAD_INT(s, tearingLine)
                 tearingLine = std::clamp(tearingLine, 0, 100);
+                LOAD_BOOL(s, beamRacing)
+                LOAD_INT(s, beamLead)
+                beamLead = std::clamp(beamLead, 0, 20);
                 LOAD_INT(s, subFramesSetting)
                 subFramesSetting = std::clamp(subFramesSetting, 0, MAX_SUBFRAMES);
                 LOAD_INT(s, subFramesMode)

@@ -120,7 +120,7 @@ static bool WindowsHdrOn(HWND hWnd)
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
-                               "              Version 1.0.0\n"
+                               "              Version 1.1.0\n"
                                "         Made by anto1444, 2026\n"
                                "\n"
                                "   Based on ShaderBeam (c) 2025-2026 mausimus\n"
@@ -131,7 +131,7 @@ const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
                                "        Timothy Lottes @NOTimothyLottes\n"
                                "          https://blurbusters.com/crt\n\n";
 const char* SHADERBEAM_ABOUT_FR = "             " SHADERBEAM_TITLE "\n"
-                                  "              Version 1.0.0\n"
+                                  "              Version 1.1.0\n"
                                   "         Fait par anto1444, 2026\n"
                                   "\n"
                                   "   Basé sur ShaderBeam (c) 2025-2026 mausimus\n"
@@ -510,7 +510,7 @@ void UI::RenderHudHeader(float height)
     if(m_logo)
         dl->AddImage(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(logoX, p0.y + (height - logoSz) * 0.5f), ImVec2(logoX + logoSz, p0.y + (height + logoSz) * 0.5f));
     dl->AddText(font, titleSz, ImVec2(titleX, p0.y + height * 0.5f - titleSz * 0.95f), cOnAcc, title);
-    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v1.0.0");
+    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v1.1.0");
 
     // output mode (like "3440 x 1440 | 240Hz")
     char mode[64];
@@ -911,7 +911,7 @@ void UI::Render()
                     m_options.frameBuffer = std::clamp(fb, haveProcess ? -1 : 0, 5); // applied live by the renderer
                 if(!haveProcess)
                     ImGui::PopStyleColor(2);
-                if(m_options.frameBuffer < 0 && haveProcess && m_options.EffectiveFrameBuffer() == 0)
+                if(m_options.FrameBufferIsAuto() && haveProcess && m_options.EffectiveFrameBuffer() == 0)
                 {
                     ImGui::SameLine();
                     ImGui::TextDisabled("(0)");
@@ -919,12 +919,12 @@ void UI::Render()
                 if(m_options.EffectiveFrameBuffer() > 0 && (m_options.frameBuffer > 0 || haveProcess))
                 {
                     ImGui::SameLine();
-                    if(m_options.frameBuffer < 0)
+                    if(m_options.FrameBufferIsAuto())
                         ImGui::TextDisabled("%d,", m_options.EffectiveFrameBuffer());
                     ImGui::SameLine();
-                    ImGui::TextDisabled("(%.0f ms)", 1000.0 * m_options.EffectiveFrameBuffer() * (std::max)(m_options.subFrames, 1) * ((m_options.StereoAllowed() && m_options.emitter.sourceFormat != StereoSource::Off) ? 2.0 : 1.0) / (std::max)(m_options.vsyncRate, 1.0f));
+                    ImGui::TextDisabled("(%.0f ms)", 1000.0 * m_options.EffectiveFrameBuffer() * (std::max)(1, m_options.frameBufferStep) * (std::max)(m_options.subFrames, 1) * ((m_options.StereoAllowed() && m_options.emitter.sourceFormat != StereoSource::Off) ? 2.0 : 1.0) / (std::max)(m_options.vsyncRate, 1.0f));
                 }
-                ShowHelpMarker(Tr("Anti-stutter buffer: Auto = the size (0 to 5) adjusts itself to the irregularity of the game frame rate (it grows at once after a stall, shrinks slowly, and drops from 1 to 0 only after 10 steady seconds). 0 = off. 1 to 5 = game frames kept in advance to smooth an irregular frame rate, at the cost of latency (frames x SubFrames / display Hz, halved rate with 3D). Only works while a program (.exe) is captured, with the same GPU for capture and render."));
+                ShowHelpMarker(Tr("Anti-stutter buffer: Auto = the size (0 to 5) adjusts itself to the irregularity of the game frame rate (it grows at once after a stall, shrinks slowly, and drops from 1 to 0 only after 4 steady seconds). 0 = off. 1 to 5 = game frames kept in advance to smooth an irregular frame rate, at the cost of latency (frames x SubFrames / display Hz, halved rate with 3D). With SubFrames on a fixed value, a game running at a divisor of the content rate (for 120: 60, 40, 30, 15 fps...) has each of its frames shown for the same number of content frames, evenly. With 2D to 3D (AI) it works the same way; the synchronisation of the depth maps is a separate option (Map buffer, in the 3D panel) and adds up with it. Only works while a program (.exe) is captured, with the same GPU for capture and render."));
             }
 
 
@@ -1238,8 +1238,20 @@ void UI::Render()
                     ImGui::PopTextWrapPos();
                     ImGui::PopStyleColor();
                 }
-                ImGui::SliderInt(Tr("Tearing control"), &m_options.tearingLine, 0, 100, "%d %%");
-                ShowHelpMarker(Tr("Where the tear line lands on the screen. 0 = the flip is right after the vertical blank, so the tear is at the very top and hidden. Higher values move it down the picture. Adjust while watching a horizontal pan."));
+                ImGui::Checkbox(Tr("Beam racing"), &m_options.beamRacing);
+                ShowHelpMarker(Tr("Beam racing: the tear is placed where the effect hides it, by reading the real position of the screen scanout. BFI, 3D and plain picture: the flip is sent just before the vertical blank (no visible tear, a little more latency than plain tearing). CRT Beam Simulator (top-to-bottom or bottom-to-top scan): the flip may also land above the lit bands, for a lower latency. Uses one processor core while waiting. Needs a display whose scanout position can be read; Nbeam's window must be shown directly (nothing over it)."));
+                if(m_options.beamRacing)
+                {
+                    ImGui::SliderInt(Tr("Tearing lead"), &m_options.beamLead, 0, 20, "%d %%");
+                    ShowHelpMarker(Tr("How early the flip is sent, in % of a refresh, to make up for the time it takes to reach the screen. If a tear shows at the top of the picture, increase it; if the latency matters more, lower it."));
+                    if(m_options.beamRacingState < 0)
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), "%s", Tr("The scanout position cannot be read on this display: normal tearing is used."));
+                }
+                else
+                {
+                    ImGui::SliderInt(Tr("Tearing control"), &m_options.tearingLine, 0, 100, "%d %%");
+                    ShowHelpMarker(Tr("Where the tear line lands on the screen. 0 = the flip is right after the vertical blank, so the tear is at the very top and hidden. Higher values move it down the picture. Adjust while watching a horizontal pan."));
+                }
             }
             ShowHelpMarker(Tr("Queued presentation frames, increase if you're getting irregular flashing.\nTrade-off between input latency and stability.\nThese are output (Display Hz) frames. Driver default is usually 3.\nOption 0: no queue, tearing allowed for the lowest latency (strongly discouraged in 3D)."));
 
@@ -1264,6 +1276,7 @@ void UI::Render()
             m_emitterPanel.aiStatus  = m_aiStatus;
             m_emitterPanel.aiInferMs = m_aiInferMs;
             m_emitterPanel.aiFps     = m_aiFps;
+            m_emitterPanel.aiLatencyMs = m_aiLatencyMs;
             if(RenderEmitterPanel(m_options.emitter, m_emitterPanel))
                 m_emitterRestartRequired = true;
 
@@ -1342,7 +1355,7 @@ void UI::Render()
 
             SectionHeader(Tr("Profile detection"));
             {
-                ShowHelpMarker(Tr("When a program is detected running, its profile is loaded. When the program closes, the previous profile comes back.\nEnter the full path of the .exe or just its file name (e.g. game.exe).\nEach program can have up to 3 profiles, each for a different screen: the profile of the Windows main screen is used first, then the one of another connected screen. The output goes to the screen of the profile."));
+                ShowHelpMarker(Tr("When a program is detected running, its profile is loaded. When the program closes, the previous profile comes back.\nEnter the full path of the .exe or just its file name (e.g. game.exe), or press the \"Add the foreground program\" hotkey while the program is in front.\nEach program can have up to 3 profiles, each for a different screen: the profile of the Windows main screen is used first, then the one of another connected screen. The output goes to the screen of the profile."));
                 if(s_profilesDirty)
                 {
                     s_profiles      = Options::ListProfiles();
@@ -2037,10 +2050,16 @@ void UI::ShowAdjustBanner(int kind)
     m_adjustUntil = sec <= 0 ? 0 : GetTickCount64() + (sec > 10 ? 5000ULL : (ULONGLONG)sec * 1000ULL);
 }
 
+void UI::ShowNote(const std::string& text)
+{
+    m_noteText  = text;
+    m_noteUntil = GetTickCount64() + 3000ULL;
+}
+
 bool UI::BannerActive() const
 {
     const auto now = GetTickCount64();
-    return m_ready && ((m_bannerUntil && now < m_bannerUntil) || (m_adjustUntil && now < m_adjustUntil));
+    return m_ready && ((m_bannerUntil && now < m_bannerUntil) || (m_adjustUntil && now < m_adjustUntil) || (m_noteUntil && now < m_noteUntil));
 }
 
 // shown for 3 seconds when a 3D mode is active: tells that the emitter is on (or could not start)
@@ -2055,7 +2074,9 @@ void UI::RenderBanner()
         ImU32       color;
     };
     std::vector<Line> lines;
-    if(m_adjustUntil && GetTickCount64() < m_adjustUntil)
+    if(m_noteUntil && GetTickCount64() < m_noteUntil)
+        lines.push_back({ m_noteText, accent }); // one-line message (e.g. a program added by hotkey)
+    else if(m_adjustUntil && GetTickCount64() < m_adjustUntil)
     {
         // a 3D timing hotkey was used: the three timings, the one just changed in the accent color
         const int kind = m_adjustKind;
@@ -2131,14 +2152,14 @@ void UI::RefreshHotkeyTexts()
         s_hotkeyMessage += " / " + Pad::Text(m_options.hotkeys[HOTKEY_TOGGLEUI].pad);
     s_hotkeyMessage += Tr(" for UI");
     s_hotkeyHelp    = Tr("Global hotkeys (change them in the Hotkeys section):\n\n");
-    for(int id : { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_DESKTOPOFF, HOTKEY_DETECTION })
+    for(int id : { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_DESKTOPOFF, HOTKEY_DETECTION, HOTKEY_ADDEXE })
         s_hotkeyHelp += std::string("  ") + Tr(Options::HotkeyActionName(id)) + ": " + Options::HotkeyText(m_options.hotkeys[id]) + (m_options.hotkeys[id].pad ? " / " + Pad::Text(m_options.hotkeys[id].pad) : std::string()) + "\n";
 }
 
 // Hotkeys section: click a button, then press the new key or combination (any key, modifiers optional). Esc alone cancels, Backspace alone clears.
 void UI::RenderHotkeys()
 {
-    static const int ids[] = { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_DESKTOPOFF, HOTKEY_DETECTION, HOTKEY_SUBFRAMES_DEC, HOTKEY_SUBFRAMES_INC, HOTKEY_CLEAR_DEC,
+    static const int ids[] = { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_DESKTOPOFF, HOTKEY_DETECTION, HOTKEY_ADDEXE, HOTKEY_SUBFRAMES_DEC, HOTKEY_SUBFRAMES_INC, HOTKEY_CLEAR_DEC,
                               HOTKEY_CLEAR_INC, HOTKEY_SYNCOFFSET_DEC, HOTKEY_SYNCOFFSET_INC, HOTKEY_DURATION_DEC, HOTKEY_DURATION_INC };
     auto      restoreAll = [&]() {
         m_options.hotkeysSuspended = false;

@@ -31,17 +31,18 @@ namespace ShaderBeam
 
 // adjustment hotkeys (decrease / increase pairs, one step per press)
 #define HOTKEY_DETECTION 5 // checks / unchecks the profile detections (all of them)
-#define HOTKEY_ADJUST_FIRST 6
-#define HOTKEY_SUBFRAMES_DEC 6
-#define HOTKEY_SUBFRAMES_INC 7
-#define HOTKEY_CLEAR_DEC 8
-#define HOTKEY_CLEAR_INC 9
-#define HOTKEY_SYNCOFFSET_DEC 10
-#define HOTKEY_SYNCOFFSET_INC 11
-#define HOTKEY_DURATION_DEC 12
-#define HOTKEY_DURATION_INC 13
+#define HOTKEY_ADDEXE 6 // adds the program in the foreground to the profile detections
+#define HOTKEY_ADJUST_FIRST 7
+#define HOTKEY_SUBFRAMES_DEC 7
+#define HOTKEY_SUBFRAMES_INC 8
+#define HOTKEY_CLEAR_DEC 9
+#define HOTKEY_CLEAR_INC 10
+#define HOTKEY_SYNCOFFSET_DEC 11
+#define HOTKEY_SYNCOFFSET_INC 12
+#define HOTKEY_DURATION_DEC 13
+#define HOTKEY_DURATION_INC 14
 
-#define HOTKEY_COUNT 14
+#define HOTKEY_COUNT 15
 
 //#define RGB_TEST
 
@@ -174,7 +175,9 @@ struct Options
     int  monitorType { MONITOR_LCD };
     int  frameBuffer { 0 };    // anti-stutter buffer: game frames kept in advance (-1 = Auto, 0 = off, 1..5); profile setting
     mutable int frameBufferAuto { 1 }; // Auto: the size the renderer currently uses (1..5)
-    int  EffectiveFrameBuffer() const { return frameBuffer < 0 ? frameBufferAuto : frameBuffer; }
+    mutable int frameBufferStep { 1 }; // buffer: content frames (eye pairs in 3D) each game frame is shown for (game fps = a divisor of the content rate, SubFrames Manual)
+    bool FrameBufferIsAuto() const { return frameBuffer < 0; }
+    int  EffectiveFrameBuffer() const { return FrameBufferIsAuto() ? frameBufferAuto : frameBuffer; }
     mutable float captureBlack { 0.0f };  // black level of the captured image in scRGB units (nits / 80)
     mutable float captureGain { 1.0f };   // brightness gain of the captured image (1 = unchanged)
     mutable float captureGrey { 1.0f };   // grey level (gamma) of the captured image
@@ -183,6 +186,9 @@ struct Options
     static constexpr int QUEUE_TEARING = 15;
     int  tearingLine { 0 };     // tearing control: where the flip happens in the refresh (0 = right after vblank, hidden at the top; 100 = bottom), profile setting
     bool Tearing() const { return maxQueuedFrames == QUEUE_TEARING; }
+    bool beamRacing { false }; // tearing: the flip is timed on the real scanout position so the tear lands where the effect hides it; profile setting
+    int  beamLead { 3 };       // beam racing: how early (% of the refresh) the flip is sent, to make up for its delay; profile setting
+    mutable int beamRacingState { 0 }; // 1 = working, -1 = the scanout position cannot be read on this display (normal tearing is used)
     bool rememberSettings { true };
 
     // global hotkeys (index = HOTKEY_* id). mods = MOD_* flags, vk = virtual key, 0 = none
@@ -199,6 +205,7 @@ struct Options
         { MOD_CONTROL | MOD_SHIFT, 'E' }, // swap eyes
         { MOD_CONTROL | MOD_SHIFT, 'D' }, // effects always disabled (desktop capture)
         { MOD_CONTROL | MOD_SHIFT, 'L' }, // profile detection on / off
+        { MOD_CONTROL | MOD_SHIFT, 'P' }, // add the foreground program to the detections
         { MOD_CONTROL | MOD_SHIFT, VK_F1 },  // SubFrames -
         { MOD_CONTROL | MOD_SHIFT, VK_F2 },  // SubFrames +
         { MOD_CONTROL | MOD_SHIFT, VK_F3 },  // Clear frames -

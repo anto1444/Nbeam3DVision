@@ -87,6 +87,11 @@ float4 PSmain(VSOut i) : SV_Target
         }
         if(flags & 1)
             return float4(d, d, d, 1.0);
+        // left and right edges: straight black bands as wide as the largest shift, identical in both eyes (on the screen plane),
+        // instead of stretched / repeated edge pixels that make ragged borders
+        float band = max(conv, 1.0 - conv) * strength * 0.5;
+        if(i.uv.x < band || i.uv.x > 1.0 - band || duv.x < 0.0 || duv.x > 1.0)
+            return float4(0.0, 0.0, 0.0, 1.0);
         return src.SampleLevel(lin, duv, 0.0);
     }
     if(mode == 1)
@@ -208,7 +213,7 @@ void StereoConverter::Convert(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView
         memcpy(&p[4], &strength, sizeof(float));
         memcpy(&p[5], &conv, sizeof(float));
         p[6] = ai->showDepth ? 1u : 0u;
-        const float halo = ai->antiHalo * 0.01f * 0.012f; // up to 1.2% of the width
+        const float halo = ai->antiHalo * 0.01f * 0.012f; // 100 % = 1.2% of the width (slider up to 300 %)
         memcpy(&p[9], &halo, sizeof(float));
     }
     SetParams(ctx, p);

@@ -24,6 +24,7 @@ struct EmitterPanelContext
     std::string              aiStatus;          // "2D to 3D (AI)": state of the depth model
     float                    aiInferMs { 0 };   // time of one depth estimation
     float                    aiFps { 0 };       // depth maps per second
+    float                    aiLatencyMs { 0 }; // image taken -> depth map ready
 };
 
 // Draws the collapsible "Stereo Emitter" section inside the current ImGui window.

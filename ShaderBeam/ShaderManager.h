@@ -28,6 +28,7 @@ public:
     int                               NumInputsRequired();
     bool                              NewInputRequired(const RenderContext& renderContext) const;
     void                              SubFramesChanged(const RenderContext& renderContext);
+    float                             TearSafeLimit(const RenderContext& renderContext) const;
 
 private:
     int                       m_activeProfile { 0 };

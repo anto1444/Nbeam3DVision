@@ -29,6 +29,9 @@ public:
     void         Passthrough(const RenderContext& renderContext);
     // SubFrames was changed live (no restart); profiles caching it must refresh here
     virtual void OnSubFramesChanged(const RenderContext& renderContext) { }
+    // Beam racing (tearing, queue 0): how far down the screen (0..1, from the top) the tear may land in the frame just rendered without
+    // being seen. 0 = only in the vertical blank (full-frame effects: BFI, plain picture).
+    virtual float TearSafeLimit(const RenderContext& renderContext) const { return 0.0f; }
 
 protected:
     std::map<int, std::string> m_empty;

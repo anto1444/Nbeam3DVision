@@ -78,4 +78,9 @@ void ShaderManager::SubFramesChanged(const RenderContext& renderContext)
     m_shaderProfiles[m_activeProfile]->OnSubFramesChanged(renderContext);
 }
 
+float ShaderManager::TearSafeLimit(const RenderContext& renderContext) const
+{
+    return m_shaderProfiles[m_activeProfile]->TearSafeLimit(renderContext);
+}
+
 } // namespace ShaderBeam

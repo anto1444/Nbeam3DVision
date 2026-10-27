@@ -1175,6 +1175,52 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             o.SaveApp();
             break;
         }
+        case HOTKEY_ADDEXE: {
+            // the program in the foreground (not Nbeam, not the Windows shell) is added to the profile detections
+            auto& o   = s_shaderBeam.m_options;
+            HWND  fg  = GetForegroundWindow();
+            DWORD pid = 0;
+            if(fg)
+                GetWindowThreadProcessId(fg, &pid);
+            std::string name;
+            if(pid && pid != GetCurrentProcessId())
+                if(HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid))
+                {
+                    wchar_t path[MAX_PATH * 2];
+                    DWORD   size = (DWORD)(sizeof(path) / sizeof(path[0]));
+                    if(QueryFullProcessImageNameW(h, 0, path, &size))
+                    {
+                        char utf[MAX_PATH * 4] = {};
+                        WideCharToMultiByte(CP_UTF8, 0, path, (int)size, utf, (int)sizeof(utf) - 1, NULL, NULL);
+                        name = ::ShaderBeam::Options::NormalizeExeName(utf);
+                    }
+                    CloseHandle(h);
+                }
+            static const char* ignored[] = { "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe", "textinputhost.exe", "applicationframehost.exe", "lockapp.exe", "dwm.exe" };
+            for(const char* ig : ignored)
+                if(name == ig)
+                    name.clear();
+            if(name.empty())
+            {
+                s_shaderBeam.m_ui.ShowNote(::ShaderBeam::Tr("No program in the foreground to add"));
+                break;
+            }
+            bool known = false;
+            for(const auto& l : o.profileLinks)
+                known = known || ::ShaderBeam::Options::NormalizeExeName(l.exe) == name;
+            if(known)
+                s_shaderBeam.m_ui.ShowNote(name + " " + ::ShaderBeam::Tr("is already in the list"));
+            else if(o.profileLinks.size() < 64)
+            {
+                ::ShaderBeam::Options::ProfileLink nl;
+                nl.exe      = name;
+                nl.screenId = o.ScreenIdOfDisplay(o.shaderDisplayNo, s_shaderBeam.m_ui.m_displays);
+                o.profileLinks.push_back(nl);
+                o.SaveApp();
+                s_shaderBeam.m_ui.ShowNote(name + " " + ::ShaderBeam::Tr("added to the profile detections"));
+            }
+            break;
+        }
         case HOTKEY_DESKTOPOFF:
             s_shaderBeam.m_options.desktopEffectsOff = !s_shaderBeam.m_options.desktopEffectsOff;
             s_shaderBeam.m_options.SaveApp();
