@@ -8,6 +8,8 @@ MIT License
 #pragma once
 
 #include "Common.h"
+#include <atomic>
+#include <mutex>
 #include "ShaderManager.h"
 #include "EmitterUI.h"
 
@@ -32,6 +34,14 @@ public:
     void SetBenchmark(const BenchmarkResult& result);
     void AddWindow(HWND hWnd);
     bool RenderRequired() const;
+    // automatic save of the active profile: asked by the HUD (render thread) or a hotkey, done once a second by the main thread
+    void RequestSave() { m_saveRequested = true; }
+    bool TakeSaveRequest() { return m_saveRequested.exchange(false); }
+    std::atomic<bool> m_saveRequested { false };
+    // ImGui is drawn by the render thread and fed with the mouse / keyboard by the main thread: one at a time. The main thread only
+    // waits a little (never blocks Nbeam); the render thread holds it for the whole HUD frame.
+    std::timed_mutex m_imguiMutex;
+    void             CancelHotkeyCapture(); // a shortcut capture left open (HUD hidden, other tab): the hotkeys work again
     bool Toggle();
 
     float m_inputFPS { 0 };
@@ -65,6 +75,8 @@ public:
     void UpdateCaptureTone(bool refreshHdr = false); // black / grey level of the capture; neutral unless Windows HDR is on
     void ShowBanner(); // "3D emitter on" banner for 3 seconds (when 3D is active)
     void ShowNote(const std::string& text); // one-line banner for 3 seconds
+    bool HudMoving() const; // a HUD window is being dragged
+    bool HudBounds(RECT& r) const; // area covered by the HUD windows drawn last (pixels); false = nothing drawn
     void ShowAdjustBanner(int kind); // banner with the current values, 3 seconds from the last change (kind = which one changed)
 private:
     bool BannerActive() const;
@@ -104,6 +116,7 @@ private:
     volatile unsigned long long m_adjustUntil { 0 }; // adjustment hotkeys: banner shown until this tick count
     volatile int       m_adjustKind { -1 };
     std::string        m_noteText;
+    std::mutex         m_noteMutex; // m_noteText: written by the main thread (hotkeys), read by the render thread
     volatile unsigned long long m_noteUntil { 0 };
     unsigned long long m_bannerUntil { 0 }; // tick count until which the "3D emitter on" banner is shown
     EmitterPanelContext m_emitterPanel;

@@ -75,20 +75,30 @@ void CaptureWGC::InternalStart()
 
 void CaptureWGC::InternalStop()
 {
-    if(m_session)
-        m_session.Close();
-    if(m_framePool)
-        m_framePool.Close();
+    try
+    {
+        if(m_session)
+            m_session.Close();
+        if(m_framePool)
+            m_framePool.Close();
+    }
+    catch(...)
+    { }
+    m_session   = nullptr;
+    m_framePool = nullptr;
 }
 
 bool CaptureWGC::InternalPoll(const winrt::com_ptr<ID3D11Texture2D>& outputTexture)
 {
     if(m_captureWindow && !IsWindow(m_captureWindow))
     {
-        // window closed, restart capture with desktop
+        // window closed, restart capture with desktop: asked once (it was posted on every frame, hundreds of restarts a second)
         PostMessage(m_options.outputWindow, WM_USER_NOWINDOW, 0, 0);
+        m_captureWindow = NULL;
         return false;
     }
+    if(!m_framePool)
+        return false; // the capture could not start (window gone at the wrong moment...): nothing to read
 
     auto frame = m_framePool.TryGetNextFrame();
     if(frame)

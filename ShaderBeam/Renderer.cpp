@@ -31,6 +31,7 @@ Renderer::Renderer(Options& options, UI& ui, Watcher& watcher, ShaderManager& sh
 
 void Renderer::Start(winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11DeviceContext> context)
 {
+    m_deviceLost = false;
     m_renderContext.device        = device;
     m_renderContext.deviceContext = context;
 
@@ -126,6 +127,7 @@ void Renderer::StartEmitters()
     env.vsyncRateHz  = m_options.vsyncRate;
     env.subFrames    = m_options.subFrames;
     env.swapChain    = m_swapChain.get();
+    env.queuedFrames = m_options.Tearing() ? 0 : (m_options.maxQueuedFrames > 0 ? m_options.maxQueuedFrames : 3); // 0 = driver default (3)
     try
     {
         winrt::com_ptr<IDXGIAdapter> adapter;
@@ -168,7 +170,7 @@ void Renderer::Render(bool present, bool ui)
     // eye of the content frame being rendered (before the frame counters advance)
     const int  emitFrameNo    = m_renderContext.frameNo;
     const int  emitSubFrameNo = m_renderContext.subFrameNo;
-    const bool emit           = present && m_emitters.Active() && !DesktopEffectsOff();
+    const bool emit           = present && m_emitters.Active() && !EffectsHidden();
     Eye        eye            = Eye::Left;
     if(emit)
         eye = m_emitters.NextEye(emitFrameNo, emitSubFrameNo);
@@ -216,11 +218,9 @@ void Renderer::Render(bool present, bool ui)
         m_charts.Render(m_renderContext.outputTexture, m_options.outputHeight);
 
     if(ui && m_ui.RenderRequired())
-    {
-        targets[0] = m_uiTargetView.get();
-        m_renderContext.deviceContext->OMSetRenderTargets(1, targets, NULL);
-        m_ui.Render();
-    }
+        RenderHud();
+    else
+        m_hudLast = {}; // shown again: drawn at once
 
     if(emit)
     {
@@ -248,7 +248,10 @@ void Renderer::Render(bool present, bool ui)
 
     // beam racing: where the tear may land in this frame (CRT bands); full-frame effects, 3D, split screen and on-screen emitters: vblank
     m_tearSafe = 0.0f;
-    if(m_tearing && m_options.beamRacing && !m_stereoActive && !emit && !m_options.splitScreen && !Bypassing() && m_options.subFrames > 1)
+    m_beamOk   = m_tearing && m_options.beamRacing && !m_stereoActive && !m_emitters.Active();
+    if(m_tearing && m_options.beamRacing && (m_stereoActive || m_emitters.Active()))
+        m_options.beamRacingState = 2; // 3D: not used
+    if(m_beamOk && !emit && !m_options.splitScreen && !Bypassing() && m_options.subFrames > 1)
         m_tearSafe = m_shaderManager.TearSafeLimit(m_renderContext);
 
     if(present)
@@ -258,6 +261,133 @@ void Renderer::Render(bool present, bool ui)
             m_emitters.AfterPresent(eye, emitSubFrameNo);
     }
     m_watcher.FrameSubmitted();
+}
+
+// HUD: ImGui draws into a transparent texture (premultiplied alpha) 30 times a second (full rate while it is dragged); every frame the texture is laid over the
+// picture with one full-screen draw. Falls back to drawing the HUD straight into the picture if the texture cannot be created.
+void Renderer::RenderHud()
+{
+    auto* dev = m_renderContext.device.get();
+    auto* ctx = m_renderContext.deviceContext.get();
+    if(!m_hudFailed)
+    {
+        try
+        {
+            if(!m_hudPs)
+            {
+                static const char hlsl[] = R"HLSL(
+Texture2D<float4> hud : register(t0);
+float4 VSmain(uint id : SV_VertexID) : SV_Position
+{
+    float2 uv = float2((id << 1) & 2, id & 2);
+    return float4(uv * float2(2.0, -2.0) + float2(-1.0, 1.0), 0.0, 1.0);
+}
+float4 PShud(float4 pos : SV_Position) : SV_Target
+{
+    return hud.Load(int3(int2(pos.xy), 0));
+}
+)HLSL";
+                winrt::com_ptr<ID3DBlob> vs, ps;
+                std::string              errors;
+                if(FAILED(Helpers::CompileCached(hlsl, sizeof(hlsl) - 1, "HudOverlay", nullptr, "VSmain", "vs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, vs, errors))
+                   || FAILED(Helpers::CompileCached(hlsl, sizeof(hlsl) - 1, "HudOverlay", nullptr, "PShud", "ps_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, ps, errors)))
+                    throw std::runtime_error("HUD overlay shader");
+                THROW(dev->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, m_hudVs.put()), "HUD overlay vertex shader");
+                THROW(dev->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, m_hudPs.put()), "HUD overlay pixel shader");
+                D3D11_BLEND_DESC bd {};
+                bd.RenderTarget[0].BlendEnable           = TRUE;
+                bd.RenderTarget[0].SrcBlend              = D3D11_BLEND_ONE; // premultiplied
+                bd.RenderTarget[0].DestBlend             = D3D11_BLEND_INV_SRC_ALPHA;
+                bd.RenderTarget[0].BlendOp               = D3D11_BLEND_OP_ADD;
+                bd.RenderTarget[0].SrcBlendAlpha         = D3D11_BLEND_ONE;
+                bd.RenderTarget[0].DestBlendAlpha        = D3D11_BLEND_INV_SRC_ALPHA;
+                bd.RenderTarget[0].BlendOpAlpha          = D3D11_BLEND_OP_ADD;
+                bd.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+                THROW(dev->CreateBlendState(&bd, m_hudBlend.put()), "HUD overlay blend state");
+            }
+            D3D11_TEXTURE2D_DESC od {};
+            m_renderContext.outputTexture->GetDesc(&od);
+            if(!m_hudTex || m_hudW != od.Width || m_hudH != od.Height)
+            {
+                m_hudSrv = nullptr;
+                m_hudRtv = nullptr;
+                m_hudTex = nullptr;
+                D3D11_TEXTURE2D_DESC td {};
+                td.Width            = od.Width;
+                td.Height           = od.Height;
+                td.MipLevels        = 1;
+                td.ArraySize        = 1;
+                td.Format           = m_options.format; // same as the HUD render target of the picture
+                td.SampleDesc.Count = 1;
+                td.Usage            = D3D11_USAGE_DEFAULT;
+                td.BindFlags        = D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE;
+                THROW(dev->CreateTexture2D(&td, nullptr, m_hudTex.put()), "HUD texture");
+                THROW(dev->CreateRenderTargetView(m_hudTex.get(), nullptr, m_hudRtv.put()), "HUD texture target");
+                THROW(dev->CreateShaderResourceView(m_hudTex.get(), nullptr, m_hudSrv.put()), "HUD texture view");
+                m_hudW    = od.Width;
+                m_hudH    = od.Height;
+                m_hudLast = {};
+            }
+        }
+        catch(...)
+        {
+            m_hudFailed = true;
+        }
+    }
+    if(m_hudFailed)
+    {
+        ID3D11RenderTargetView* t = m_uiTargetView.get();
+        ctx->OMSetRenderTargets(1, &t, nullptr);
+        m_ui.Render();
+        return;
+    }
+
+    // 1. the HUD itself, 30 times a second (every frame while a HUD window is dragged, so it follows the mouse smoothly)
+    const auto now = std::chrono::steady_clock::now();
+    if(m_hudLast.time_since_epoch().count() == 0 || m_ui.HudMoving() || now - m_hudLast >= std::chrono::microseconds(33300))
+    {
+        m_hudLast             = now;
+        const float clear[4]  = { 0.0f, 0.0f, 0.0f, 0.0f };
+        ctx->ClearRenderTargetView(m_hudRtv.get(), clear);
+        ID3D11RenderTargetView* t = m_hudRtv.get();
+        ctx->OMSetRenderTargets(1, &t, nullptr);
+        m_ui.Render();
+        ID3D11RenderTargetView* none = nullptr;
+        ctx->OMSetRenderTargets(1, &none, nullptr);
+        RECT r {};
+        m_hudEmpty = !m_ui.HudBounds(r);
+        if(!m_hudEmpty)
+        {
+            // the area of the HUD windows of this redraw (the texture is transparent everywhere else)
+            m_hudArea.left   = std::clamp<LONG>(r.left, 0, (LONG)m_hudW);
+            m_hudArea.top    = std::clamp<LONG>(r.top, 0, (LONG)m_hudH);
+            m_hudArea.right  = std::clamp<LONG>(r.right, 0, (LONG)m_hudW);
+            m_hudArea.bottom = std::clamp<LONG>(r.bottom, 0, (LONG)m_hudH);
+        }
+    }
+    if(m_hudEmpty || m_hudArea.right <= m_hudArea.left || m_hudArea.bottom <= m_hudArea.top)
+        return; // nothing to lay over
+
+    // 2. laid over the picture every frame, only where the HUD windows are (the rest of the texture is transparent)
+    D3D11_VIEWPORT vp = { 0.0f, 0.0f, (float)m_hudW, (float)m_hudH, 0.0f, 1.0f };
+    ctx->RSSetViewports(1, &vp);
+    ctx->RSSetScissorRects(1, &m_hudArea);
+    ctx->RSSetState(m_rasterizerState.get());
+    ctx->IASetInputLayout(nullptr);
+    ctx->IASetPrimitiveTopology(D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    ctx->VSSetShader(m_hudVs.get(), nullptr, 0);
+    ctx->PSSetShader(m_hudPs.get(), nullptr, 0);
+    ID3D11RenderTargetView* t = m_uiTargetView.get();
+    ctx->OMSetRenderTargets(1, &t, nullptr);
+    ctx->OMSetBlendState(m_hudBlend.get(), nullptr, 0xffffffff);
+    ID3D11ShaderResourceView* srv = m_hudSrv.get();
+    ctx->PSSetShaderResources(0, 1, &srv);
+    ctx->Draw(3, 0);
+    ID3D11ShaderResourceView* nullSrv = nullptr;
+    ctx->PSSetShaderResources(0, 1, &nullSrv);
+    ctx->OMSetBlendState(nullptr, nullptr, 0xffffffff);
+    D3D11_RECT full { 0, 0, (LONG)m_hudW, (LONG)m_hudH };
+    ctx->RSSetScissorRects(1, &full); // the on-screen emitter overlay drawn next covers the whole picture
 }
 
 // Windows HDR only: black level / grey level of the captured picture, applied right after the effects, before the charts, the HUD
@@ -489,7 +619,7 @@ bool Renderer::BeamRacePresent()
         YieldProcessor();
     }
     DXGI_PRESENT_PARAMETERS pp {};
-    m_swapChain->Present1(0, DXGI_PRESENT_ALLOW_TEARING, &pp);
+    CheckPresent(m_swapChain->Present1(0, DXGI_PRESENT_ALLOW_TEARING, &pp));
     const bool atEnd = vbl || f >= 1.0 - lead;
     m_brLastF        = atEnd ? 1.0 : f;
     m_brLastVbl      = atEnd;
@@ -501,7 +631,7 @@ bool Renderer::BeamRacePresent()
 void Renderer::Present(bool vsync)
 {
     DXGI_PRESENT_PARAMETERS pp {};
-    if(vsync && m_tearing && m_options.beamRacing && BeamRacePresent())
+    if(vsync && m_tearing && m_options.beamRacing && m_beamOk && BeamRacePresent())
         return;
     if(vsync && m_tearing)
     {
@@ -521,10 +651,18 @@ void Renderer::Present(bool vsync)
                 QueryPerformanceCounter(&t);
             } while((double)(t.QuadPart - t0.QuadPart) * 1000.0 / (double)freq.QuadPart < waitMs);
         }
-        m_swapChain->Present1(0, DXGI_PRESENT_ALLOW_TEARING, &pp);
+        CheckPresent(m_swapChain->Present1(0, DXGI_PRESENT_ALLOW_TEARING, &pp));
         return;
     }
-    m_swapChain->Present1(vsync ? 1 : 0, 0, &pp);
+    CheckPresent(m_swapChain->Present1(vsync ? 1 : 0, 0, &pp));
+}
+
+// The graphics card was lost (driver update or driver crash): every Present fails at once, the render thread would spin at 100 % CPU on a
+// frozen picture. Noted here; the render thread then asks for a restart (new devices) once.
+void Renderer::CheckPresent(HRESULT hr)
+{
+    if(hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG)
+        m_deviceLost = true;
 }
 
 // Auto SubFrames: every second the measured game frame rate gives SubFrames = round(display Hz / fps); Render() applies it live.
@@ -588,7 +726,7 @@ Eye Renderer::StereoImageEye()
 {
     // eye of the content frame about to be shown. Swap Eyes is applied to the emitter only (it reverses emitter vs image).
     const int frameNo = m_renderContext.frameNo;
-    if(m_emitters.Active() && !DesktopEffectsOff())
+    if(m_emitters.Active() && !EffectsHidden())
         return m_emitters.NextEye(frameNo, 0, false);
     return (((frameNo & 1) != 0) != m_options.emitter.swapEyes) ? Eye::Right : Eye::Left;
 }
@@ -1318,6 +1456,20 @@ void Renderer::Destroy()
     m_rasterizerState                = nullptr;
     m_swapChain                      = nullptr;
     m_uiTargetView                   = nullptr;
+    m_hudSrv                         = nullptr;
+    m_hudRtv                         = nullptr;
+    m_hudTex                         = nullptr;
+    m_hudW                           = 0;
+    m_hudH                           = 0;
+    // the HUD shaders and blend state belong to this device: every restart creates a new device, so they are made again with it
+    // (reused across a restart they crashed Nbeam the first time the HUD was shown after a profile switch)
+    m_hudVs                          = nullptr;
+    m_hudPs                          = nullptr;
+    m_hudBlend                       = nullptr;
+    m_hudFailed                      = false;
+    m_hudEmpty                       = false;
+    m_hudArea                        = {};
+    m_hudLast                        = {};
     m_toneCopySrv                    = nullptr;
     m_toneCopy                       = nullptr;
     m_toneCb                         = nullptr;

@@ -191,8 +191,6 @@
     <ClCompile Include="EmitterComPort.cpp" />
     <ClCompile Include="EmitterNvidia.cpp" />
     <ClCompile Include="EmitterUI.cpp" />
-    <ClCompile Include="FrameLimiter.cpp" />
-    <ClCompile Include="NvDriverLimiter.cpp" />
     <ClCompile Include="StereoConvert.cpp" />
     <ClCompile Include="DepthAI.cpp" />
     <ClCompile Include="RenderThread.cpp" />

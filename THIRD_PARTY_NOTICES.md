@@ -34,14 +34,6 @@ Copyright (c) 2018 Danijel Durakovic - https://github.com/metayeti/mINI
 
 License: MIT
 
-## NVAPI headers
-
-Driver frame-rate cap (`ShaderBeam/nvapi/`, loaded dynamically from the NVIDIA driver).
-
-Copyright (c) 2024 NVIDIA CORPORATION & AFFILIATES - https://github.com/NVIDIA/nvapi
-
-License: MIT
-
 ## ONNX Runtime (C API header)
 
 Header `ShaderBeam/ort/onnxruntime_c_api.h`. `onnxruntime.dll` is NOT distributed with Nbeam: users provide their own copy.

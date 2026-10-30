@@ -15,6 +15,121 @@ MIT License
 #include <shellapi.h>
 #include <map>
 #include <shobjidl.h>
+#include <dbghelp.h>
+#include <csignal>
+#include <exception>
+#pragma comment(lib, "dbghelp.lib")
+
+// ---- crash log -----------------------------------------------------------------------------------------------------------------
+// When Nbeam crashes, Nbeam_crash.txt (next to the exe) receives the error and the call stack with function names and source lines
+// (read from Nbeam3DVision.pdb when it is next to the exe or where it was built). It is the only way to find where a crash happens.
+static bool          s_quitting     = false; // WM_DESTROY handled: nothing restarts any more
+static DWORD         s_mainThreadId = 0;
+static volatile LONG s_crashLogged  = 0;
+
+static void WriteCrashStack(FILE* f, CONTEXT ctx)
+{
+    HANDLE proc = GetCurrentProcess(), th = GetCurrentThread();
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
+    SymInitialize(proc, nullptr, TRUE);
+    STACKFRAME64 sf {};
+    sf.AddrPC.Offset    = ctx.Rip;
+    sf.AddrPC.Mode      = AddrModeFlat;
+    sf.AddrFrame.Offset = ctx.Rbp;
+    sf.AddrFrame.Mode   = AddrModeFlat;
+    sf.AddrStack.Offset = ctx.Rsp;
+    sf.AddrStack.Mode   = AddrModeFlat;
+    for(int i = 0; i < 48 && StackWalk64(IMAGE_FILE_MACHINE_AMD64, proc, th, &sf, &ctx, nullptr, SymFunctionTableAccess64, SymGetModuleBase64, nullptr); i++)
+    {
+        const DWORD64 a = sf.AddrPC.Offset;
+        if(!a)
+            break;
+        char    mod[MAX_PATH] = "?";
+        HMODULE hm            = nullptr;
+        if(GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT, (LPCSTR)a, &hm))
+            GetModuleFileNameA(hm, mod, MAX_PATH);
+        const char* modName = strrchr(mod, '\\') ? strrchr(mod, '\\') + 1 : mod;
+        alignas(SYMBOL_INFO) char buf[sizeof(SYMBOL_INFO) + 512] = {};
+        SYMBOL_INFO* sym = (SYMBOL_INFO*)buf;
+        sym->SizeOfStruct = sizeof(SYMBOL_INFO);
+        sym->MaxNameLen   = 511;
+        DWORD64         disp = 0;
+        IMAGEHLP_LINE64 line {};
+        line.SizeOfStruct = sizeof(line);
+        DWORD ld          = 0;
+        if(SymFromAddr(proc, a, &disp, sym))
+        {
+            if(SymGetLineFromAddr64(proc, a, &ld, &line))
+                fprintf(f, "  %s!%s + 0x%llx  (%s:%lu)\n", modName, sym->Name, (unsigned long long)disp, line.FileName, line.LineNumber);
+            else
+                fprintf(f, "  %s!%s + 0x%llx\n", modName, sym->Name, (unsigned long long)disp);
+        }
+        else
+            fprintf(f, "  %s + 0x%llx\n", modName, (unsigned long long)(hm ? a - (DWORD64)hm : a));
+    }
+    SymCleanup(proc);
+}
+
+static FILE* OpenCrashLog(const char* what, unsigned code)
+{
+    if(InterlockedExchange(&s_crashLogged, 1))
+        return nullptr;
+    FILE* f = nullptr;
+    try
+    {
+        _wfopen_s(&f, (::ShaderBeam::Options::ExeDir() / L"Nbeam_crash.txt").wstring().c_str(), L"a");
+    }
+    catch(...)
+    { }
+    if(!f)
+        return nullptr;
+    SYSTEMTIME t;
+    GetLocalTime(&t);
+    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 1.2.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
+            GetCurrentThreadId(), GetCurrentThreadId() == s_mainThreadId ? "main" : "other (render / emitter / AI)");
+    return f;
+}
+
+static LONG WINAPI CrashFilter(EXCEPTION_POINTERS* ep)
+{
+    FILE* f = OpenCrashLog("exception", ep->ExceptionRecord->ExceptionCode);
+    if(f)
+    {
+        if(ep->ExceptionRecord->ExceptionCode == EXCEPTION_ACCESS_VIOLATION && ep->ExceptionRecord->NumberParameters >= 2)
+            fprintf(f, "  %s at address %p\n", ep->ExceptionRecord->ExceptionInformation[0] == 1 ? "write" : (ep->ExceptionRecord->ExceptionInformation[0] == 8 ? "execute" : "read"),
+                    (void*)ep->ExceptionRecord->ExceptionInformation[1]);
+        WriteCrashStack(f, *ep->ContextRecord);
+        fclose(f);
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+static void CrashHere(const char* what)
+{
+    FILE* f = OpenCrashLog(what, 0);
+    if(f)
+    {
+        CONTEXT ctx {};
+        RtlCaptureContext(&ctx);
+        WriteCrashStack(f, ctx);
+        fclose(f);
+    }
+}
+
+static void InstallCrashLog()
+{
+    s_mainThreadId = GetCurrentThreadId();
+    SetUnhandledExceptionFilter(CrashFilter);
+    signal(SIGABRT, [](int) { CrashHere("abort"); });
+    std::set_terminate([]() {
+        CrashHere("terminate (uncaught C++ exception)");
+        std::abort();
+    });
+    _set_purecall_handler([]() {
+        CrashHere("pure virtual call");
+        std::abort();
+    });
+}
 
 ShaderBeam::ShaderBeam s_shaderBeam;
 
@@ -26,6 +141,7 @@ WCHAR     szTitle[MAX_LOADSTRING]; // The title bar text
 WCHAR     szWindowClass[MAX_LOADSTRING]; // the main window class name
 static UINT s_showMsg = 0; // sent by a second launch: show the HUD of the running instance
 static bool s_startHidden = false; // started with /tray (Windows startup)
+static ULONGLONG s_linkReadyAt = 0; // the profile detections start only after this moment (Nbeam fully started first)
 
 // Forward declarations of functions included in this code module:
 ATOM             MyRegisterClass(HINSTANCE hInstance);
@@ -35,6 +151,7 @@ LRESULT CALLBACK WndProc(HWND, UINT, WPARAM, LPARAM);
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
+    InstallCrashLog(); // Nbeam_crash.txt next to the exe if Nbeam crashes
     s_startHidden = lpCmdLine && wcsstr(lpCmdLine, L"/tray") != nullptr;
 
     // a single instance: a second launch asks the first one to show its HUD, then leaves
@@ -222,7 +339,7 @@ static void ProcessFocusPoll(HWND hWnd)
 #define TRAY_CMD_QUIT 2
 #define TRAY_CMD_AUTOSTART 3
 #define TRAY_CMD_STARTMIN 4
-#define TRAY_CMD_DESKTOPOFF 5
+#define TRAY_CMD_EFFECTS 5
 #define TRAY_CMD_PROFILE_BASE 100
 
 static bool          s_trayAdded   = false;
@@ -315,7 +432,6 @@ static void ShowHud(HWND hWnd)
     if(s_shaderBeam.m_options.ui)
         return;
     s_shaderBeam.m_options.ui               = true;
-    s_shaderBeam.m_options.effectsSuspended = true;
     SetClickThrough(hWnd, false);
     BringToFront(hWnd, true);
     SetForegroundWindow(hWnd);
@@ -344,8 +460,8 @@ static void PlaceWindow(HWND hWnd)
     RECT r {};
     if(o.ProcessRect(r))
         SetWindowPos(hWnd, HWND_TOPMOST, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_FRAMECHANGED | SWP_NOACTIVATE);
-    else
-        MoveToDisplay(hWnd, s_shaderBeam.m_ui.m_displays[o.shaderDisplayNo].monitor);
+    else if(o.shaderDisplayNo < s_shaderBeam.m_ui.m_displays.size())
+        MoveToDisplay(hWnd, s_shaderBeam.m_ui.m_displays[o.shaderDisplayNo].monitor); // (no display at all: the start waits for one)
 }
 
 // Output "Process": the output window follows the game window (position at once, size after it stopped changing: the renderer restarts)
@@ -476,6 +592,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
         linkedRunning = linkedRunning || (link.enabled && !link.profile.empty() && ::ShaderBeam::Options::IsExeOnTaskbar(link.exe));
     const bool wantMinimized = s_startHidden || opt.startMinimized;
     s_shaderBeam.Start();
+    SetUnhandledExceptionFilter(CrashFilter); // again: a driver loaded by the start may have replaced it
     ShowWindow(hWnd, nCmdShow);
     UpdateWindow(hWnd);
     if(wantMinimized || linkedRunning)
@@ -499,6 +616,9 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
         s_shaderBeam.m_options.BringToForeground(hWnd);
     }
     s_shaderBeam.m_options.RefreshMonitors(false); // connected screens (names, refresh rates) for the profile detections
+    // A program of a detection already running: Nbeam first starts completely on the default (or last) profile (capture, 3D, AI model loaded),
+    // then the detection switches 2.5 s later. Switching while the first start was still going on could hang or crash Nbeam.
+    s_linkReadyAt = GetTickCount64() + (linkedRunning ? 2500 : 500);
     SetTimer(hWnd, 1, 1000, NULL);
     SetTimer(hWnd, 2, 15, NULL); // hotkey fallback (see HotkeyPoll)
     s_appReady = true;
@@ -584,6 +704,7 @@ static void AdjustApply(int kind, int dir, int step)
         break;
     }
     }
+    s_shaderBeam.m_ui.RequestSave(); // the adjusted value is saved into the active profile
     if(kind >= 2)
         s_shaderBeam.m_ui.ShowAdjustBanner(kind); // 3D timings only: values on screen for 3 more seconds
 }
@@ -816,6 +937,9 @@ static void DisplayChangePoll(HWND hWnd)
         return;
     s_displayChangeAt = 0;
     s_refreshDisplays = true;
+    // a screen was connected / disconnected or changed mode: Nbeam restarts minimized (the HUD does not open on the new layout)
+    ReduceHud(hWnd);
+    s_quietUntil = GetTickCount64() + 3000;
     PostMessage(hWnd, WM_USER_RESTART, 0, 0);
 }
 
@@ -829,8 +953,16 @@ static void ProfileLinkPoll(HWND hWnd)
     static ULONGLONG   candidateSince = 0;
     static std::string previous;
     static int         prevShaderNo = 0, prevCaptureNo = 0;
-    if(!s_appReady)
+    if(!s_appReady || GetTickCount64() < s_linkReadyAt)
         return;
+    // a copy of the detections, taken under the lock: the HUD (render thread) may add or remove some at the same time
+    std::vector<::ShaderBeam::Options::ProfileLink> links;
+    std::string                                     defProfile;
+    {
+        std::lock_guard<std::recursive_mutex> linksLock(o.linksMutex);
+        links      = o.profileLinks;
+        defProfile = o.defaultProfile;
+    }
     // Detections of the same program (up to 3, each for a different screen): the profile of the Windows main display wins, then the
     // profile of another connected screen; if none of its screens is connected the first one is used.
     int match = -1;
@@ -840,9 +972,9 @@ static void ProfileLinkPoll(HWND hWnd)
         int                   inGroup = 0, bestScore = -1;
         std::map<std::string, bool> running;
         std::map<std::string, std::string> winScreen; // screen where each running program has its window
-        for(size_t i = 0; i < o.profileLinks.size(); i++)
+        for(size_t i = 0; i < links.size(); i++)
         {
-            const auto& l = o.profileLinks[i];
+            const auto& l = links[i];
             if(!l.enabled || l.profile.empty())
                 continue;
             const std::string key = ::ShaderBeam::Options::NormalizeExeName(l.exe);
@@ -856,7 +988,7 @@ static void ProfileLinkPoll(HWND hWnd)
             if(winScreen.find(key) == winScreen.end())
             {
                 int same = 0; // the screen of the window only matters when the program has several detections
-                for(const auto& other : o.profileLinks)
+                for(const auto& other : links)
                     if(other.enabled && ::ShaderBeam::Options::NormalizeExeName(other.exe) == key)
                         same++;
                 winScreen[key] = same > 1 ? o.ScreenIdOfExeWindow(l.exe) : std::string();
@@ -892,9 +1024,9 @@ static void ProfileLinkPoll(HWND hWnd)
             candidateSince = GetTickCount64();
             return;
         }
-        if(GetTickCount64() - candidateSince < (ULONGLONG)o.profileLinks[match].delay * 1000ULL)
+        if(GetTickCount64() - candidateSince < (ULONGLONG)links[match].delay * 1000ULL)
             return; // activation delay of the link
-        const std::string target = o.profileLinks[match].profile;
+        const std::string target = links[match].profile;
         if(!std::filesystem::exists(::ShaderBeam::Options::ProfilesDir() / target))
             return;
         if(active < 0)
@@ -905,7 +1037,7 @@ static void ProfileLinkPoll(HWND hWnd)
         }
         {
             // the screen of this detection (when it is connected); the output and the capture of the profile follow it
-            const auto& sid = o.profileLinks[match].screenId;
+            const auto& sid = links[match].screenId;
             const int   dn  = sid.empty() ? -1 : o.DisplayNoForScreen(sid, s_shaderBeam.m_ui.m_displays);
             o.linkShaderDisplayNo  = dn;
             o.linkCaptureDisplayNo = dn;
@@ -917,7 +1049,7 @@ static void ProfileLinkPoll(HWND hWnd)
         s_quietUntil = GetTickCount64() + 3000;
         s_linkActive = true;
         // the linked program is the captured process (its window, and the output over it with the "Process" output)
-        o.captureProcess = ::ShaderBeam::Options::NormalizeExeName(o.profileLinks[match].exe);
+        o.captureProcess = ::ShaderBeam::Options::NormalizeExeName(links[match].exe);
         o.captureTitle.clear();
         s_focusFallback = false;
         o.captureWindow = o.captureProcess.empty() ? NULL : o.FindCaptureWindow();
@@ -927,9 +1059,9 @@ static void ProfileLinkPoll(HWND hWnd)
         {
             // refresh rates of the detections of this program (one per screen): every screen changes; 3D only starts after the change
             s_hzTargets.clear();
-            const std::string key = ::ShaderBeam::Options::NormalizeExeName(o.profileLinks[match].exe);
+            const std::string key = ::ShaderBeam::Options::NormalizeExeName(links[match].exe);
             int               n   = 0;
-            for(const auto& l : o.profileLinks)
+            for(const auto& l : links)
                 if(l.enabled && l.hz > 0 && !l.screenId.empty() && ::ShaderBeam::Options::NormalizeExeName(l.exe) == key && ++n <= ::ShaderBeam::Options::MAX_LINKS_PER_EXE)
                     s_hzTargets.push_back({ l.screenId, l.hz });
             bool stereo = false;
@@ -952,11 +1084,12 @@ static void ProfileLinkPoll(HWND hWnd)
         {
             active       = -1;
             s_linkActive = false;
-            std::string back = o.profileFile; // the profile that comes back
-            if(!previous.empty() && previous != o.profileFile && std::filesystem::exists(::ShaderBeam::Options::ProfilesDir() / previous))
+            std::string back = o.profileFile; // the profile that comes back: the default profile if one is set, otherwise the previous one
+            const std::string want = !defProfile.empty() && std::filesystem::exists(::ShaderBeam::Options::ProfilesDir() / defProfile) ? defProfile : previous;
+            if(!want.empty() && _stricmp(want.c_str(), o.profileFile.c_str()) != 0 && std::filesystem::exists(::ShaderBeam::Options::ProfilesDir() / want))
             {
-                o.pendingProfile = previous;
-                back             = previous;
+                o.pendingProfile = want;
+                back             = want;
             }
             previous.clear();
             o.linkShaderDisplayNo  = prevShaderNo; // back to the screen used before the detection
@@ -996,7 +1129,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             HMENU       menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING | (o.startWithWindows ? MF_CHECKED : 0), TRAY_CMD_AUTOSTART, WideOf(::ShaderBeam::Tr("Start with Windows")).c_str());
             AppendMenuW(menu, MF_STRING | (o.startMinimized ? MF_CHECKED : 0), TRAY_CMD_STARTMIN, WideOf(::ShaderBeam::Tr("Start minimized")).c_str());
-            AppendMenuW(menu, MF_STRING | (o.desktopEffectsOff ? MF_CHECKED : 0), TRAY_CMD_DESKTOPOFF, WideOf(::ShaderBeam::Tr("Effects always disabled (desktop capture)")).c_str());
+            AppendMenuW(menu, MF_STRING, TRAY_CMD_EFFECTS, WideOf(::ShaderBeam::Tr(o.effectsSuspended ? "Show effects" : "Hide effects")).c_str());
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             // "Settings profile": the available profiles (the submenu opens when the mouse rests on it)
             const auto profiles = ::ShaderBeam::Options::ListProfiles();
@@ -1027,11 +1160,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 o.startMinimized = !o.startMinimized;
                 o.SaveApp();
             }
-            else if(cmd == TRAY_CMD_DESKTOPOFF)
-            {
-                o.desktopEffectsOff = !o.desktopEffectsOff;
-                o.SaveApp();
-            }
+            else if(cmd == TRAY_CMD_EFFECTS)
+                o.effectsSuspended = !o.effectsSuspended; // same as the HUD button Show / Hide
             else if(cmd >= TRAY_CMD_PROFILE_BASE && (size_t)(cmd - TRAY_CMD_PROFILE_BASE) < profiles.size())
             {
                 const std::string& name = profiles[cmd - TRAY_CMD_PROFILE_BASE];
@@ -1088,6 +1218,17 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         return DefWindowProc(hWnd, message, wParam, lParam);
     case WM_TIMER: {
+        if(wParam == TIMER_RETRY_START)
+        {
+            // the start failed (no display, graphics card or Windows error): try again
+            KillTimer(hWnd, TIMER_RETRY_START);
+            if(!s_quitting)
+            {
+                s_refreshDisplays = true; // the display list is read again
+                PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+            }
+            break;
+        }
         if(wParam == 2)
         {
             if(s_appReady && s_tbShown != (!s_shaderBeam.m_options.minimizeToTray || s_shaderBeam.m_options.ui))
@@ -1114,6 +1255,10 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if(s_shaderBeam.m_options.ui && (GetAsyncKeyState(VK_LBUTTON) & 0x8000))
             break; // HUD being dragged: the slow checks of this second wait
         UpdateTrayIcon(hWnd);
+        // settings changed in the HUD or by a hotkey: saved at once into the active profile (the profile of the detected program
+        // while it runs), so nothing is lost if Nbeam is closed or stops unexpectedly
+        if(s_shaderBeam.m_active && s_shaderBeam.m_ui.TakeSaveRequest())
+            s_shaderBeam.m_options.Save(s_shaderBeam.Shaders());
         RefreshRatePoll(hWnd);
         DisplayChangePoll(hWnd);
         s_shaderBeam.m_ui.UpdateCaptureTone(true);
@@ -1123,6 +1268,9 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         break;
     }
     case WM_USER_RESTART: {
+        if(s_quitting)
+            break; // a restart still queued while Nbeam closes: ignored
+        KillTimer(hWnd, TIMER_RETRY_START);
         s_shaderBeam.Stop();
         if(s_refreshDisplays)
         {
@@ -1163,9 +1311,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             break;
         case HOTKEY_SWAPEYES:
             s_shaderBeam.m_options.emitter.swapEyes = !s_shaderBeam.m_options.emitter.swapEyes;
+            s_shaderBeam.m_ui.RequestSave();
             break;
         case HOTKEY_DETECTION: {
             // one hotkey for every detection: if one is checked they are all unchecked, otherwise all checked
+            std::lock_guard<std::recursive_mutex> linksLock(s_shaderBeam.m_options.linksMutex);
             auto& o   = s_shaderBeam.m_options;
             bool  any = false;
             for(const auto& l : o.profileLinks)
@@ -1178,6 +1328,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         case HOTKEY_ADDEXE: {
             // the program in the foreground (not Nbeam, not the Windows shell) is added to the profile detections
             auto& o   = s_shaderBeam.m_options;
+            std::lock_guard<std::recursive_mutex> linksLock(o.linksMutex);
             HWND  fg  = GetForegroundWindow();
             DWORD pid = 0;
             if(fg)
@@ -1221,15 +1372,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             }
             break;
         }
-        case HOTKEY_DESKTOPOFF:
-            s_shaderBeam.m_options.desktopEffectsOff = !s_shaderBeam.m_options.desktopEffectsOff;
-            s_shaderBeam.m_options.SaveApp();
+        case HOTKEY_EFFECTS:
+            // same as the HUD button Show / Hide: all effects and the 3D emitter off / on
+            s_shaderBeam.m_options.effectsSuspended = !s_shaderBeam.m_options.effectsSuspended;
+            s_shaderBeam.m_ui.ShowNote(::ShaderBeam::Tr(s_shaderBeam.m_options.effectsSuspended ? "Effects hidden" : "Effects shown"));
             break;
         case HOTKEY_TOGGLEUI:
             if(s_shaderBeam.m_ui.Toggle())
             {
-                // UI visible: the effects are suspended (the HUD button can turn them back on)
-                s_shaderBeam.m_options.effectsSuspended = true;
+                // UI visible: the effects keep their state (HUD button Show / Hide)
                 LeaveTray(hWnd);
                 SetClickThrough(hWnd, false);
                 BringToFront(hWnd, true);
@@ -1256,6 +1407,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         ValidateRect(hWnd, NULL);
         return 0;
     case WM_DESTROY:
+        // Quit can arrive twice (double click, hotkey + menu): the second one would stop everything again and crash on the way out
+        if(s_quitting)
+            break;
+        s_quitting = true;
+        KillTimer(hWnd, TIMER_RETRY_START);
         RestoreRefreshRateNow();
         RemoveTrayIcon(hWnd);
         s_shaderBeam.Stop();

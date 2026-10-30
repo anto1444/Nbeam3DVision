@@ -8,6 +8,8 @@ MIT License
 #pragma once
 
 #include <d3dcompiler.h>
+#include <avrt.h>
+#pragma comment(lib, "avrt.lib")
 
 #define THROW(hr, msg) Helpers::Throw(hr, msg)
 
@@ -36,5 +38,29 @@ public:
 private:
     static HRESULT CreateD3DDevice(D3D_DRIVER_TYPE const type, winrt::com_ptr<ID3D11Device>& device);
     static HRESULT CreateD3DDevice(IDXGIAdapter* adapter, D3D_DRIVER_TYPE const type, winrt::com_ptr<ID3D11Device>& device);
+};
+
+// The calling thread joins the Windows multimedia scheduler (MMCSS, "Games" task, high priority) for its lifetime: it keeps getting
+// CPU time when a game takes every core (shader compilation, loading screens). Nothing happens if the service is not available.
+class MmcssGames
+{
+public:
+    MmcssGames()
+    {
+        DWORD index = 0;
+        m_handle    = AvSetMmThreadCharacteristicsW(L"Games", &index);
+        if(m_handle)
+            AvSetMmThreadPriority(m_handle, AVRT_PRIORITY_HIGH);
+    }
+    ~MmcssGames()
+    {
+        if(m_handle)
+            AvRevertMmThreadCharacteristics(m_handle);
+    }
+    MmcssGames(const MmcssGames&)            = delete;
+    MmcssGames& operator=(const MmcssGames&) = delete;
+
+private:
+    HANDLE m_handle { nullptr };
 };
 } // namespace ShaderBeam

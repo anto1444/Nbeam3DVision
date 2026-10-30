@@ -59,8 +59,19 @@ void RenderThread::PollCapture()
 
 void RenderThread::Run()
 {
+    MmcssGames mmcss; // keeps its CPU time while the game loads / compiles shaders
+    bool restartAsked = false;
     while(!m_stop && !m_stopped)
     {
+        if(m_renderer.DeviceLost())
+        {
+            // graphics card lost: a restart (new devices) is asked once, then the thread waits for it without using the CPU
+            if(!restartAsked)
+                PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
+            restartAsked = true;
+            Sleep(50);
+            continue;
+        }
         try
         {
             if(m_benchmark)

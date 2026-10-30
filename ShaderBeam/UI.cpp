@@ -120,7 +120,7 @@ static bool WindowsHdrOn(HWND hWnd)
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
-                               "              Version 1.1.0\n"
+                               "              Version 1.2.0\n"
                                "         Made by anto1444, 2026\n"
                                "\n"
                                "   Based on ShaderBeam (c) 2025-2026 mausimus\n"
@@ -131,7 +131,7 @@ const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
                                "        Timothy Lottes @NOTimothyLottes\n"
                                "          https://blurbusters.com/crt\n\n";
 const char* SHADERBEAM_ABOUT_FR = "             " SHADERBEAM_TITLE "\n"
-                                  "              Version 1.1.0\n"
+                                  "              Version 1.2.0\n"
                                   "         Fait par anto1444, 2026\n"
                                   "\n"
                                   "   Basé sur ShaderBeam (c) 2025-2026 mausimus\n"
@@ -148,6 +148,24 @@ static int         s_captureId = -1;
 static int         s_padCaptureId = -1; // action whose gamepad combination is being captured
 static bool        s_padArmed     = false; // all buttons released once since the capture started
 static unsigned    s_padMax       = 0;     // buttons held during the capture
+
+static int s_hotkeysDrawnFrame = -1; // last HUD frame in which the Hotkeys section was drawn
+
+static void CancelCaptureNow(ShaderBeam::Options& o)
+{
+    if(s_captureId < 0 && s_padCaptureId < 0 && !o.hotkeysSuspended)
+        return;
+    s_captureId        = -1;
+    s_padCaptureId     = -1;
+    s_padMax           = 0;
+    s_padArmed         = false;
+    o.hotkeysSuspended = false;
+    for(int id = 0; id < HOTKEY_COUNT; id++)
+        o.UnregisterHotkey(id);
+    for(int id = 0; id < HOTKEY_COUNT; id++)
+        o.RegisterHotkey(id);
+}
+
 // gamepad focus between the category rail and the settings pane (D-pad left / right)
 static ImGuiWindow* s_railWin       = nullptr;
 static ImGuiWindow* s_paneWin       = nullptr;
@@ -334,6 +352,9 @@ void UI::Start(HWND window, float scale, winrt::com_ptr<ID3D11Device> device, wi
 
 bool UI::MouseRequired()
 {
+    std::unique_lock<std::timed_mutex> lock(m_imguiMutex, std::defer_lock);
+    if(!lock.try_lock_for(std::chrono::milliseconds(50)))
+        return false;
     return m_ready && m_options.ui && ImGui::GetIO().WantCaptureMouse;
 }
 
@@ -341,6 +362,10 @@ bool UI::Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     try
     {
+        // the render thread may be drawing the HUD right now: wait for it (a little, never forever)
+        std::unique_lock<std::timed_mutex> lock(m_imguiMutex, std::defer_lock);
+        if(!lock.try_lock_for(std::chrono::milliseconds(50)))
+            return false;
         return m_ready && m_options.ui && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
     }
     catch(...)
@@ -510,7 +535,7 @@ void UI::RenderHudHeader(float height)
     if(m_logo)
         dl->AddImage(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(logoX, p0.y + (height - logoSz) * 0.5f), ImVec2(logoX + logoSz, p0.y + (height + logoSz) * 0.5f));
     dl->AddText(font, titleSz, ImVec2(titleX, p0.y + height * 0.5f - titleSz * 0.95f), cOnAcc, title);
-    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v1.1.0");
+    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v1.2.0");
 
     // output mode (like "3440 x 1440 | 240Hz")
     char mode[64];
@@ -603,6 +628,7 @@ void UI::RenderHudHeader(float height)
 
 void UI::Render()
 {
+    std::lock_guard<std::timed_mutex> imguiLock(m_imguiMutex); // the main thread feeds ImGui with the mouse / keyboard
     ImGui_ImplDX11_NewFrame();
     {
         // Gamepad navigation (D-pad / stick: move, A: activate, B: back, LB / RB: slow / fast on sliders), only while the HUD is open
@@ -1086,7 +1112,7 @@ void UI::Render()
                     }
                     ImGui::EndCombo();
                 }
-                ShowHelpMarker(Tr("Display captured when no linked program is running.\nWindows Graphics Capture preferred for Desktop."));
+                ShowHelpMarker(Tr("Display captured when no linked program is running."));
             }
 
             {
@@ -1239,11 +1265,13 @@ void UI::Render()
                     ImGui::PopStyleColor();
                 }
                 ImGui::Checkbox(Tr("Beam racing"), &m_options.beamRacing);
-                ShowHelpMarker(Tr("Beam racing: the tear is placed where the effect hides it, by reading the real position of the screen scanout. BFI, 3D and plain picture: the flip is sent just before the vertical blank (no visible tear, a little more latency than plain tearing). CRT Beam Simulator (top-to-bottom or bottom-to-top scan): the flip may also land above the lit bands, for a lower latency. Uses one processor core while waiting. Needs a display whose scanout position can be read; Nbeam's window must be shown directly (nothing over it)."));
+                ShowHelpMarker(Tr("Beam racing: the tear is placed where the effect hides it, by reading the real position of the screen scanout. BFI and plain picture: the flip is sent just before the vertical blank (no visible tear, a little more latency than plain tearing). Not used in 3D (the glasses keep the classic timing). CRT Beam Simulator (top-to-bottom or bottom-to-top scan): the flip may also land above the lit bands, for a lower latency. Uses one processor core while waiting. Needs a display whose scanout position can be read; Nbeam's window must be shown directly (nothing over it)."));
                 if(m_options.beamRacing)
                 {
                     ImGui::SliderInt(Tr("Tearing lead"), &m_options.beamLead, 0, 20, "%d %%");
                     ShowHelpMarker(Tr("How early the flip is sent, in % of a refresh, to make up for the time it takes to reach the screen. If a tear shows at the top of the picture, increase it; if the latency matters more, lower it."));
+                    if(m_options.beamRacingState == 2)
+                        ImGui::TextDisabled("%s", Tr("Not used in 3D: classic timing."));
                     if(m_options.beamRacingState < 0)
                         ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), "%s", Tr("The scanout position cannot be read on this display: normal tearing is used."));
                 }
@@ -1308,6 +1336,17 @@ void UI::Render()
                 }
                 ShowHelpMarker(Tr("Choose one of the .ini files of the Profils folder (next to the exe).\nThe current settings are saved into the active profile first, then the chosen profile is loaded (the renderer restarts)."));
                 ImGui::SameLine();
+                {
+                    bool isDefault = !m_options.defaultProfile.empty() && _stricmp(m_options.defaultProfile.c_str(), m_options.profileFile.c_str()) == 0;
+                    if(ImGui::Checkbox(Tr("Default profile"), &isDefault))
+                    {
+                        std::lock_guard<std::recursive_mutex> linksLock(m_options.linksMutex); // SaveApp (main thread too) reads it
+                        m_options.defaultProfile = isDefault ? m_options.profileFile : std::string();
+                        m_options.SaveApp();
+                    }
+                    ShowHelpMarker(Tr("The active profile becomes the default profile: it always comes back when a detected program is no longer running. Only one profile can be the default one.\nThe effects hidden with Show / Hide stay hidden in the default profile; any other profile shows them again when it is loaded."));
+                }
+                ImGui::SameLine();
                 if(ImGui::Button(Tr("Refresh")))
                     s_profilesDirty = true;
                 ImGui::SameLine();
@@ -1329,7 +1368,7 @@ void UI::Render()
                     dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.95f), ImVec2(c.x - u * 0.1f, c.y - u * 0.4f), fb, u * 0.12f);
                     dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.55f), ImVec2(c.x + u * 1.25f, c.y + u * 0.95f), fc, u * 0.12f);
                 }
-                ImGui::InputText(Tr("New profile name"), s_newProfile, sizeof(s_newProfile));
+                ImGui::InputText(Tr("Create a profile"), s_newProfile, sizeof(s_newProfile));
                 ImGui::SameLine();
                 if(ImGui::Button(Tr("Save as")) && s_newProfile[0])
                 {
@@ -1355,7 +1394,9 @@ void UI::Render()
 
             SectionHeader(Tr("Profile detection"));
             {
-                ShowHelpMarker(Tr("When a program is detected running, its profile is loaded. When the program closes, the previous profile comes back.\nEnter the full path of the .exe or just its file name (e.g. game.exe), or press the \"Add the foreground program\" hotkey while the program is in front.\nEach program can have up to 3 profiles, each for a different screen: the profile of the Windows main screen is used first, then the one of another connected screen. The output goes to the screen of the profile."));
+                // the detections are also read by the main thread (ProfileLinkPoll): no change of the list while it reads it
+                std::lock_guard<std::recursive_mutex> linksLock(m_options.linksMutex);
+                ShowHelpMarker(Tr("When a program is detected running, its profile is loaded. When the program closes, the default profile comes back (or the previous one if no profile is set as default).\nEnter the full path of the .exe or just its file name (e.g. game.exe), or press the \"Add the program to the profiles\" hotkey while the program is in front.\nEach program can have up to 3 profiles, each for a different screen: the profile of the Windows main screen is used first, then the one of another connected screen. The output goes to the screen of the profile."));
                 if(s_profilesDirty)
                 {
                     s_profiles      = Options::ListProfiles();
@@ -1417,6 +1458,181 @@ void UI::Render()
                             save          = true;
                         }
                     }
+                }
+                // "Global settings": one line that sets a value for every detection at once (each detection can still be changed alone afterwards).
+                // A control shows the shared value, or "(mixed)" when the detections differ.
+                if(!m_options.profileLinks.empty())
+                {
+                    auto& links = m_options.profileLinks;
+                    ImGui::PushID("global");
+                    bool allOn = true;
+                    for(const auto& l : links)
+                        allOn = allOn && l.enabled;
+                    if(ImGui::Checkbox("##gon", &allOn))
+                    {
+                        for(auto& l : links)
+                            l.enabled = allOn;
+                        save = true;
+                    }
+                    if(ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", Tr("Checks / unchecks every detection."));
+                    ImGui::SameLine();
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextUnformatted(Tr("Global settings"));
+                    ShowHelpMarker(Tr("Sets a value for every program at once: checking the box checks every detection, the delay applies to every program, and for each connected screen (1, 2, 3) the profile and the refresh rate chosen here are given to every program on that screen (a program without a detection for that screen gets one). Each program can still be changed on its own line afterwards. \"(mixed)\" = the programs have different values."));
+                    ImGui::SameLine();
+                    {
+                        bool sameDelay = true;
+                        for(const auto& l : links)
+                            sameDelay = sameDelay && l.delay == links[0].delay;
+                        int gdelay = links[0].delay;
+                        ImGui::SetNextItemWidth(m_fontSize * 4.0f);
+                        if(ImGui::DragInt("##gdelay", &gdelay, 0.2f, 0, 600, sameDelay ? "%d s" : Tr("(mixed)")))
+                            for(auto& l : links)
+                                l.delay = std::clamp(gdelay, 0, 600);
+                        if(ImGui::IsItemDeactivatedAfterEdit())
+                            save = true;
+                        if(ImGui::IsItemHovered())
+                            ImGui::SetTooltip("%s", Tr("Activation delay of every program."));
+                    }
+                    // one line per connected screen (Windows order, at most 3): profile and refresh rate for every program on that screen
+                    {
+                        // the programs (one head link per .exe)
+                        std::vector<size_t> heads;
+                        for(size_t k = 0; k < links.size(); k++)
+                        {
+                            bool first = true;
+                            for(size_t h : heads)
+                                if(exeKey(links[h].exe) == exeKey(links[k].exe))
+                                    first = false;
+                            if(first && !exeKey(links[k].exe).empty())
+                                heads.push_back(k);
+                        }
+                        auto linkOn = [&](size_t head, const std::string& sid) -> int {
+                            for(size_t k = 0; k < links.size(); k++)
+                                if(links[k].screenId == sid && exeKey(links[k].exe) == exeKey(links[head].exe))
+                                    return (int)k;
+                            return -1;
+                        };
+                        auto countOf = [&](size_t head) {
+                            int n = 0;
+                            for(const auto& l : links)
+                                if(exeKey(l.exe) == exeKey(links[head].exe))
+                                    n++;
+                            return n;
+                        };
+                        const int nScreens = (int)(std::min)(m_displays.size(), (size_t)Options::MAX_LINKS_PER_EXE);
+                        for(int d = 0; d < nScreens; d++)
+                        {
+                            const std::string sid = m_options.ScreenIdOfDisplay((unsigned)d, m_displays);
+                            if(sid.empty())
+                                continue;
+                            const Options::KnownMonitor* mon = nullptr;
+                            for(const auto& m : mons)
+                                if(m.id == sid)
+                                    mon = &m;
+                            ImGui::PushID(d);
+                            ImGui::AlignTextToFramePadding();
+                            ImGui::Text("%s %d", Tr("Screen"), d + 1);
+                            if(ImGui::IsItemHovered() && mon)
+                                ImGui::SetTooltip("%s", monLabel(*mon).c_str());
+                            ImGui::SameLine(m_fontSize * 5.0f);
+                            // profile of every program on this screen
+                            std::string shared;
+                            bool        same = true, firstSeen = true;
+                            for(size_t h : heads)
+                            {
+                                const int k = linkOn(h, sid);
+                                const std::string p = k >= 0 ? links[k].profile : std::string();
+                                if(firstSeen)
+                                    shared = p, firstSeen = false;
+                                else if(p != shared)
+                                    same = false;
+                            }
+                            ImGui::SetNextItemWidth(m_fontSize * 7.5f);
+                            if(ImGui::BeginCombo("##gsprofile", !same ? Tr("(mixed)") : (shared.empty() ? Tr("(no profile)") : shared.c_str()), 0))
+                            {
+                                auto apply = [&](const std::string& name) {
+                                    std::vector<Options::ProfileLink> added;
+                                    for(size_t h : heads)
+                                    {
+                                        const int k = linkOn(h, sid);
+                                        if(k >= 0)
+                                            links[k].profile = name;
+                                        else if(!name.empty() && countOf(h) < Options::MAX_LINKS_PER_EXE)
+                                        {
+                                            Options::ProfileLink nl = links[h]; // same program, delay and check box
+                                            nl.profile              = name;
+                                            nl.screenId             = sid;
+                                            nl.hz                   = 0;
+                                            added.push_back(nl);
+                                        }
+                                    }
+                                    for(const auto& nl : added)
+                                        if(links.size() < 64)
+                                            links.push_back(nl);
+                                    save = true;
+                                };
+                                if(ImGui::Selectable(Tr("(no profile)"), same && shared.empty()))
+                                    apply(std::string());
+                                for(const auto& name : s_profiles)
+                                    if(ImGui::Selectable(name.c_str(), same && name == shared))
+                                        apply(name);
+                                ImGui::EndCombo();
+                            }
+                            if(ImGui::IsItemHovered())
+                                ImGui::SetTooltip("%s", Tr("Profile loaded for every program when it runs on this screen."));
+                            ImGui::SameLine();
+                            // refresh rate of this screen for every program
+                            {
+                                int  hzShared = 0;
+                                bool hzSame = true, hzFirst = true;
+                                for(size_t h : heads)
+                                {
+                                    const int k = linkOn(h, sid);
+                                    if(k < 0)
+                                        continue;
+                                    if(hzFirst)
+                                        hzShared = links[k].hz, hzFirst = false;
+                                    else if(links[k].hz != hzShared)
+                                        hzSame = false;
+                                }
+                                char curHz[32];
+                                if(!hzSame)
+                                    snprintf(curHz, sizeof(curHz), "%s", Tr("(mixed)"));
+                                else if(hzShared > 0)
+                                    snprintf(curHz, sizeof(curHz), "%d Hz", hzShared);
+                                else
+                                    snprintf(curHz, sizeof(curHz), "%s", Tr("Current Hz"));
+                                ImGui::SetNextItemWidth(m_fontSize * 4.6f);
+                                if(ImGui::BeginCombo("##gshz", curHz, 0))
+                                {
+                                    auto applyHz = [&](int hz) {
+                                        for(auto& l : links)
+                                            if(l.screenId == sid)
+                                                l.hz = hz;
+                                        save = true;
+                                    };
+                                    if(ImGui::Selectable(Tr("Current Hz"), hzSame && hzShared == 0))
+                                        applyHz(0);
+                                    if(mon)
+                                        for(int hz : mon->rates)
+                                        {
+                                            char t[32];
+                                            snprintf(t, sizeof(t), "%d Hz", hz);
+                                            if(ImGui::Selectable(t, hzSame && hz == hzShared))
+                                                applyHz(hz);
+                                        }
+                                    ImGui::EndCombo();
+                                }
+                                if(ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("%s", Tr("Windows refresh rate of this screen while any of the programs runs."));
+                            }
+                            ImGui::PopID();
+                        }
+                    }
+                    ImGui::PopID();
+                    ImGui::Separator();
                 }
                 // one line per program: its exe, then one (profile, screen) pair per screen on the same line (the pairs that do not fit
                 // continue on the next line, under the exe)
@@ -1780,7 +1996,7 @@ void UI::Render()
             ImGui::PopStyleVar();
             {
                 const ImGuiStyle& st        = ImGui::GetStyle();
-                const char*       labels[4] = { Tr("About"), Tr("Benchmark"), m_options.effectsSuspended ? Tr("Compare") : Tr("Suspend"), Tr("Restart") };
+                const char*       labels[4] = { Tr("About"), Tr("Benchmark"), m_options.effectsSuspended ? Tr("Show") : Tr("Hide"), Tr("Restart") };
                 const float       btnH      = ImGui::GetFontSize() + st.FramePadding.y * 2;
                 const float       y         = (footerH - btnH) * 0.5f;
                 {
@@ -1836,9 +2052,9 @@ void UI::Render()
                     PostMessage(m_options.outputWindow, WM_USER_BENCHMARK, 0, 0);
                 ImGui::SameLine();
                 if(ImGui::Button(labels[2]))
-                    m_options.effectsSuspended = !m_options.effectsSuspended; // effects off while the HUD is visible (see Renderer::Bypassing)
+                    m_options.effectsSuspended = !m_options.effectsSuspended; // all effects and the emitter off / on (see Renderer::EffectsOff, EffectsHidden)
                 if(ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", Tr("The effects are suspended while the HUD is visible (the image is shown as it is). Compare turns them on to compare; hiding the HUD always turns them on."));
+                    ImGui::SetTooltip("%s", Tr("Hide: turns off all the effects and the 3D emitter (the picture is shown as it is). They stay off, even when the HUD is closed, until Show is pressed."));
                 ImGui::SameLine();
                 if(ImGui::Button(labels[3]))
                     PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
@@ -1927,6 +2143,18 @@ void UI::Render()
     {
         RenderBanner();
     }
+    // a shortcut capture started in the Hotkeys section, then another tab was opened: cancelled (the hotkeys work again)
+    if((s_captureId >= 0 || s_padCaptureId >= 0) && s_hotkeysDrawnFrame != ImGui::GetFrameCount())
+        CancelCaptureNow(m_options);
+    {
+        // a control was released after a change (slider, checkbox, list...): the active profile is saved (by the main thread)
+        // (any control: the +/- step buttons of the sliders change a value without marking it as edited, so every release counts)
+        static ImGuiID s_prevActive = 0;
+        ImGuiContext&  g            = *ImGui::GetCurrentContext();
+        if(s_prevActive != 0 && g.ActiveId != s_prevActive)
+            RequestSave();
+        s_prevActive = g.ActiveId;
+    }
     ImGui::Render();
     // HDR output: the HUD stays an SDR image (sRGB colors converted to scRGB at the HUD brightness chosen in Appearance)
     // Windows HDR on: scRGB, 1.0 = 80 nits. Windows HDR off: the HUD is dimmed relative to full brightness (sdrBrightness / 100).
@@ -1959,7 +2187,17 @@ void UI::Stop()
 bool UI::Toggle()
 {
     m_options.ui = !m_options.ui;
+    if(!m_options.ui)
+        CancelHotkeyCapture(); // a shortcut capture left open would keep every hotkey off (even the one that shows the HUD)
     return m_options.ui;
+}
+
+void UI::CancelHotkeyCapture()
+{
+    std::unique_lock<std::timed_mutex> lock(m_imguiMutex, std::defer_lock);
+    if(!lock.try_lock_for(std::chrono::milliseconds(200)))
+        return;
+    CancelCaptureNow(m_options);
 }
 
 void UI::SetStyle(ImGuiStyle& style)
@@ -2036,6 +2274,40 @@ void UI::SetStyle(ImGuiStyle& style)
         }
 }
 
+// the HUD is being dragged with the mouse: the renderer redraws it at the full rate meanwhile (30 times a second otherwise)
+bool UI::HudMoving() const
+{
+    ImGuiContext* g = ImGui::GetCurrentContext();
+    return m_ready && g && g->MovingWindow != nullptr;
+}
+
+// union of the HUD windows (and popups, tooltips) of the last frame: the renderer lays the HUD texture over this area only
+bool UI::HudBounds(RECT& r) const
+{
+    // bounds of everything ImGui drew in the last frame: the HUD windows, and also the banner / notes, which are drawn without a
+    // window (foreground draw list) and were left out before (the banner was never laid over the picture)
+    if(!m_ready || !ImGui::GetCurrentContext())
+        return false;
+    const ImDrawData* dd = ImGui::GetDrawData();
+    if(!dd || !dd->Valid)
+        return false;
+    bool  any = false;
+    float x0 = 0, y0 = 0, x1 = 0, y1 = 0;
+    for(int n = 0; n < dd->CmdListsCount; n++)
+        for(const ImDrawVert& v : dd->CmdLists[n]->VtxBuffer)
+        {
+            const float x = v.pos.x - dd->DisplayPos.x, y = v.pos.y - dd->DisplayPos.y;
+            if(!any)
+                x0 = x1 = x, y0 = y1 = y, any = true;
+            else
+                x0 = (std::min)(x0, x), y0 = (std::min)(y0, y), x1 = (std::max)(x1, x), y1 = (std::max)(y1, y);
+        }
+    if(!any)
+        return false;
+    r = { (LONG)floorf(x0) - 4, (LONG)floorf(y0) - 4, (LONG)ceilf(x1) + 4, (LONG)ceilf(y1) + 4 }; // a small margin
+    return true;
+}
+
 void UI::ShowBanner()
 {
     const int sec = m_options.hud.bannerSeconds;
@@ -2052,7 +2324,10 @@ void UI::ShowAdjustBanner(int kind)
 
 void UI::ShowNote(const std::string& text)
 {
-    m_noteText  = text;
+    {
+        std::lock_guard<std::mutex> lock(m_noteMutex);
+        m_noteText = text;
+    }
     m_noteUntil = GetTickCount64() + 3000ULL;
 }
 
@@ -2075,7 +2350,10 @@ void UI::RenderBanner()
     };
     std::vector<Line> lines;
     if(m_noteUntil && GetTickCount64() < m_noteUntil)
+    {
+        std::lock_guard<std::mutex> lock(m_noteMutex);
         lines.push_back({ m_noteText, accent }); // one-line message (e.g. a program added by hotkey)
+    }
     else if(m_adjustUntil && GetTickCount64() < m_adjustUntil)
     {
         // a 3D timing hotkey was used: the three timings, the one just changed in the accent color
@@ -2152,14 +2430,15 @@ void UI::RefreshHotkeyTexts()
         s_hotkeyMessage += " / " + Pad::Text(m_options.hotkeys[HOTKEY_TOGGLEUI].pad);
     s_hotkeyMessage += Tr(" for UI");
     s_hotkeyHelp    = Tr("Global hotkeys (change them in the Hotkeys section):\n\n");
-    for(int id : { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_DESKTOPOFF, HOTKEY_DETECTION, HOTKEY_ADDEXE })
+    for(int id : { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_EFFECTS, HOTKEY_DETECTION, HOTKEY_ADDEXE })
         s_hotkeyHelp += std::string("  ") + Tr(Options::HotkeyActionName(id)) + ": " + Options::HotkeyText(m_options.hotkeys[id]) + (m_options.hotkeys[id].pad ? " / " + Pad::Text(m_options.hotkeys[id].pad) : std::string()) + "\n";
 }
 
 // Hotkeys section: click a button, then press the new key or combination (any key, modifiers optional). Esc alone cancels, Backspace alone clears.
 void UI::RenderHotkeys()
 {
-    static const int ids[] = { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_DESKTOPOFF, HOTKEY_DETECTION, HOTKEY_ADDEXE, HOTKEY_SUBFRAMES_DEC, HOTKEY_SUBFRAMES_INC, HOTKEY_CLEAR_DEC,
+    s_hotkeysDrawnFrame = ImGui::GetFrameCount();
+    static const int ids[] = { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_EFFECTS, HOTKEY_DETECTION, HOTKEY_ADDEXE, HOTKEY_SUBFRAMES_DEC, HOTKEY_SUBFRAMES_INC, HOTKEY_CLEAR_DEC,
                               HOTKEY_CLEAR_INC, HOTKEY_SYNCOFFSET_DEC, HOTKEY_SYNCOFFSET_INC, HOTKEY_DURATION_DEC, HOTKEY_DURATION_INC };
     auto      restoreAll = [&]() {
         m_options.hotkeysSuspended = false;
@@ -2167,6 +2446,7 @@ void UI::RenderHotkeys()
             m_options.UnregisterHotkey(id);
         for(int id = 0; id < HOTKEY_COUNT; id++)
             m_options.RegisterHotkey(id);
+        m_options.SaveApp(); // hotkeys are global: saved in Nbeam.app.cfg, whatever the active profile
     };
 
     if(s_captureId >= 0)
@@ -2189,8 +2469,13 @@ void UI::RenderHotkeys()
             }
             else if(vk == VK_BACK && !mods)
             {
-                m_options.hotkeys[s_captureId].mods = 0, m_options.hotkeys[s_captureId].vk = 0; // Backspace clears the shortcut
-                s_hotkeyError.clear();
+                if(s_captureId == HOTKEY_TOGGLEUI || s_captureId == HOTKEY_EFFECTS)
+                    s_hotkeyError = "This shortcut cannot be empty."; // the HUD / the effects must always be reachable
+                else
+                {
+                    m_options.hotkeys[s_captureId].mods = 0, m_options.hotkeys[s_captureId].vk = 0; // Backspace clears the shortcut
+                    s_hotkeyError.clear();
+                }
             }
             else
             {

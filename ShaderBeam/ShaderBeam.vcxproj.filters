@@ -108,8 +108,6 @@
     <ClCompile Include="EmitterComPort.cpp" />
     <ClCompile Include="EmitterNvidia.cpp" />
     <ClCompile Include="EmitterUI.cpp" />
-    <ClCompile Include="FrameLimiter.cpp" />
-    <ClCompile Include="NvDriverLimiter.cpp" />
     <ClCompile Include="stdafx.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>

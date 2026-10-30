@@ -2,6 +2,7 @@
 
 #include "Common.h"
 #include "ShaderManager.h"
+#include "Lang.h"
 #include <fstream>
 #include <algorithm>
 #include <cmath>
@@ -176,9 +177,9 @@ const char* Options::HotkeyActionName(int id)
     case HOTKEY_RESTART: return "Restart";
     case HOTKEY_QUIT: return "Quit";
     case HOTKEY_SWAPEYES: return "Swap eyes";
-    case HOTKEY_DESKTOPOFF: return "Effects always disabled (desktop capture)";
+    case HOTKEY_EFFECTS: return "Show/Hide effects";
     case HOTKEY_DETECTION: return "Profile detection on/off";
-    case HOTKEY_ADDEXE: return "Add the foreground program";
+    case HOTKEY_ADDEXE: return "Add the program to the profiles";
     case HOTKEY_SUBFRAMES_DEC: return "SubFrames -";
     case HOTKEY_SUBFRAMES_INC: return "SubFrames +";
     case HOTKEY_CLEAR_DEC: return "Clear frames -";
@@ -194,7 +195,7 @@ const char* Options::HotkeyActionName(int id)
 std::string Options::HotkeyText(const Hotkey& h)
 {
     if(!h.vk)
-        return "None";
+        return Tr("None");
     std::string s;
     if(h.mods & MOD_CONTROL)
         s += "Ctrl+";
@@ -409,6 +410,39 @@ nvopendurationus=5785.000000
     LoadApp();
 }
 
+// [hotkeys] "mods,vk" ("0,0" = no shortcut) and [gamepad] button bits, keyed by the action name
+template<class Section> void Options::ReadHotkeys(Section& hk, Section* gp)
+{
+    for(int id = 0; id < HOTKEY_COUNT; id++)
+    {
+        if(!hk.has(HotkeyActionName(id)))
+            continue;
+        unsigned m = 0, v = 0;
+        if(sscanf_s(hk.get(HotkeyActionName(id)).c_str(), "%u,%u", &m, &v) == 2 && v < 255)
+        {
+            hotkeys[id].mods = v ? (m & 0xF) : 0;
+            hotkeys[id].vk   = v;
+        }
+    }
+    if(gp)
+        for(int id = 0; id < HOTKEY_COUNT; id++)
+        {
+            if(!gp->has(HotkeyActionName(id)))
+                continue;
+            try
+            {
+                hotkeys[id].pad = (unsigned)std::stoul(gp->get(HotkeyActionName(id))) & 0x3F3FFu;
+            }
+            catch(...)
+            { }
+        }
+    // the HUD and the effects must always be reachable
+    Options defaults;
+    for(int id : { HOTKEY_TOGGLEUI, HOTKEY_EFFECTS })
+        if(!hotkeys[id].vk)
+            hotkeys[id].mods = defaults.hotkeys[id].mods, hotkeys[id].vk = defaults.hotkeys[id].vk;
+}
+
 #define APP_FILE "Nbeam.app.cfg"
 #define AUTOSTART_VALUE L"Nbeam3DVision"
 
@@ -425,7 +459,8 @@ void Options::LoadApp()
             auto& a = ini["app"];
             LOAD_BOOL(a, startWithWindows)
             LOAD_BOOL(a, startMinimized)
-            LOAD_BOOL(a, desktopEffectsOff)
+            if(a.has("defaultProfile"))
+                defaultProfile = a.get("defaultProfile");
             if(a.has("hzSwitchMs"))
                 try { hzSwitchMs = std::clamp(std::stod(a.get("hzSwitchMs")), 100.0, 10000.0); } catch(...) { }
             if(a.has("hzSwitchN"))
@@ -454,6 +489,7 @@ void Options::LoadApp()
             hud.bannerCorner  = (int)bc;
             f("scale", hud.scale, 0.6f, 2.0f);
         }
+        std::lock_guard<std::recursive_mutex> linksLock(linksMutex);
         profileLinks.clear();
         for(int i = 0; i < 64 && ini.has("link" + std::to_string(i)); i++)
         {
@@ -469,6 +505,14 @@ void Options::LoadApp()
             if(l.has("hz"))
                 link.hz = std::clamp(atoi(l.get("hz").c_str()), 0, 1000);
             profileLinks.push_back(link);
+        }
+        if(ini.has("hotkeys"))
+        {
+            // global hotkeys (the same whatever the profile, also while a detected program runs)
+            auto hk = ini.get("hotkeys");
+            auto gp = ini.get("gamepad");
+            ReadHotkeys(hk, ini.has("gamepad") ? &gp : nullptr);
+            appHotkeys = true;
         }
         knownMonitors.clear();
         for(int i = 0; i < 32 && ini.has("monitor" + std::to_string(i)); i++)
@@ -500,6 +544,7 @@ void Options::LoadApp()
 
 void Options::SaveApp() const
 {
+    std::lock_guard<std::recursive_mutex> linksLock(linksMutex); // the detections are written below
     try
     {
         mINI::INIFile      file(ExeDir() / APP_FILE);
@@ -507,7 +552,7 @@ void Options::SaveApp() const
         auto&              a = ini["app"];
         SAVE_BOOL(a, startWithWindows)
         SAVE_BOOL(a, startMinimized)
-        SAVE_BOOL(a, desktopEffectsOff)
+        a["defaultProfile"] = defaultProfile;
         a["hzSwitchMs"] = std::to_string((int)hzSwitchMs);
         a["hzSwitchN"]  = std::to_string(hzSwitchCount);
         auto& h = ini["hud"];
@@ -523,6 +568,18 @@ void Options::SaveApp() const
         h["bannerSeconds"] = std::to_string(hud.bannerSeconds);
         h["bannerCorner"]  = std::to_string(hud.bannerCorner);
         h["scale"]         = std::to_string(hud.scale);
+        {
+            // one section at a time: creating a section moves the others in memory, so a reference kept to "hotkeys" while "gamepad"
+            // is created points to freed memory (that crashed Nbeam on every save of the application settings)
+            auto& hk = ini["hotkeys"];
+            for(int id = 0; id < HOTKEY_COUNT; id++)
+                hk[HotkeyActionName(id)] = std::to_string(hotkeys[id].mods) + "," + std::to_string(hotkeys[id].vk);
+        }
+        {
+            auto& gp = ini["gamepad"];
+            for(int id = 0; id < HOTKEY_COUNT; id++)
+                gp[HotkeyActionName(id)] = std::to_string(hotkeys[id].pad);
+        }
         for(size_t i = 0; i < profileLinks.size() && i < 64; i++)
         {
             auto& l       = ini["link" + std::to_string(i)];
@@ -1058,12 +1115,10 @@ void Options::Save(const ShaderManager& shaderManager) const
                 switch(param.type)
                 {
                 case ParamInt:
-                    if(*param.p.ip.value != param.p.ip.def)
-                        shader[param.name] = std::to_string(*param.p.ip.value);
+                    shader[param.name] = std::to_string(*param.p.ip.value); // always written (a default value was skipped and then lost)
                     break;
                 case ParamFloat:
-                    if(*param.p.fp.value != param.p.fp.def)
-                        shader[param.name] = std::to_string(*param.p.fp.value);
+                    shader[param.name] = std::to_string(*param.p.fp.value);
                     break;
                 }
             }
@@ -1142,35 +1197,12 @@ void Options::Load(ShaderManager& shaderManager)
                 { }
                 LoadEmitterSettings(ini, emitter);
 
-                if(ini.has("hotkeys"))
+                if(!appHotkeys && ini.has("hotkeys"))
                 {
+                    // old settings: the hotkeys were kept in the profiles; from now on they live in Nbeam.app.cfg
                     auto hk = ini.get("hotkeys");
-                    for(int id = 0; id < HOTKEY_COUNT; id++)
-                    {
-                        if(!hk.has(HotkeyActionName(id)))
-                            continue;
-                        unsigned m = 0, v = 0;
-                        if(sscanf_s(hk.get(HotkeyActionName(id)).c_str(), "%u,%u", &m, &v) == 2 && v > 0 && v < 255)
-                        {
-                            hotkeys[id].mods = m & 0xF;
-                            hotkeys[id].vk   = v;
-                        }
-                    }
-                }
-                if(ini.has("gamepad"))
-                {
                     auto gp = ini.get("gamepad");
-                    for(int id = 0; id < HOTKEY_COUNT; id++)
-                    {
-                        if(!gp.has(HotkeyActionName(id)))
-                            continue;
-                        try
-                        {
-                            hotkeys[id].pad = (unsigned)std::stoul(gp.get(HotkeyActionName(id))) & 0x3F3FFu;
-                        }
-                        catch(...)
-                        { }
-                    }
+                    ReadHotkeys(hk, ini.has("gamepad") ? &gp : nullptr);
                 }
             }
 
@@ -1179,6 +1211,11 @@ void Options::Load(ShaderManager& shaderManager)
                 auto& shader = ini["shader"];
                 for(const auto& param : shaderManager.GetParameterInfos(shaderProfileNo))
                 {
+                    // not in this profile: its default value (not the value left by the previous profile)
+                    if(param.type == ParamInt)
+                        *param.p.ip.value = param.p.ip.def;
+                    else if(param.type == ParamFloat)
+                        *param.p.fp.value = param.p.fp.def;
                     if(shader.has(param.name))
                     {
                         switch(param.type)

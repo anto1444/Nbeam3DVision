@@ -32,6 +32,7 @@ public:
     void Stop();
     void Render(bool present, bool ui = true);
     void Present(bool vsync);
+    bool DeviceLost() const { return m_deviceLost; } // the graphics card was lost: the renderer must be restarted
 
     const winrt::com_ptr<ID3D11Texture2D>& GetNextInput() const;
     bool                                   NewInputRequired() const;
@@ -50,8 +51,8 @@ public:
     void UpdateSubFramesMode();
     // live changes asked by the UI (see Options::liveReload / liveLatency): called by the render thread between two frames
     void ApplyLiveChanges();
-    bool DesktopEffectsOff() const { return m_options.desktopEffectsOff && !m_options.captureWindow; } // tray option: desktop capture, no effects, no 3D, emitter idle
-    bool EffectsOff() const { return (m_options.effectsSuspended && m_options.ui) || (m_options.desktopEffectsOff && !m_options.captureWindow) || m_options.processResizing || m_options.processUnfocused; } // HUD visible and effects suspended: no shader, no 3D decoding (the emitters keep running)
+    bool EffectsHidden() const { return m_options.effectsSuspended; } // Show / Hide effects: no effects, no 3D, emitter idle
+    bool EffectsOff() const { return m_options.effectsSuspended || m_options.processResizing || m_options.processUnfocused; } // HUD visible and effects suspended: no shader, no 3D decoding (the emitters keep running)
     bool Bypassing() const { return m_bypass || EffectsOff(); } // low fps with "Disable BFI": poll the capture every vsync, no shader
 
     void Benchmark(const std::shared_ptr<CaptureBase>& capture);
@@ -148,6 +149,9 @@ private:
     unsigned                                m_kmtLines { 0 };         // visible lines of the output
     winrt::com_ptr<ID3D11Query>             m_gpuDone;                // the frame is drawn: its flip is not delayed by the GPU
     float                                   m_tearSafe { 0.0f };      // where the tear may land in the frame just rendered (0 = vblank only)
+    bool                                    m_beamOk { false };
+    std::atomic<bool>                       m_deviceLost { false };
+    void                                    CheckPresent(HRESULT hr);       // beam racing allowed for this frame (never in 3D: classic vblank timing for the glasses)
     double                                  m_brLastF { 1.0 };
     bool                                    m_brLastVbl { true };
     bool                                    m_brNewRefresh { true };
@@ -163,6 +167,20 @@ private:
     winrt::com_ptr<ID3D11Texture2D>         m_toneCopy;
     winrt::com_ptr<ID3D11ShaderResourceView> m_toneCopySrv;
     UINT                                    m_toneW { 0 }, m_toneH { 0 };
+    // HUD drawn apart (30 times a second, full rate while dragged) into its own texture, then laid over every frame at a small, constant cost: the HUD
+    // no longer makes the frame time vary, which kept 3D / tearing in step while it is shown
+    winrt::com_ptr<ID3D11Texture2D>          m_hudTex;
+    winrt::com_ptr<ID3D11RenderTargetView>   m_hudRtv;
+    winrt::com_ptr<ID3D11ShaderResourceView> m_hudSrv;
+    winrt::com_ptr<ID3D11VertexShader>       m_hudVs;
+    winrt::com_ptr<ID3D11PixelShader>        m_hudPs;
+    winrt::com_ptr<ID3D11BlendState>         m_hudBlend;
+    UINT                                     m_hudW { 0 }, m_hudH { 0 };
+    std::chrono::steady_clock::time_point    m_hudLast {};
+    RECT                                     m_hudArea {};     // area of the HUD texture that holds something (the overlay draws there only)
+    bool                                     m_hudEmpty { false };
+    bool                                     m_hudFailed { false };
+    void                                     RenderHud();
     void                                    ApplyCaptureTone();
 #if _DEBUG
     winrt::com_ptr<ID3D11Debug> m_debug { nullptr };

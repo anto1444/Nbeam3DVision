@@ -61,6 +61,9 @@ struct StereoEmitterSettings
     float         syncRateHz { 120 };     // manual rate in Hz (SubFrames follows: display Hz / rate)
     int           syncOffsetUs { 0 };     // from vsync; negative = signal before vsync
     bool          swapEyes { false };     // reverses the eye order
+    bool          scanoutSync { false };  // the glasses follow the real display refreshes (DXGI frame statistics) instead of the moment Present returned
+    mutable int   scanoutSyncState { 0 }; // runtime only: 1 = working, -1 = statistics not available (the classic timing is used)
+    mutable int   scanoutResyncs { 0 };   // runtime only: missed refreshes caught and corrected
 
     ComPortConfig    comPort;
     AiDepthConfig    ai;

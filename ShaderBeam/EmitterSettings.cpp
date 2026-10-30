@@ -40,6 +40,7 @@ void SaveEmitterSettings(mINI::INIStructure& ini, const StereoEmitterSettings& s
     Put(e, "syncAuto", s.syncAuto);
     Put(e, "syncRateHz", s.syncRateHz);
     Put(e, "syncOffsetUs", s.syncOffsetUs);
+    Put(e, "scanoutSync", s.scanoutSync);
     Put(e, "swapEyes", s.swapEyes);
     Put(e, "comPortNo", s.comPort.comPortNo);
     Put(e, "nvOpenDurationUs", s.nvidia.openDurationUs);
@@ -70,6 +71,7 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
     if(s.syncRateHz < 1.0f)
         s.syncRateHz = 120.0f;
     Get(e, "syncOffsetUs", s.syncOffsetUs, -100000, 100000);
+    Get(e, "scanoutSync", s.scanoutSync);
     Get(e, "swapEyes", s.swapEyes);
     Get(e, "comPortNo", s.comPort.comPortNo, -1, 256);
     Get(e, "nvOpenDurationUs", s.nvidia.openDurationUs, -100000.0f, 100000.0f);

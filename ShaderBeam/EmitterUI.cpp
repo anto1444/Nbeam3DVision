@@ -188,7 +188,7 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
 
         const int range = periodUs > 0 ? (int)periodUs : 10000;
         SliderIntStep(Tr("Sync Offset (us)"), &s.syncOffsetUs, -range, range, 1);
-        Help(Tr("Time offset from vsync before the emitter is signalled.\nNegative values shutter the glasses before vsync (the other eye is signalled one period earlier)."));
+        Help(Tr("Time offset from the real start of the frame on screen before the emitter is signalled (the same whatever the queued frames).\nNegative values shutter the glasses before vsync (the other eye is signalled one period earlier)."));
 
         // Live slider: the emitter is reprogrammed on the fly (at most every 50 ms) while you drag; Right-click to type a value.
         const float sliderMax = periodUs > 0 ? (float)periodUs : 10000.0f;
@@ -199,6 +199,13 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
 
         ImGui::Checkbox(Tr("Swap Eyes"), &s.swapEyes);
         Help(Tr("Reverses the eye order. With 2D to 3D (AI) it also inverts the depth (near and far are swapped). Hotkey: see the Hotkeys section."));
+
+        // timing of the glasses: automatic (display scanout when Windows gives the frame statistics, classic otherwise)
+        if(s.scanoutSyncState > 0)
+            ImGui::TextDisabled(Tr("Sync: display scanout (DXGI), %d missed refreshes corrected"), s.scanoutResyncs);
+        else if(s.scanoutSyncState < 0)
+            ImGui::TextDisabled("%s", Tr("Sync: classic (frame statistics not available, picture composed by Windows)"));
+        Help(Tr("Automatic. The glasses follow the real refreshes of the display (DXGI frame statistics) whenever Windows gives them; otherwise the classic timing is used, corrected by the delay measured before. The Sync Offset is always measured from the real start of the frame on screen: it does not need to be tuned again after changing the queued frames. An overload no longer shifts the glasses (late frames are put back on the regular rhythm of the display)."));
     }
 
     // ---- ComPort ----

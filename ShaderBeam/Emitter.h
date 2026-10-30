@@ -22,6 +22,7 @@ struct EmitterEnv
     int            subFrames { 1 };      // output frames per content frame
     IDXGISwapChain* swapChain { nullptr };
     LUID           adapterLuid {};
+    int            queuedFrames { 1 };   // presentation queue of the swap chain (0 = tearing): estimate of the Present -> screen delay
 
     // Sync rate in Hz: rate at which the glasses switch eye. 0 = auto = display Hz / SubFrames
     double SyncRateHz(const StereoEmitterSettings& s) const { return s.EffectiveSyncHz(vsyncRateHz, subFrames > 0 ? subFrames : 1); }

@@ -51,6 +51,12 @@ void ShaderBeam::Create(HWND window)
     Helpers::InitQPC();
 
     m_options.InitProfile();
+    // "Default profile": Nbeam always starts on it (not on the profile of a program that was running when it was closed)
+    if(!m_options.defaultProfile.empty() && std::filesystem::exists(Options::ProfilesDir() / m_options.defaultProfile))
+    {
+        m_options.profileFile = m_options.defaultProfile;
+        m_options.RememberProfile();
+    }
     m_options.Load(m_shaderManager);
 
     // the screens are identified only now: the settings (detections, remembered screens) are loaded, a save before would erase them
@@ -116,6 +122,9 @@ void ShaderBeam::SwitchProfile()
     // Stop() has just saved the previous profile; load the new one on top of the current values
     m_options.profileFile    = m_options.pendingProfile;
     m_options.pendingProfile.clear();
+    // any profile but the default one shows the effects again (they may have been hidden with Show / Hide)
+    if(m_options.defaultProfile.empty() || _stricmp(m_options.defaultProfile.c_str(), m_options.profileFile.c_str()) != 0)
+        m_options.effectsSuspended = false;
     {
         // hotkeys are global: a profile never changes them
         Options::Hotkey keep[HOTKEY_COUNT];
@@ -187,11 +196,37 @@ void ShaderBeam::DefaultOptions()
 
 void ShaderBeam::Start()
 {
+    // no display (a TV switched off, a screen unplugged) or no graphics card listed: wait and try again every 2 s
+    if(m_ui.m_displays.empty())
+        m_ui.m_displays = GetDisplays();
+    if(m_ui.m_displays.empty() || m_ui.m_adapters.empty())
+    {
+        SetTimer(m_options.outputWindow, TIMER_RETRY_START, 2000, nullptr);
+        return;
+    }
+    if(m_options.captureDisplayNo >= m_ui.m_displays.size())
+        m_options.captureDisplayNo = 0;
+    if(m_options.shaderDisplayNo >= m_ui.m_displays.size())
+        m_options.shaderDisplayNo = 0;
+    if(m_options.captureAdapterNo >= m_ui.m_adapters.size())
+        m_options.captureAdapterNo = 0;
+    if(m_options.shaderAdapterNo >= m_ui.m_adapters.size())
+        m_options.shaderAdapterNo = 0;
     m_options.crossAdapter     = m_options.shaderAdapterNo != m_options.captureAdapterNo;
     const auto& captureAdapter = m_ui.m_adapters.at(m_options.captureAdapterNo);
     const auto& shaderAdapter  = m_ui.m_adapters.at(m_options.shaderAdapterNo);
-    auto        captureDevice  = Helpers::CreateD3DDevice(captureAdapter.adapter.get());
-    auto        shaderDevice   = m_options.crossAdapter ? Helpers::CreateD3DDevice(shaderAdapter.adapter.get()) : captureDevice;
+    winrt::com_ptr<ID3D11Device> captureDevice, shaderDevice;
+    try
+    {
+        captureDevice = Helpers::CreateD3DDevice(captureAdapter.adapter.get());
+        shaderDevice  = m_options.crossAdapter ? Helpers::CreateD3DDevice(shaderAdapter.adapter.get()) : captureDevice;
+    }
+    catch(...)
+    {
+        // graphics card not available yet (driver being updated or restarting after a crash): try again in 2 s
+        SetTimer(m_options.outputWindow, TIMER_RETRY_START, 2000, nullptr);
+        return;
+    }
 
     UpdateVsyncRate();
 
@@ -248,6 +283,12 @@ void ShaderBeam::Start()
         PostMessage(m_options.outputWindow, WM_DESTROY, 0, 0);
         return;
     }
+    catch(...)
+    {
+        // a Windows (WinRT / COM) error, or the graphics card lost while starting: try again a little later instead of closing
+        SetTimer(m_options.outputWindow, TIMER_RETRY_START, 2000, nullptr);
+        return;
+    }
 
     try
     {
@@ -257,6 +298,12 @@ void ShaderBeam::Start()
     {
         MessageBoxA(m_options.outputWindow, ex.what(), SHADERBEAM_TITLE, MB_ICONERROR | MB_OK);
         PostMessage(m_options.outputWindow, WM_DESTROY, 0, 0);
+        return;
+    }
+    catch(...)
+    {
+        // a Windows (WinRT / COM) error, or the graphics card lost while starting: try again a little later instead of closing
+        SetTimer(m_options.outputWindow, TIMER_RETRY_START, 2000, nullptr);
         return;
     }
 
@@ -270,8 +317,21 @@ void ShaderBeam::Start()
     {
         m_ui.SetError(ex.what());
     }
+    catch(winrt::hresult_error const& ex)
+    {
+        // Windows Graphics Capture refused (the game window closed or changed at that very moment...): shown, Nbeam keeps running
+        const std::string msg = winrt::to_string(ex.message());
+        m_ui.SetError(msg.c_str());
+    }
+    catch(...)
+    {
+        m_ui.SetError("Capture could not start");
+    }
 
     m_renderThread.Start(capture);
+    // high priority while Nbeam renders: a game that loads or compiles shaders no longer takes its CPU time (graphics card
+    // priority is already at its highest, see gpuThreadPriority)
+    SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     m_active = true;
 }
@@ -279,8 +339,11 @@ void ShaderBeam::Start()
 void ShaderBeam::Stop()
 {
     m_options.Save(m_shaderManager);
+    if(!m_active)
+        return; // the start did not happen (no display, start error): nothing to stop
 
     m_renderThread.Stop();
+    SetPriorityClass(GetCurrentProcess(), NORMAL_PRIORITY_CLASS);
     m_ui.m_captures[m_options.captureMethod].api->Stop();
     m_watcher.Stop();
     m_renderer.Stop();

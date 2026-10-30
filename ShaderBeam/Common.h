@@ -9,6 +9,7 @@ MIT License
 
 #include "EmitterSettings.h"
 #include "SubFrameModes.h"
+#include <mutex>
 
 namespace ShaderBeam
 {
@@ -22,12 +23,13 @@ namespace ShaderBeam
 #define WM_USER_RESTART (WM_USER)
 #define WM_USER_BENCHMARK (WM_USER + 1)
 #define WM_USER_NOWINDOW (WM_USER + 2)
+#define TIMER_RETRY_START 3 // window timer: the start failed (no display, Windows / graphics card error): try again
 
 #define HOTKEY_TOGGLEUI 0
 #define HOTKEY_RESTART 1
 #define HOTKEY_QUIT 2
 #define HOTKEY_SWAPEYES 3
-#define HOTKEY_DESKTOPOFF 4 // toggles "Effects always disabled (desktop capture)"
+#define HOTKEY_EFFECTS 4 // shows / hides the effects (same as the HUD button Show / Hide)
 
 // adjustment hotkeys (decrease / increase pairs, one step per press)
 #define HOTKEY_DETECTION 5 // checks / unchecks the profile detections (all of them)
@@ -203,7 +205,7 @@ struct Options
         { MOD_CONTROL | MOD_SHIFT, 'A' }, // restart
         { MOD_CONTROL | MOD_SHIFT, 'Q' }, // quit
         { MOD_CONTROL | MOD_SHIFT, 'E' }, // swap eyes
-        { MOD_CONTROL | MOD_SHIFT, 'D' }, // effects always disabled (desktop capture)
+        { MOD_CONTROL | MOD_SHIFT, 'D' }, // show / hide the effects
         { MOD_CONTROL | MOD_SHIFT, 'L' }, // profile detection on / off
         { MOD_CONTROL | MOD_SHIFT, 'P' }, // add the foreground program to the detections
         { MOD_CONTROL | MOD_SHIFT, VK_F1 },  // SubFrames -
@@ -219,6 +221,8 @@ struct Options
     static std::string HotkeyText(const Hotkey& h); // "Ctrl+Shift+B"
     // hotkeys that Windows refused to register (another program owns the combination) are polled instead, so they still work
     mutable bool hotkeyOk[HOTKEY_COUNT] {};
+    bool         appHotkeys { false }; // the hotkeys were read from Nbeam.app.cfg (global): the profiles no longer change them
+    template<class Section> void ReadHotkeys(Section& hk, Section* gp);
     bool         hotkeysSuspended { false }; // while a new key is being captured in the UI
     bool               RegisterHotkey(int id) const;
     void               UnregisterHotkey(int id) const;
@@ -236,11 +240,11 @@ struct Options
     void RememberProfile() const;                    // write it
 
     // application settings (not part of a profile), saved in Nbeam.app.cfg next to the exe
-    volatile bool effectsSuspended { true }; // the effects are off while the HUD is visible (the button can turn them on); hiding the HUD always turns them on
+    volatile bool effectsSuspended { false }; // HUD button Show / Hide: all effects and the 3D emitter are off until Show is pressed (HUD shown or not)
     bool          startWithWindows { false };
     bool          minimizeToTray { true }; // the notification area icon always exists
     bool          startMinimized { false };
-    volatile bool desktopEffectsOff { false };   // tray menu: effects (and 3D decoding) are always off while the desktop is captured (no program / window selected)
+    std::string   defaultProfile; // "Default profile": the profile that comes back when a detected program is no longer running (empty = the previous one)
     struct ProfileLink
     {
         std::string exe;     // full path of the program, or just its file name
@@ -251,6 +255,9 @@ struct Options
         int         hz { 0 };         // Windows refresh rate of that screen while the program runs (0 = no change); every screen of the program changes at detection
     };
     std::vector<ProfileLink> profileLinks;
+    // profileLinks is edited by the HUD (render thread) and read by the detections (main thread): both lock this. Lock order: this
+    // mutex first, then the monitors one. Never held while waiting for the render thread.
+    mutable std::recursive_mutex linksMutex;
     static constexpr int     MAX_LINKS_PER_EXE = 3;
 
     // screens seen by Nbeam, remembered between runs (Nbeam.app.cfg) with their refresh rates
