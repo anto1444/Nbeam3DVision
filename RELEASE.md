@@ -16,6 +16,7 @@ Mise à jour de la version 1.1.0. Surcouche Windows : BFI, CRT Beam Simulator et
 - **Profil par défaut** : nouvelle case à côté du choix du profil. Nbeam démarre sur ce profil, et c'est lui qui revient quand un programme détecté se ferme (sans profil par défaut, le profil précédent revient, comme avant).
 - **Paramètres globaux** dans la détection de profil : une ligne qui règle d'un coup tous les programmes (case activée, délai), puis une ligne par écran branché (**Écran 1, 2, 3**) qui donne un profil et une fréquence de rafraîchissement à tous les programmes sur cet écran. Chaque programme reste modifiable sur sa ligne ; « (mixte) » indique des valeurs différentes.
 - **Sauvegarde automatique** : tout réglage modifié dans le HUD ou par un raccourci est enregistré dans le profil actif dans la seconde, y compris dans le profil d'un programme détecté pendant qu'il tourne.
+- **Ajouter depuis la barre des tâches** : nouveau bouton à côté de « Ajouter une détection ». Il liste les programmes ouverts sur la barre des tâches ; un clic ajoute le programme choisi aux détections.
 - **Raccourcis globaux** : ils sont enregistrés dans `Nbeam.app.cfg` et ne dépendent plus du profil actif.
 
 ### Effets et HUD

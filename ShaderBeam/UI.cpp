@@ -1826,6 +1826,73 @@ void UI::Render()
                     m_options.profileLinks.push_back(nl);
                     save = true;
                 }
+                // add a program chosen among the ones shown on the taskbar
+                {
+                    static std::vector<std::string> s_taskbarExes; // scanned when the list is opened
+                    ImGui::SameLine();
+                    if(ImGui::Button(Tr("Add from the taskbar")))
+                    {
+                        s_taskbarExes.clear();
+                        EnumWindows(
+                            [](HWND w, LPARAM p) -> BOOL {
+                                auto&      list = *(std::vector<std::string>*)p;
+                                const auto ex   = GetWindowLongW(w, GWL_EXSTYLE);
+                                if(!IsWindowVisible(w) || GetWindowTextLengthW(w) == 0)
+                                    return TRUE;
+                                if(GetWindow(w, GW_OWNER) != NULL && !(ex & WS_EX_APPWINDOW))
+                                    return TRUE;
+                                if((ex & WS_EX_TOOLWINDOW) && !(ex & WS_EX_APPWINDOW))
+                                    return TRUE;
+                                DWORD cloaked = 0;
+                                if(SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+                                    return TRUE;
+                                DWORD pid = 0;
+                                GetWindowThreadProcessId(w, &pid);
+                                if(!pid || pid == GetCurrentProcessId())
+                                    return TRUE;
+                                const std::string name = Options::ProcessNameOfWindow(w);
+                                static const char* ignored[] = { "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
+                                                                 "textinputhost.exe", "applicationframehost.exe", "lockapp.exe", "dwm.exe" };
+                                if(name.empty())
+                                    return TRUE;
+                                for(const char* ig : ignored)
+                                    if(name == ig)
+                                        return TRUE;
+                                if(std::find(list.begin(), list.end(), name) == list.end())
+                                    list.push_back(name);
+                                return TRUE;
+                            },
+                            (LPARAM)&s_taskbarExes);
+                        std::sort(s_taskbarExes.begin(), s_taskbarExes.end());
+                        ImGui::OpenPopup("##taskbarExes");
+                    }
+                    if(ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", Tr("Choose a program among the ones open on the taskbar."));
+                    if(ImGui::BeginPopup("##taskbarExes"))
+                    {
+                        int shown = 0;
+                        for(const auto& exe : s_taskbarExes)
+                        {
+                            bool known = false; // programs already in the detections are not listed
+                            for(const auto& l : m_options.profileLinks)
+                                known = known || Options::NormalizeExeName(l.exe) == exe;
+                            if(known)
+                                continue;
+                            shown++;
+                            if(ImGui::Selectable(exe.c_str()) && m_options.profileLinks.size() < 64)
+                            {
+                                Options::ProfileLink nl;
+                                nl.exe      = exe;
+                                nl.screenId = cur;
+                                m_options.profileLinks.push_back(nl);
+                                save = true;
+                            }
+                        }
+                        if(shown == 0)
+                            ImGui::TextUnformatted(Tr("No program open on the taskbar"));
+                        ImGui::EndPopup();
+                    }
+                }
                 if(addAfter >= 0 && m_options.profileLinks.size() < 64)
                 {
                     Options::ProfileLink nl = m_options.profileLinks[addAfter];
