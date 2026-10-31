@@ -136,8 +136,8 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         Help(Tr("Which depth stays on the screen plane. 0 = everything pops out of the screen, 100 = everything goes behind it; 50 splits the depth around the screen."));
         ImGui::SliderFloat(Tr("Depth smoothing (%)"), &s.ai.smoothing, 0.0f, 95.0f, "%.0f");
         Help(Tr("Averages the depth map over time so it does not flicker. Higher = steadier but slower to follow fast changes."));
-        ImGui::SliderFloat(Tr("Anti-halo (%)"), &s.ai.antiHalo, 0.0f, 300.0f, "%.0f");
-        Help(Tr("Reduces the halo (smeared edges) around objects: the depth of a foreground object no longer spills onto the background next to it. Too high shrinks thin objects slightly."));
+        ImGui::SliderFloat(Tr("Anti-halo (%)"), &s.ai.antiHalo, -300.0f, 300.0f, "%.0f");
+        Help(Tr("Reduces the halo (smeared edges) around objects: the depth of a foreground object no longer spills onto the background next to it. Too high shrinks thin objects slightly. Negative values: the same, inverted (for an inverted depth, Swap Eyes checked)."));
         ImGui::Checkbox(Tr("Use GPU (DirectML)"), &s.ai.useGpu);
         Help(Tr("Runs the AI on the graphics card (much faster). If DirectML is not available the processor is used instead. Applied immediately (the model reloads)."));
         ImGui::Checkbox(Tr("Show depth map"), &s.ai.showDepth);
@@ -187,8 +187,8 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         }
 
         const int range = periodUs > 0 ? (int)periodUs : 10000;
-        SliderIntStep(Tr("Sync Offset (us)"), &s.syncOffsetUs, -range, range, 1);
-        Help(Tr("Time offset from the real start of the frame on screen before the emitter is signalled (the same whatever the queued frames).\nNegative values shutter the glasses before vsync (the other eye is signalled one period earlier)."));
+        SliderIntStep(Tr("Sync Offset (us)"), &s.syncOffsetUs, -range, 0, 1); // negative only
+        Help(Tr("Time offset from the real start of the frame on screen before the emitter is signalled (the same whatever the queued frames).\nNegative only (0 to minus one eye period): the glasses switch before vsync (the other eye is signalled one period earlier)."));
 
         // Live slider: the emitter is reprogrammed on the fly (at most every 50 ms) while you drag; Right-click to type a value.
         const float sliderMax = periodUs > 0 ? (float)periodUs : 10000.0f;

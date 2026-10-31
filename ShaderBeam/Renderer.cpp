@@ -397,7 +397,7 @@ void Renderer::ApplyCaptureTone()
 {
     const float black = m_options.captureBlack;
     const float grey  = m_options.captureGrey;
-    const float gain  = m_options.captureGain;
+    const float gain  = m_options.captureGain * m_uniformGain; // (Auto: Uniform brightness)
     const bool  tone  = black > 0.0005f || fabsf(grey - 1.0f) > 0.005f || fabsf(gain - 1.0f) > 0.0005f;
     if(!tone)
         return;
@@ -685,7 +685,10 @@ void Renderer::UpdateSubFramesMode()
             m_options.subFrames = m_options.ManualSubFrames();
     }
     if(m_mode != SF_AUTO)
+    {
+        m_uniformGain = 1.0f;
         return;
+    }
     const auto& low     = m_options.lowFps;
     const int   current = m_options.subFrames;
     const int   next    = m_auto.Update(NowMs(), m_watcher.TotalInputFrames(), m_options.vsyncRate, current, low, m_options.autoSub.intervalSec);
@@ -696,6 +699,37 @@ void Renderer::UpdateSubFramesMode()
     m_ui.m_flickerHz    = m_bypass ? m_auto.GameFps() : (float)(m_options.vsyncRate / (std::max)(1, m_options.subFrames));
     if(next != current && next >= MIN_SUBFRAMES && next <= MAX_SUBFRAMES)
         m_options.subFrames = next;
+
+    // Uniform brightness (Simple BFI): the brightness of the BFI is (clear + dark x (1 - gain vs blur)) / SubFrames, so it changes with
+    // the SubFrames Auto picks. The picture is kept at the brightness the BFI has at the low fps threshold (the darkest point of
+    // the range: the lower the threshold, the darker), by dimming every other case (more fps, doubled or disabled BFI below it).
+    m_uniformGain = 1.0f;
+    if(m_options.uniformBrightness && !EffectsOff()) // effects hidden: the picture as it is
+    {
+        int   clearFrames = -1;
+        float darkGain    = 1.0f;
+        for(const auto& p : m_shaderManager.GetParameterInfos())
+        {
+            if(p.type == ParameterType::ParamInt && p.name == "Clear Frames")
+                clearFrames = *p.p.ip.value;
+            else if(p.type == ParameterType::ParamFloat && p.name == "Gain vs Blur")
+                darkGain = *p.p.fp.value;
+        }
+        if(clearFrames > 0 && m_options.vsyncRate > 1.0f)
+        {
+            auto brightness = [&](int sf) {
+                if(sf <= 1)
+                    return 1.0f; // one subframe: the picture as it is
+                const int c = (std::min)(clearFrames, sf);
+                return ((float)c + (float)(sf - c) * (1.0f - std::clamp(darkGain, 0.0f, 1.0f))) / (float)sf;
+            };
+            const int   sfLow  = std::clamp((int)std::lround(m_options.vsyncRate / LowFpsGate::Threshold(low)), 1, AutoSubFrames::kMax);
+            const float target = brightness(sfLow);
+            const float now    = m_bypass ? 1.0f : brightness(m_options.subFrames);
+            if(now > 0.0f)
+                m_uniformGain = std::clamp(target / now, 0.0f, 1.0f);
+        }
+    }
 }
 
 int Renderer::GetNextSlot() const

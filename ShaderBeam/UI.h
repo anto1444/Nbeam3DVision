@@ -43,6 +43,10 @@ public:
     std::timed_mutex m_imguiMutex;
     void             CancelHotkeyCapture(); // a shortcut capture left open (HUD hidden, other tab): the hotkeys work again
     bool Toggle();
+    // Window mode: the HUD fills a normal window of its own (settings made there while the effects are off)
+    void SetWindowMode(bool on) { m_windowMode = on; }
+    bool WindowMode() const { return m_windowMode; }
+    float& HudScale() { return m_windowMode ? m_options.hud.scaleWin : m_options.hud.scale; } // separate sizes: window / HUD over the screen
 
     float m_inputFPS { 0 };
     float m_outputFPS { 0 };
@@ -104,6 +108,8 @@ private:
         bool useHdr;
     } m_pending;
 
+    bool            m_windowMode { false }; // drawn in the window of the window mode (not over the screen)
+    HWND            m_hwnd { 0 };           // window ImGui is attached to
     ImFont*         m_smallFont;
     ImFont*         m_largeFont;
     Options&        m_options;

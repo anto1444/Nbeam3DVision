@@ -127,6 +127,7 @@ private:
     int             m_mode { SF_MANUAL }; // effective mode for this run (Options::EffectiveSubFramesMode at Start)
     AutoSubFrames   m_auto;
     bool            m_bypass { false };            // low fps with "Disable BFI": the image is shown as it is
+    float           m_uniformGain { 1.0f };        // Auto + Uniform brightness: picture brightness multiplier (see UpdateSubFramesMode)
 
     int  m_appliedSubFrames { 0 };
     void ApplySubFramesLive();

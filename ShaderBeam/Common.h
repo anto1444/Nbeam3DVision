@@ -23,6 +23,7 @@ namespace ShaderBeam
 #define WM_USER_RESTART (WM_USER)
 #define WM_USER_BENCHMARK (WM_USER + 1)
 #define WM_USER_NOWINDOW (WM_USER + 2)
+#define WM_USER_EFFECTS (WM_USER + 4) // window mode: wParam 1 = activate the effects, 0 = deactivate, 2 = the window mode option changed
 #define TIMER_RETRY_START 3 // window timer: the start failed (no display, Windows / graphics card error): try again
 
 #define HOTKEY_TOGGLEUI 0
@@ -150,6 +151,7 @@ struct Options
         int   bannerSeconds { 5 };   // 3D banner display time: 0 .. 10 s, 11 = always
         int   bannerCorner { 0 };    // 0 bottom left, 1 bottom right, 2 top right, 3 top left
         float scale { 1.0f };        // HUD size (dragging the corner of the HUD changes it), 0.6 .. 2.0
+        float scaleWin { 1.0f };     // size of the interface in the window of the window mode (separate from the HUD over the screen)
     } hud;
     bool charts { false };
     int  shaderProfileNo { 0 };
@@ -169,6 +171,7 @@ struct Options
     int  EffectiveSubFramesMode() const { return (subFramesMode == SF_AUTO && captureWindow) ? SF_AUTO : SF_MANUAL; }
     AutoSettings   autoSub; // Auto: detection interval
     LowFpsSettings lowFps;  // Auto: behaviour of the BFI when the game runs below the threshold
+    bool uniformBrightness { false }; // Auto: brightness kept at the level the BFI has at the low fps threshold (see Renderer::UniformGain)
     // 3D (stereo emitter) only exists in Manual mode
     bool StereoAllowed() const { return EffectiveSubFramesMode() == SF_MANUAL; }
     int  captureMethod { 0 };
@@ -244,6 +247,7 @@ struct Options
     bool          startWithWindows { false };
     bool          minimizeToTray { true }; // the notification area icon always exists
     bool          startMinimized { false };
+    bool          windowMode { true }; // "Window mode": Nbeam opens as a normal window, the effects run only when activated or when a detected program runs
     std::string   defaultProfile; // "Default profile": the profile that comes back when a detected program is no longer running (empty = the previous one)
     struct ProfileLink
     {

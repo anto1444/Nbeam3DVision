@@ -70,7 +70,7 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
         s.syncAuto = s.syncRateHz <= 0.0f; // old profile: 0 meant automatic
     if(s.syncRateHz < 1.0f)
         s.syncRateHz = 120.0f;
-    Get(e, "syncOffsetUs", s.syncOffsetUs, -100000, 100000);
+    Get(e, "syncOffsetUs", s.syncOffsetUs, -100000, 0); // negative only: a positive value of an older profile becomes 0
     Get(e, "scanoutSync", s.scanoutSync);
     Get(e, "swapEyes", s.swapEyes);
     Get(e, "comPortNo", s.comPort.comPortNo, -1, 256);
@@ -80,7 +80,7 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
     Get(e, "aiStrength", s.ai.strength, 0.0f, 10.0f);
     Get(e, "aiConvergence", s.ai.convergence, 0.0f, 100.0f);
     Get(e, "aiSmoothing", s.ai.smoothing, 0.0f, 95.0f);
-    Get(e, "aiAntiHalo", s.ai.antiHalo, 0.0f, 300.0f);
+    Get(e, "aiAntiHalo", s.ai.antiHalo, -300.0f, 300.0f);
     Get(e, "aiUseGpu", s.ai.useGpu);
     Get(e, "aiShowDepth", s.ai.showDepth);
     Get(e, "aiMapBuffer", s.ai.mapBuffer);

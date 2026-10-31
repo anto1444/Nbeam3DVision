@@ -77,11 +77,17 @@ float4 PSmain(VSOut i) : SV_Target
         {
             d = depthTex.SampleLevel(lin, duv, 0.0);
             // anti-halo: the farthest depth around the pixel (horizontally, the direction of the shift), so the depth of a
-            // foreground object does not spill onto the background next to it and drag the object's colours along
+            // foreground object does not spill onto the background next to it and drag the object's colours along.
+            // Negative value: same, inverted (the nearest depth around the pixel), for an inverted depth map
             [branch] if(halo > 0.0)
             {
                 [unroll] for(int t = -4; t <= 4; t++)
                     d = min(d, depthTex.SampleLevel(lin, duv + float2(t * 0.25 * halo, 0.0), 0.0));
+            }
+            else if(halo < 0.0)
+            {
+                [unroll] for(int t = -4; t <= 4; t++)
+                    d = max(d, depthTex.SampleLevel(lin, duv + float2(t * 0.25 * halo, 0.0), 0.0));
             }
             duv = float2(i.uv.x - (d - conv) * strength * 0.5 * sgn, i.uv.y);
         }
@@ -213,7 +219,7 @@ void StereoConverter::Convert(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView
         memcpy(&p[4], &strength, sizeof(float));
         memcpy(&p[5], &conv, sizeof(float));
         p[6] = ai->showDepth ? 1u : 0u;
-        const float halo = ai->antiHalo * 0.01f * 0.012f; // 100 % = 1.2% of the width (slider up to 300 %)
+        const float halo = ai->antiHalo * 0.01f * 0.012f; // 100 % = 1.2% of the width (slider -300 to 300 %, negative = inverted)
         memcpy(&p[9], &halo, sizeof(float));
     }
     SetParams(ctx, p);

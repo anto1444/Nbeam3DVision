@@ -459,6 +459,7 @@ void Options::LoadApp()
             auto& a = ini["app"];
             LOAD_BOOL(a, startWithWindows)
             LOAD_BOOL(a, startMinimized)
+            LOAD_BOOL(a, windowMode)
             if(a.has("defaultProfile"))
                 defaultProfile = a.get("defaultProfile");
             if(a.has("hzSwitchMs"))
@@ -488,6 +489,7 @@ void Options::LoadApp()
             hud.bannerSeconds = (int)bs;
             hud.bannerCorner  = (int)bc;
             f("scale", hud.scale, 0.6f, 2.0f);
+            f("scaleWin", hud.scaleWin, 0.6f, 2.0f);
         }
         std::lock_guard<std::recursive_mutex> linksLock(linksMutex);
         profileLinks.clear();
@@ -552,6 +554,7 @@ void Options::SaveApp() const
         auto&              a = ini["app"];
         SAVE_BOOL(a, startWithWindows)
         SAVE_BOOL(a, startMinimized)
+        SAVE_BOOL(a, windowMode)
         a["defaultProfile"] = defaultProfile;
         a["hzSwitchMs"] = std::to_string((int)hzSwitchMs);
         a["hzSwitchN"]  = std::to_string(hzSwitchCount);
@@ -568,6 +571,7 @@ void Options::SaveApp() const
         h["bannerSeconds"] = std::to_string(hud.bannerSeconds);
         h["bannerCorner"]  = std::to_string(hud.bannerCorner);
         h["scale"]         = std::to_string(hud.scale);
+        h["scaleWin"]      = std::to_string(hud.scaleWin);
         {
             // one section at a time: creating a section moves the others in memory, so a reference kept to "hotkeys" while "gamepad"
             // is created points to freed memory (that crashed Nbeam on every save of the application settings)
@@ -1107,6 +1111,7 @@ void Options::Save(const ShaderManager& shaderManager) const
             SAVE_INT(s, subFramesMode)
             s["lowFpsThreshold"] = std::to_string(lowFps.threshold);
             s["lowFpsMode"]      = std::to_string(lowFps.mode);
+            SAVE_BOOL(s, uniformBrightness)
             s["autoInterval"]    = std::to_string(autoSub.intervalSec);
 
             auto& shader = ini["shader"];
@@ -1188,6 +1193,7 @@ void Options::Load(ShaderManager& shaderManager)
                         lowFps.threshold = std::clamp(std::stof(s.get("lowFpsThreshold")), 10.0f, 120.0f);
                     if(s.has("lowFpsMode"))
                         lowFps.mode = std::clamp(std::stoi(s.get("lowFpsMode")), 0, 1);
+                    uniformBrightness = s.has("uniformBrightness") && s.get("uniformBrightness") == "1";
                     // the captured program comes from the active profile link (captureProcess is not stored in profiles)
                     captureWindow = captureProcess.empty() ? NULL : FindCaptureWindow();
                     if(s.has("autoInterval"))

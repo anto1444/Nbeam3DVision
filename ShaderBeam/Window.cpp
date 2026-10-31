@@ -12,6 +12,7 @@ MIT License
 #include "Lang.h"
 #include "DepthAI.h"
 #include "Gamepad.h"
+#include "Helpers.h"
 #include <shellapi.h>
 #include <map>
 #include <shobjidl.h>
@@ -26,6 +27,22 @@ MIT License
 static bool          s_quitting     = false; // WM_DESTROY handled: nothing restarts any more
 static DWORD         s_mainThreadId = 0;
 static volatile LONG s_crashLogged  = 0;
+static void         StartKeyboardHook(HWND hWnd); // keyboard hook for the hotkeys (see LowLevelKeyboard)
+static void         StopKeyboardHook();
+static void         CreateSettingsWindow(HINSTANCE hInstance); // window mode (see RunOrStandby)
+static void         RunOrStandby(HWND hWnd);
+static void         ShowSettings(bool activate);
+static void         SetEffectsOn(HWND hWnd, bool on, bool showWindow);
+static void         StopSettingsUI();
+// window mode state (see RunOrStandby)
+static HWND                              s_setWnd       = NULL;  // the window of the window mode
+static bool                              s_setUi        = false; // the HUD is drawn in that window right now
+static bool                              s_standby      = false; // window mode, effects off: the overlay is stopped
+static bool                              s_effectsOn    = false; // window mode: the effects are wanted (activated)
+static bool                              s_effectsByLink = false; // ... activated by a profile detection (stopped when its program closes)
+static bool                              s_setShow      = true;  // the window is shown when the effects stop (false: kept in the notification area)
+static bool                              s_setActivate  = true;  // ... and gets the focus
+static bool                              s_hudAfterStart = false; // window mode turned off: the HUD over the screen is shown after the start
 
 static void WriteCrashStack(FILE* f, CONTEXT ctx)
 {
@@ -85,7 +102,7 @@ static FILE* OpenCrashLog(const char* what, unsigned code)
         return nullptr;
     SYSTEMTIME t;
     GetLocalTime(&t);
-    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 1.2.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
+    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.0.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
             GetCurrentThreadId(), GetCurrentThreadId() == s_mainThreadId ? "main" : "other (render / emitter / AI)");
     return f;
 }
@@ -428,6 +445,11 @@ static void MoveToDisplay(HWND hWnd, HMONITOR monitor);
 // make the HUD visible again (taskbar click, restore)
 static void ShowHud(HWND hWnd)
 {
+    if(s_standby)
+    {
+        ShowSettings(true); // window mode, effects off: the window
+        return;
+    }
     LeaveTray(hWnd);
     if(s_shaderBeam.m_options.ui)
         return;
@@ -471,7 +493,7 @@ static void ProcessFollowPoll(HWND hWnd)
     static bool       hidden    = false;
     static ULONGLONG  diffSince = 0;
     static LONG       lastW = 0, lastH = 0;
-    if(!s_appReady || !o.processOutput)
+    if(!s_appReady || !o.processOutput || s_standby)
     {
         o.processResizing = false;
         return;
@@ -527,6 +549,8 @@ static void ProcessAppearPoll(HWND hWnd)
     static int seen = 0;
     if(o.captureProcess.empty())
         s_focusFallback = false;
+    if(s_standby)
+        return; // window mode, effects off: the program is looked for when the effects start
     if(s_focusFallback)
     {
         // wait until the program is in front again
@@ -582,6 +606,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
     s_shaderBeam.Create(hWnd);
     PlaceWindow(hWnd);
+    CreateSettingsWindow(hInstance);
 
     // The window is only shown once the renderer is running: no black screen while it starts.
     // Hidden start: "Start minimized", the /tray argument, or a linked program already running (the HUD is not shown).
@@ -591,6 +616,24 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     for(const auto& link : opt.profileLinks)
         linkedRunning = linkedRunning || (link.enabled && !link.profile.empty() && ::ShaderBeam::Options::IsExeOnTaskbar(link.exe));
     const bool wantMinimized = s_startHidden || opt.startMinimized;
+    if(opt.windowMode)
+    {
+        // window mode: the window opens (the effects start later: button, hotkey or a detected program)
+        s_effectsOn   = false;
+        s_setShow     = !wantMinimized || !opt.minimizeToTray;
+        s_setActivate = !wantMinimized;
+        RunOrStandby(hWnd);
+        SetUnhandledExceptionFilter(CrashFilter);
+        if(wantMinimized && s_setWnd)
+        {
+            if(opt.minimizeToTray)
+                UpdateTrayIcon(hWnd);
+            else
+                ShowWindow(s_setWnd, SW_SHOWMINNOACTIVE);
+        }
+    }
+    else
+    {
     s_shaderBeam.Start();
     SetUnhandledExceptionFilter(CrashFilter); // again: a driver loaded by the start may have replaced it
     ShowWindow(hWnd, nCmdShow);
@@ -615,12 +658,14 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
         BringToFront(hWnd, true);
         s_shaderBeam.m_options.BringToForeground(hWnd);
     }
+    }
     s_shaderBeam.m_options.RefreshMonitors(false); // connected screens (names, refresh rates) for the profile detections
     // A program of a detection already running: Nbeam first starts completely on the default (or last) profile (capture, 3D, AI model loaded),
     // then the detection switches 2.5 s later. Switching while the first start was still going on could hang or crash Nbeam.
     s_linkReadyAt = GetTickCount64() + (linkedRunning ? 2500 : 500);
     SetTimer(hWnd, 1, 1000, NULL);
     SetTimer(hWnd, 2, 15, NULL); // hotkey fallback (see HotkeyPoll)
+    StartKeyboardHook(hWnd);     // hotkeys over games that read the keyboard in exclusive mode
     s_appReady = true;
     return TRUE;
 }
@@ -638,6 +683,110 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 // Hotkeys must work in every circumstance. RegisterHotKey is the primary way (global, works over games), but it fails
 // when another program already owns the combination, and its registration can be lost. For those hotkeys, poll the keyboard
 // (edge triggered, exact modifiers) and retry registering about once a second.
+//
+// Keyboard hook (WH_KEYBOARD_LL) on its own time-critical thread: the keys are seen by Windows itself, before the game reads them,
+// so the hotkeys also work over games that read the keyboard in exclusive mode (DirectInput) or raw input, where the polling sees
+// nothing. The keys are never swallowed. A hotkey seen by both ways only fires once (FireOnce).
+#define WM_USER_LLKEY (WM_USER + 3)
+static HWND              s_hookWnd      = NULL;
+static DWORD             s_hookThreadId = 0;
+static HANDLE            s_hookThread   = NULL;
+static ULONGLONG         s_lastFire[HOTKEY_COUNT] {};
+
+static bool FireOnce(int id)
+{
+    const ULONGLONG now = GetTickCount64();
+    if(now - s_lastFire[id] < 200)
+        return false; // already fired by the other way (hook / polling) for this press
+    s_lastFire[id] = now;
+    return true;
+}
+
+static LRESULT CALLBACK LowLevelKeyboard(int code, WPARAM wParam, LPARAM lParam)
+{
+    if(code == HC_ACTION)
+    {
+        static bool      down[256] {};
+        static ULONGLONG last = 0;
+        const auto*      k    = (const KBDLLHOOKSTRUCT*)lParam;
+        const ULONGLONG  now  = GetTickCount64();
+        if(now - last > 2000)
+            memset(down, 0, sizeof(down)); // a lost key release (locked session...) cannot leave a modifier stuck
+        last = now;
+        const DWORD vk = k->vkCode & 0xFF;
+        const bool  isDown = wParam == WM_KEYDOWN || wParam == WM_SYSKEYDOWN;
+        const bool  repeat = isDown && down[vk];
+        down[vk]           = isDown;
+        const bool modifier = vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL || vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU ||
+                              vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT || vk == VK_LWIN || vk == VK_RWIN;
+        if(isDown && !repeat && !modifier && s_hookWnd)
+        {
+            unsigned mods = 0;
+            if(down[VK_LCONTROL] || down[VK_RCONTROL] || down[VK_CONTROL]) mods |= MOD_CONTROL;
+            if(down[VK_LMENU] || down[VK_RMENU] || down[VK_MENU]) mods |= MOD_ALT;
+            if(down[VK_LSHIFT] || down[VK_RSHIFT] || down[VK_SHIFT]) mods |= MOD_SHIFT;
+            if(down[VK_LWIN] || down[VK_RWIN]) mods |= MOD_WIN;
+            PostMessage(s_hookWnd, WM_USER_LLKEY, vk, mods); // matched on the main thread; the hook returns at once
+        }
+    }
+    return CallNextHookEx(NULL, code, wParam, lParam);
+}
+
+static DWORD WINAPI KeyboardHookThread(LPVOID)
+{
+    SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL); // keys handled at once, even while a game loads
+    HHOOK hook = SetWindowsHookExW(WH_KEYBOARD_LL, LowLevelKeyboard, GetModuleHandleW(NULL), 0);
+    MSG   msg;
+    while(GetMessageW(&msg, NULL, 0, 0) > 0)
+        DispatchMessageW(&msg);
+    if(hook)
+        UnhookWindowsHookEx(hook);
+    return 0;
+}
+
+static void StartKeyboardHook(HWND hWnd)
+{
+    if(s_hookThread)
+        return;
+    s_hookWnd    = hWnd;
+    s_hookThread = CreateThread(NULL, 0, KeyboardHookThread, NULL, 0, &s_hookThreadId);
+}
+
+static void StopKeyboardHook()
+{
+    if(!s_hookThread)
+        return;
+    PostThreadMessageW(s_hookThreadId, WM_QUIT, 0, 0);
+    WaitForSingleObject(s_hookThread, 1000);
+    CloseHandle(s_hookThread);
+    s_hookThread = NULL;
+    s_hookWnd    = NULL;
+}
+
+static void AdjustApply(int kind, int dir, int step);
+
+// a key press seen by the hook: the hotkey with exactly this key and these modifiers fires
+static void HookKey(HWND hWnd, unsigned vk, unsigned mods)
+{
+    auto& o = s_shaderBeam.m_options;
+    if(!s_appReady || o.hotkeysSuspended)
+        return;
+    for(int id = 0; id < HOTKEY_COUNT; id++)
+    {
+        const auto& hk = o.hotkeys[id];
+        if(!hk.vk || hk.vk != vk || hk.mods != mods || !FireOnce(id))
+            continue;
+        if(id >= HOTKEY_ADJUST_FIRST)
+        {
+            const int kind = (id - HOTKEY_ADJUST_FIRST) / 2;
+            const int dir  = ((id - HOTKEY_ADJUST_FIRST) % 2) ? 1 : -1;
+            AdjustApply(kind, dir, kind >= 2 ? 100 : 1);
+        }
+        else
+            PostMessage(hWnd, WM_HOTKEY, id, 0);
+    }
+}
+
 static void HotkeyPoll(HWND hWnd)
 {
     auto& o = s_shaderBeam.m_options;
@@ -662,7 +811,7 @@ static void HotkeyPoll(HWND hWnd)
         if(retry && o.RegisterHotkey(id))
             continue;
         const bool pressed = mods == o.hotkeys[id].mods && key((int)o.hotkeys[id].vk);
-        if(pressed && !down[id])
+        if(pressed && !down[id] && FireOnce(id))
             PostMessage(hWnd, WM_HOTKEY, id, 0);
         down[id] = pressed;
     }
@@ -698,7 +847,7 @@ static void AdjustApply(int kind, int dir, int step)
         const double syncHz = o.emitter.EffectiveSyncHz(o.vsyncRate, o.subFrames);
         const int    range  = syncHz > 0 ? (int)(1e6 / syncHz) : 10000;
         if(kind == 2)
-            o.emitter.syncOffsetUs = std::clamp(o.emitter.syncOffsetUs + dir * step, -range, range);
+            o.emitter.syncOffsetUs = std::clamp(o.emitter.syncOffsetUs + dir * step, -range, 0); // negative only
         else
             o.emitter.nvidia.openDurationUs = std::clamp(o.emitter.nvidia.openDurationUs + (float)(dir * step), 0.0f, (float)range);
         break;
@@ -732,6 +881,8 @@ static void AdjustPoll()
         if(down[id])
             continue; // holding the key does nothing: one step per press
         down[id] = true;
+        if(!FireOnce(id))
+            continue; // already done by the keyboard hook
         const int kind = (id - HOTKEY_ADJUST_FIRST) / 2;
         const int dir  = ((id - HOTKEY_ADJUST_FIRST) % 2) ? 1 : -1;
         AdjustApply(kind, dir, kind >= 2 ? 100 : 1); // 3D timings: 100 us per press; SubFrames / Clear frames: 1
@@ -783,12 +934,306 @@ static void PadPoll(HWND hWnd)
     }
 }
 
+// ---- Window mode ----------------------------------------------------------------------------------------------------
+// Nbeam opens as a normal window (like Lossless Scaling) showing the HUD layout: the settings are made there while the effects
+// are off (the overlay renderer is stopped, nothing is captured). The effects start (overlay over the screen, as before) when
+// "Activate effects" is pressed, with the Show / hide effects hotkey, or when a detected program runs; they stop and the window
+// comes back when that program closes or when they are deactivated. While they run, the HUD over the screen works as before.
+// ImGui is used by one side at a time: the window (main thread) while the effects are off, the renderer while they run.
+static winrt::com_ptr<ID3D11Device>        s_setDev;
+static winrt::com_ptr<ID3D11DeviceContext> s_setCtx;
+static winrt::com_ptr<IDXGISwapChain1>     s_setChain;
+static winrt::com_ptr<ID3D11RenderTargetView> s_setRtv;
+static UINT                              s_setW = 0, s_setH = 0;
+static const wchar_t*                    SETTINGS_CLASS = L"Nbeam3DVisionWindow";
+
+static void StopSettingsUI()
+{
+    if(!s_setUi)
+        return;
+    KillTimer(s_setWnd, 1);
+    s_shaderBeam.m_ui.Stop();
+    s_shaderBeam.m_ui.SetWindowMode(false);
+    s_setUi = false;
+    s_setRtv   = nullptr;
+    s_setChain = nullptr;
+    if(s_setCtx)
+        s_setCtx->ClearState();
+    s_setCtx = nullptr;
+    s_setDev = nullptr;
+    s_setW = s_setH = 0;
+}
+
+static bool SetRenderTarget()
+{
+    s_setRtv = nullptr;
+    winrt::com_ptr<ID3D11Texture2D> back;
+    if(FAILED(s_setChain->GetBuffer(0, __uuidof(ID3D11Texture2D), back.put_void())))
+        return false;
+    return SUCCEEDED(s_setDev->CreateRenderTargetView(back.get(), nullptr, s_setRtv.put()));
+}
+
+// the HUD in the window: its own small Direct3D device and swap chain (the overlay ones do not exist while the effects are off)
+static bool StartSettingsUI()
+{
+    StopSettingsUI();
+    auto& ui = s_shaderBeam.m_ui;
+    auto& o  = s_shaderBeam.m_options;
+    if(ui.m_displays.empty())
+        s_shaderBeam.RefreshDisplayList();
+    if(ui.m_displays.empty() || ui.m_adapters.empty())
+        return false;
+    if(o.shaderDisplayNo >= ui.m_displays.size())
+        o.shaderDisplayNo = 0;
+    if(o.captureDisplayNo >= ui.m_displays.size())
+        o.captureDisplayNo = 0;
+    if(o.shaderAdapterNo >= ui.m_adapters.size())
+        o.shaderAdapterNo = 0;
+    if(o.captureAdapterNo >= ui.m_adapters.size())
+        o.captureAdapterNo = 0;
+    o.outputWidth  = ui.m_displays[o.shaderDisplayNo].width; // shown in the banner of the HUD
+    o.outputHeight = ui.m_displays[o.shaderDisplayNo].height;
+    s_shaderBeam.UpdateVsyncRate();
+    try
+    {
+        s_setDev = ::ShaderBeam::Helpers::CreateD3DDevice(ui.m_adapters[o.shaderAdapterNo].adapter.get());
+        s_setDev->GetImmediateContext(s_setCtx.put());
+        winrt::com_ptr<IDXGIDevice>   dxgiDevice  = s_setDev.as<IDXGIDevice>();
+        winrt::com_ptr<IDXGIAdapter>  dxgiAdapter;
+        winrt::com_ptr<IDXGIFactory2> factory;
+        winrt::check_hresult(dxgiDevice->GetAdapter(dxgiAdapter.put()));
+        winrt::check_hresult(dxgiAdapter->GetParent(__uuidof(IDXGIFactory2), factory.put_void()));
+        DXGI_SWAP_CHAIN_DESC1 d {};
+        d.Format           = DXGI_FORMAT_B8G8R8A8_UNORM;
+        d.SampleDesc.Count = 1;
+        d.BufferUsage      = DXGI_USAGE_RENDER_TARGET_OUTPUT;
+        d.BufferCount      = 2;
+        d.SwapEffect       = DXGI_SWAP_EFFECT_FLIP_DISCARD;
+        d.AlphaMode        = DXGI_ALPHA_MODE_IGNORE;
+        winrt::check_hresult(factory->CreateSwapChainForHwnd(s_setDev.get(), s_setWnd, &d, nullptr, nullptr, s_setChain.put()));
+        factory->MakeWindowAssociation(s_setWnd, DXGI_MWA_NO_ALT_ENTER);
+        if(!SetRenderTarget())
+            throw std::runtime_error("render target");
+        ui.SetWindowMode(true);
+        o.ui = true;
+        const float dpi = (float)GetDpiForWindow(s_setWnd);
+        ui.Start(s_setWnd, dpi / USER_DEFAULT_SCREEN_DPI, s_setDev, s_setCtx);
+    }
+    catch(...)
+    {
+        s_shaderBeam.m_ui.SetWindowMode(false);
+        s_setRtv   = nullptr;
+        s_setChain = nullptr;
+        s_setCtx   = nullptr;
+        s_setDev   = nullptr;
+        return false;
+    }
+    RECT rc {};
+    GetClientRect(s_setWnd, &rc);
+    s_setW = (UINT)(rc.right - rc.left);
+    s_setH = (UINT)(rc.bottom - rc.top);
+    s_setUi = true;
+    SetTimer(s_setWnd, 1, 16, NULL); // drawn about 60 times a second while it is visible
+    return true;
+}
+
+static void RenderSettings()
+{
+    if(!s_setUi || !IsWindowVisible(s_setWnd) || IsIconic(s_setWnd))
+        return;
+    RECT rc {};
+    GetClientRect(s_setWnd, &rc);
+    const UINT w = (UINT)(rc.right - rc.left), h = (UINT)(rc.bottom - rc.top);
+    if(w == 0 || h == 0)
+        return;
+    if(w != s_setW || h != s_setH)
+    {
+        s_setRtv = nullptr;
+        s_setCtx->OMSetRenderTargets(0, nullptr, nullptr);
+        if(FAILED(s_setChain->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0)) || !SetRenderTarget())
+            return;
+        s_setW = w;
+        s_setH = h;
+    }
+    ID3D11RenderTargetView* rtv = s_setRtv.get();
+    s_setCtx->OMSetRenderTargets(1, &rtv, nullptr);
+    const float clear[4] = { 0.05f, 0.055f, 0.05f, 1.0f };
+    s_setCtx->ClearRenderTargetView(rtv, clear);
+    try
+    {
+        s_shaderBeam.m_ui.Render();
+    }
+    catch(...)
+    { }
+    const HRESULT hr = s_setChain->Present(1, 0);
+    if(hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
+        PostMessage(s_shaderBeam.m_options.outputWindow, WM_USER_RESTART, 0, 0); // graphics card lost: the window starts again
+}
+
+// shows the window (taskbar, notification area, second launch, HUD hotkey)
+static void ShowSettings(bool activate)
+{
+    if(!s_setWnd)
+        return;
+    s_setShow = true;
+    s_inTray  = false;
+    if(IsIconic(s_setWnd))
+        ShowWindow(s_setWnd, activate ? SW_RESTORE : SW_SHOWNOACTIVATE);
+    else
+        ShowWindow(s_setWnd, activate ? SW_SHOW : SW_SHOWNOACTIVATE);
+    if(activate)
+        ForceForeground(s_setWnd);
+}
+
+static void HideSettings()
+{
+    if(s_setWnd)
+        ShowWindow(s_setWnd, SW_HIDE);
+}
+
+// the state the renderer must be in: started (effects on) or the window (window mode, effects off). Called instead of Start().
+static void RunOrStandby(HWND hWnd)
+{
+    auto& o = s_shaderBeam.m_options;
+    if(o.windowMode && !s_effectsOn)
+    {
+        // window mode, effects off: the overlay stays stopped and hidden, the HUD is drawn in the window
+        ShowWindow(hWnd, SW_HIDE);
+        TaskbarButton(hWnd, false);
+        s_standby = true;
+        if(!StartSettingsUI())
+        {
+            SetTimer(hWnd, TIMER_RETRY_START, 2000, nullptr); // no display / graphics card yet: try again
+            return;
+        }
+        if(s_setShow)
+            ShowSettings(s_setActivate);
+        s_setActivate = false;
+        return;
+    }
+    const bool fromStandby = s_standby;
+    if(s_setUi)
+        StopSettingsUI();
+    HideSettings();
+    s_standby = false;
+    if(fromStandby)
+    {
+        o.ui = false; // effects activated: HUD hidden over the screen (its hotkey shows it)
+        SetClickThrough(hWnd, true);
+    }
+    s_shaderBeam.Start();
+    if(fromStandby)
+    {
+        ShowWindow(hWnd, SW_SHOWNA); // shown once the renderer runs (no black screen while it starts)
+        BringToFront(hWnd, false);
+    }
+    if(s_hudAfterStart)
+    {
+        s_hudAfterStart = false;
+        ShowWindow(hWnd, SW_SHOWNA);
+        o.ui = false;
+        PostMessage(hWnd, WM_HOTKEY, HOTKEY_TOGGLEUI, 1); // window mode turned off: the HUD over the screen is shown
+    }
+    else if(fromStandby)
+    {
+        const HWND game = (HWND)o.captureWindow;
+        if(game && IsWindow(game) && !IsIconic(game))
+            ForceForeground(game); // the game keeps the focus
+    }
+}
+
+// window mode: effects on / off (button, hotkey, notification area menu)
+static void SetEffectsOn(HWND hWnd, bool on, bool showWindow)
+{
+    s_effectsOn     = on;
+    s_effectsByLink = false;
+    if(!on)
+    {
+        s_setShow     = s_setShow || showWindow;
+        s_setActivate = showWindow;
+    }
+    PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+}
+
+static LRESULT CALLBACK SettingsWndProc(HWND w, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    if(s_setUi && s_shaderBeam.m_ui.Input(w, message, wParam, lParam))
+        return true;
+    switch(message)
+    {
+    case WM_TIMER:
+        if(wParam == 1)
+            RenderSettings();
+        return 0;
+    case WM_SIZE:
+        if(wParam != SIZE_MINIMIZED)
+            RenderSettings(); // drawn at once while the edges are dragged
+        return 0;
+    case WM_GETMINMAXINFO: {
+        const float k = (float)GetDpiForWindow(w) / USER_DEFAULT_SCREEN_DPI;
+        auto*       mm = (MINMAXINFO*)lParam;
+        mm->ptMinTrackSize.x = (LONG)(640 * k);
+        mm->ptMinTrackSize.y = (LONG)(420 * k);
+        return 0;
+    }
+    case WM_DPICHANGED: {
+        const RECT* r = (const RECT*)lParam;
+        SetWindowPos(w, NULL, r->left, r->top, r->right - r->left, r->bottom - r->top, SWP_NOZORDER | SWP_NOACTIVATE);
+        if(s_setUi)
+            StartSettingsUI(); // fonts and sizes for the new screen
+        return 0;
+    }
+    case WM_ERASEBKGND:
+        return 1;
+    case WM_CLOSE:
+        // the cross: kept in the notification area with that option (detections keep working), otherwise Nbeam quits
+        if(s_shaderBeam.m_options.minimizeToTray)
+        {
+            s_setShow = false;
+            HideSettings();
+            UpdateTrayIcon(s_shaderBeam.m_options.outputWindow);
+        }
+        else
+            PostMessage(s_shaderBeam.m_options.outputWindow, WM_DESTROY, 0, 0);
+        return 0;
+    }
+    return DefWindowProc(w, message, wParam, lParam);
+}
+
+static void CreateSettingsWindow(HINSTANCE hInstance)
+{
+    WNDCLASSEXW wc {};
+    wc.cbSize        = sizeof(wc);
+    wc.style         = CS_HREDRAW | CS_VREDRAW;
+    wc.lpfnWndProc   = SettingsWndProc;
+    wc.hInstance     = hInstance;
+    wc.hIcon         = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_SHADERBEAM));
+    wc.hIconSm       = LoadIcon(hInstance, MAKEINTRESOURCE(IDI_SMALL));
+    wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
+    wc.lpszClassName = SETTINGS_CLASS;
+    RegisterClassExW(&wc);
+    // centred on the main screen, 62 x 40 font sizes (the size of the HUD at 100 %)
+    const UINT  dpi = GetDpiForSystem();
+    const float k   = (float)dpi / USER_DEFAULT_SCREEN_DPI;
+    RECT        r { 0, 0, (LONG)(62 * 16 * k), (LONG)(40 * 16 * k) };
+    AdjustWindowRectExForDpi(&r, WS_OVERLAPPEDWINDOW, FALSE, 0, dpi);
+    const int ww = r.right - r.left, wh = r.bottom - r.top;
+    RECT      work {};
+    SystemParametersInfoW(SPI_GETWORKAREA, 0, &work, 0);
+    const int x = work.left + (std::max)(0, (int)(work.right - work.left - ww) / 2);
+    const int y = work.top + (std::max)(0, (int)(work.bottom - work.top - wh) / 2);
+    s_setWnd = CreateWindowExW(0, SETTINGS_CLASS, L"Nbeam 3D Vision", WS_OVERLAPPEDWINDOW, x, y, ww, wh, nullptr, nullptr, hInstance, nullptr);
+}
+
 // the HUD goes back to the notification area (taskbar button removed) when a linked program starts or stops
 static void ReduceHud(HWND hWnd)
 {
     auto& o = s_shaderBeam.m_options;
     if(!s_appReady)
         return;
+    if(s_standby)
+        return; // window mode, effects off: nothing over the screen
     if(o.ui)
         s_shaderBeam.m_ui.Toggle();
     SetClickThrough(hWnd, true);
@@ -1046,6 +1491,11 @@ static void ProfileLinkPoll(HWND hWnd)
         candidate = -1;
         if(target != o.profileFile)
             o.pendingProfile = target;
+        if(o.windowMode && !s_effectsOn)
+        {
+            s_effectsOn     = true; // window mode: the detected program starts the effects
+            s_effectsByLink = true;
+        }
         s_quietUntil = GetTickCount64() + 3000;
         s_linkActive = true;
         // the linked program is the captured process (its window, and the output over it with the "Process" output)
@@ -1084,6 +1534,12 @@ static void ProfileLinkPoll(HWND hWnd)
         {
             active       = -1;
             s_linkActive = false;
+            if(s_effectsByLink)
+            {
+                s_effectsOn     = false; // window mode: the effects started by this program stop with it, the window comes back
+                s_effectsByLink = false;
+                s_setActivate   = false;
+            }
             std::string back = o.profileFile; // the profile that comes back: the default profile if one is set, otherwise the previous one
             const std::string want = !defProfile.empty() && std::filesystem::exists(::ShaderBeam::Options::ProfilesDir() / defProfile) ? defProfile : previous;
             if(!want.empty() && _stricmp(want.c_str(), o.profileFile.c_str()) != 0 && std::filesystem::exists(::ShaderBeam::Options::ProfilesDir() / want))
@@ -1129,7 +1585,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             HMENU       menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING | (o.startWithWindows ? MF_CHECKED : 0), TRAY_CMD_AUTOSTART, WideOf(::ShaderBeam::Tr("Start with Windows")).c_str());
             AppendMenuW(menu, MF_STRING | (o.startMinimized ? MF_CHECKED : 0), TRAY_CMD_STARTMIN, WideOf(::ShaderBeam::Tr("Start minimized")).c_str());
-            AppendMenuW(menu, MF_STRING, TRAY_CMD_EFFECTS, WideOf(::ShaderBeam::Tr(o.effectsSuspended ? "Show effects" : "Hide effects")).c_str());
+            AppendMenuW(menu, MF_STRING, TRAY_CMD_EFFECTS,
+                        WideOf(::ShaderBeam::Tr(o.windowMode ? (s_effectsOn ? "Deactivate effects" : "Activate effects") : (o.effectsSuspended ? "Show effects" : "Hide effects"))).c_str());
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
             // "Settings profile": the available profiles (the submenu opens when the mouse rests on it)
             const auto profiles = ::ShaderBeam::Options::ListProfiles();
@@ -1161,7 +1618,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 o.SaveApp();
             }
             else if(cmd == TRAY_CMD_EFFECTS)
-                o.effectsSuspended = !o.effectsSuspended; // same as the HUD button Show / Hide
+            {
+                if(o.windowMode)
+                    SetEffectsOn(hWnd, !s_effectsOn, false); // window mode: start / stop the effects
+                else
+                    o.effectsSuspended = !o.effectsSuspended; // same as the HUD button Show / Hide
+            }
             else if(cmd >= TRAY_CMD_PROFILE_BASE && (size_t)(cmd - TRAY_CMD_PROFILE_BASE) < profiles.size())
             {
                 const std::string& name = profiles[cmd - TRAY_CMD_PROFILE_BASE];
@@ -1231,7 +1693,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         if(wParam == 2)
         {
-            if(s_appReady && s_tbShown != (!s_shaderBeam.m_options.minimizeToTray || s_shaderBeam.m_options.ui))
+            if(s_appReady && !s_standby && s_tbShown != (!s_shaderBeam.m_options.minimizeToTray || s_shaderBeam.m_options.ui))
                 TaskbarButton(hWnd, !s_tbShown); // with the tray option the taskbar button only exists while the HUD is visible
             HotkeyPoll(hWnd);
             AdjustPoll();
@@ -1257,7 +1719,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         UpdateTrayIcon(hWnd);
         // settings changed in the HUD or by a hotkey: saved at once into the active profile (the profile of the detected program
         // while it runs), so nothing is lost if Nbeam is closed or stops unexpectedly
-        if(s_shaderBeam.m_active && s_shaderBeam.m_ui.TakeSaveRequest())
+        if((s_shaderBeam.m_active || s_standby) && s_shaderBeam.m_ui.TakeSaveRequest())
             s_shaderBeam.m_options.Save(s_shaderBeam.Shaders());
         RefreshRatePoll(hWnd);
         DisplayChangePoll(hWnd);
@@ -1286,15 +1748,44 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 so.captureDisplayNo = 0;
         }
         s_shaderBeam.SwitchProfile();
-        PlaceWindow(hWnd);
-        s_shaderBeam.Start();
+        if(!s_standby || !s_shaderBeam.m_options.windowMode || s_effectsOn)
+            PlaceWindow(hWnd);
+        RunOrStandby(hWnd); // started, or the window of the window mode
         break;
     }
     break;
     case WM_USER_BENCHMARK: {
-        s_shaderBeam.RunBenchmark();
+        if(s_shaderBeam.m_active)
+            s_shaderBeam.RunBenchmark();
         break;
     }
+    case WM_USER_EFFECTS: {
+        auto& o = s_shaderBeam.m_options;
+        if(wParam == 2)
+        {
+            // the window mode option changed (Application)
+            if(o.windowMode)
+            {
+                s_effectsOn     = s_linkActive; // a detected program running keeps its effects
+                s_effectsByLink = s_linkActive;
+                s_setShow       = true;
+                s_setActivate   = true;
+            }
+            else
+            {
+                s_effectsOn     = true;
+                s_effectsByLink = false;
+                s_hudAfterStart = s_standby; // from the window: the HUD over the screen takes over
+            }
+            PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+        }
+        else if(o.windowMode)
+            SetEffectsOn(hWnd, wParam == 1, true);
+        break;
+    }
+    case WM_USER_LLKEY:
+        HookKey(hWnd, (unsigned)wParam, (unsigned)lParam);
+        break;
     case WM_USER_NOWINDOW: {
         s_shaderBeam.m_options.captureWindow = s_shaderBeam.m_options.captureProcess.empty() ? NULL : s_shaderBeam.m_options.FindCaptureWindow(); // another window of the same program, or the display
         PostMessage(hWnd, WM_USER_RESTART, 0, 0);
@@ -1373,11 +1864,34 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             break;
         }
         case HOTKEY_EFFECTS:
+            if(s_shaderBeam.m_options.windowMode)
+            {
+                // window mode: the effects start / stop (the window comes back without taking the focus from the game)
+                SetEffectsOn(hWnd, !s_effectsOn, false);
+                break;
+            }
             // same as the HUD button Show / Hide: all effects and the 3D emitter off / on
             s_shaderBeam.m_options.effectsSuspended = !s_shaderBeam.m_options.effectsSuspended;
             s_shaderBeam.m_ui.ShowNote(::ShaderBeam::Tr(s_shaderBeam.m_options.effectsSuspended ? "Effects hidden" : "Effects shown"));
             break;
         case HOTKEY_TOGGLEUI:
+            if(s_standby)
+            {
+                // window mode, effects off: the hotkey shows the window, or sends it back to the notification area / taskbar
+                if(s_setWnd && IsWindowVisible(s_setWnd) && !IsIconic(s_setWnd) && GetForegroundWindow() == s_setWnd)
+                {
+                    if(s_shaderBeam.m_options.minimizeToTray)
+                    {
+                        s_setShow = false;
+                        ShowWindow(s_setWnd, SW_HIDE);
+                    }
+                    else
+                        ShowWindow(s_setWnd, SW_MINIMIZE);
+                }
+                else
+                    ShowSettings(true);
+                break;
+            }
             if(s_shaderBeam.m_ui.Toggle())
             {
                 // UI visible: the effects keep their state (HUD button Show / Hide)
@@ -1411,9 +1925,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if(s_quitting)
             break;
         s_quitting = true;
+        StopKeyboardHook();
         KillTimer(hWnd, TIMER_RETRY_START);
         RestoreRefreshRateNow();
         RemoveTrayIcon(hWnd);
+        StopSettingsUI();
+        s_standby = false;
         s_shaderBeam.Stop();
         s_shaderBeam.Destroy();
         KillTimer(hWnd, 1);

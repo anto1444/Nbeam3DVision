@@ -120,7 +120,7 @@ static bool WindowsHdrOn(HWND hWnd)
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
-                               "              Version 1.2.0\n"
+                               "              Version 2.0.0\n"
                                "         Made by anto1444, 2026\n"
                                "\n"
                                "   Based on ShaderBeam (c) 2025-2026 mausimus\n"
@@ -131,7 +131,7 @@ const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
                                "        Timothy Lottes @NOTimothyLottes\n"
                                "          https://blurbusters.com/crt\n\n";
 const char* SHADERBEAM_ABOUT_FR = "             " SHADERBEAM_TITLE "\n"
-                                  "              Version 1.2.0\n"
+                                  "              Version 2.0.0\n"
                                   "         Fait par anto1444, 2026\n"
                                   "\n"
                                   "   Basé sur ShaderBeam (c) 2025-2026 mausimus\n"
@@ -295,6 +295,7 @@ void UI::Start(HWND window, float scale, winrt::com_ptr<ID3D11Device> device, wi
 {
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
+    m_hwnd = window;
     s_restoreFrames = 4;
     ImGui::StyleColorsDark();
 
@@ -535,7 +536,7 @@ void UI::RenderHudHeader(float height)
     if(m_logo)
         dl->AddImage(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(logoX, p0.y + (height - logoSz) * 0.5f), ImVec2(logoX + logoSz, p0.y + (height + logoSz) * 0.5f));
     dl->AddText(font, titleSz, ImVec2(titleX, p0.y + height * 0.5f - titleSz * 0.95f), cOnAcc, title);
-    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v1.2.0");
+    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v2.0.0");
 
     // output mode (like "3440 x 1440 | 240Hz")
     char mode[64];
@@ -568,36 +569,39 @@ void UI::RenderHudHeader(float height)
         modeEnd = sx + fs * 0.4f + cw + fs * 1.0f;
     }
 
-    // quit cross
+    // quit cross and minimize dash (not in window mode: the window has its own title bar)
     const float xs = fs * 1.1f;
     const ImVec2 xc(p1.x - fs * 1.4f, p0.y + height * 0.5f);
-    ImGui::SetCursorScreenPos(ImVec2(xc.x - xs, xc.y - xs));
-    if(ImGui::InvisibleButton("##quit", ImVec2(xs * 2, xs * 2)))
-        PostMessage(m_options.outputWindow, WM_DESTROY, 0, 0); // same as Quit in the notification area menu
-    const bool xHov = ImGui::IsItemHovered();
-    if(ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
-        dl->AddRect(ImVec2(xc.x - xs, xc.y - xs), ImVec2(xc.x + xs, xc.y + xs), cWhite, 0.0f, 0, 2.0f);
-    if(xHov)
-    {
-        ImGui::SetTooltip("%s", Tr("Quit"));
-        dl->AddRectFilled(ImVec2(xc.x - xs, xc.y - xs), ImVec2(xc.x + xs, xc.y + xs), ImGui::GetColorU32(ImVec4(0.85f, 0.15f, 0.15f, 0.9f)));
-    }
-    dl->AddLine(ImVec2(xc.x - xs * 0.45f, xc.y - xs * 0.45f), ImVec2(xc.x + xs * 0.45f, xc.y + xs * 0.45f), cWhite, 2.0f);
-    dl->AddLine(ImVec2(xc.x - xs * 0.45f, xc.y + xs * 0.45f), ImVec2(xc.x + xs * 0.45f, xc.y - xs * 0.45f), cWhite, 2.0f);
-
-    // minimize dash, left of the cross: hides the HUD (same as the hotkey)
     const ImVec2 mc(xc.x - xs * 2.3f, xc.y);
-    ImGui::SetCursorScreenPos(ImVec2(mc.x - xs, mc.y - xs));
-    if(ImGui::InvisibleButton("##minimize", ImVec2(xs * 2, xs * 2)))
-        PostMessage(m_options.outputWindow, WM_HOTKEY, HOTKEY_TOGGLEUI, 1);
-    if(ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
-        dl->AddRect(ImVec2(mc.x - xs, mc.y - xs), ImVec2(mc.x + xs, mc.y + xs), cWhite, 0.0f, 0, 2.0f);
-    if(ImGui::IsItemHovered())
+    if(!m_windowMode)
     {
-        ImGui::SetTooltip("%s: %s", Tr("Hide HUD"), Options::HotkeyText(m_options.hotkeys[HOTKEY_TOGGLEUI]).c_str());
-        dl->AddRectFilled(ImVec2(mc.x - xs, mc.y - xs), ImVec2(mc.x + xs, mc.y + xs), ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.18f)));
+        ImGui::SetCursorScreenPos(ImVec2(xc.x - xs, xc.y - xs));
+        if(ImGui::InvisibleButton("##quit", ImVec2(xs * 2, xs * 2)))
+            PostMessage(m_options.outputWindow, WM_DESTROY, 0, 0); // same as Quit in the notification area menu
+        const bool xHov = ImGui::IsItemHovered();
+        if(ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
+            dl->AddRect(ImVec2(xc.x - xs, xc.y - xs), ImVec2(xc.x + xs, xc.y + xs), cWhite, 0.0f, 0, 2.0f);
+        if(xHov)
+        {
+            ImGui::SetTooltip("%s", Tr("Quit"));
+            dl->AddRectFilled(ImVec2(xc.x - xs, xc.y - xs), ImVec2(xc.x + xs, xc.y + xs), ImGui::GetColorU32(ImVec4(0.85f, 0.15f, 0.15f, 0.9f)));
+        }
+        dl->AddLine(ImVec2(xc.x - xs * 0.45f, xc.y - xs * 0.45f), ImVec2(xc.x + xs * 0.45f, xc.y + xs * 0.45f), cWhite, 2.0f);
+        dl->AddLine(ImVec2(xc.x - xs * 0.45f, xc.y + xs * 0.45f), ImVec2(xc.x + xs * 0.45f, xc.y - xs * 0.45f), cWhite, 2.0f);
+
+        // minimize dash, left of the cross: hides the HUD (same as the hotkey)
+        ImGui::SetCursorScreenPos(ImVec2(mc.x - xs, mc.y - xs));
+        if(ImGui::InvisibleButton("##minimize", ImVec2(xs * 2, xs * 2)))
+            PostMessage(m_options.outputWindow, WM_HOTKEY, HOTKEY_TOGGLEUI, 1);
+        if(ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
+            dl->AddRect(ImVec2(mc.x - xs, mc.y - xs), ImVec2(mc.x + xs, mc.y + xs), cWhite, 0.0f, 0, 2.0f);
+        if(ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("%s: %s", Tr("Hide HUD"), Options::HotkeyText(m_options.hotkeys[HOTKEY_TOGGLEUI]).c_str());
+            dl->AddRectFilled(ImVec2(mc.x - xs, mc.y - xs), ImVec2(mc.x + xs, mc.y + xs), ImGui::GetColorU32(ImVec4(1.0f, 1.0f, 1.0f, 0.18f)));
+        }
+        dl->AddLine(ImVec2(mc.x - xs * 0.5f, mc.y + xs * 0.25f), ImVec2(mc.x + xs * 0.5f, mc.y + xs * 0.25f), cWhite, 2.0f);
     }
-    dl->AddLine(ImVec2(mc.x - xs * 0.5f, mc.y + xs * 0.25f), ImVec2(mc.x + xs * 0.5f, mc.y + xs * 0.25f), cWhite, 2.0f);
 
     // cells, from the right: profile, HDR (the ones that do not fit are left out)
     std::string profile = m_options.profileFile;
@@ -608,7 +612,7 @@ void UI::RenderHudHeader(float height)
     const bool hdrOn = WindowsHdrOn(m_options.outputWindow);
     struct Cell { std::string label, value; };
     const Cell cells[2] = { { Tr("Profile"), profile }, { "HDR", hdrOn ? "ON" : "OFF" } };
-    float      right    = mc.x - xs - fs * 0.6f;
+    float      right    = m_windowMode ? p1.x - fs * 0.6f : mc.x - xs - fs * 0.6f;
     for(int i = 1; i >= 0; i--)
     {
         const float cw = (std::max)(textW(fs * 1.0f, cells[i].value.c_str()), textW(fs * 0.85f, cells[i].label.c_str())) + fs * 2.0f;
@@ -634,7 +638,7 @@ void UI::Render()
         // Gamepad navigation (D-pad / stick: move, A: activate, B: back, LB / RB: slow / fast on sliders), only while the HUD is open
         // and in front, so that a pad used for the game below never moves the HUD by accident.
         ImGuiIO& io = ImGui::GetIO();
-        const bool padNav = m_options.ui && s_padCaptureId < 0 && GetForegroundWindow() == m_options.outputWindow;
+        const bool padNav = m_options.ui && s_padCaptureId < 0 && GetForegroundWindow() == m_hwnd;
         if(padNav)
             io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
         else
@@ -670,7 +674,7 @@ void UI::Render()
     {
         // HUD scale (set by dragging the corner of the HUD): sizes and font follow, the layout is the same at every scale.
         ImGuiIO& io = ImGui::GetIO();
-        float    k  = std::clamp(m_options.hud.scale, 0.6f, 2.0f);
+        float    k  = std::clamp(HudScale(), 0.6f, 2.0f);
         if(io.DisplaySize.x > 0 && io.DisplaySize.y > 0)
             k = (std::min)(k, (std::min)(io.DisplaySize.x / (62 * s_baseFont), io.DisplaySize.y / (40 * s_baseFont))); // must fit on the screen
         k = (std::max)(k, 0.6f);
@@ -705,21 +709,31 @@ void UI::Render()
         // the HUD is a normal window: its edges only stretch it; the scale slider (Appearance) changes the size of the whole interface
         static ImVec2 s_hudSize(0, 0);
         static float  s_lastScale = 0.0f;
-        ImGui::SetNextWindowSizeConstraints(ImVec2((std::min)(48 * fs, viewport.x), (std::min)(28 * fs, viewport.y)), viewport);
-        if(s_lastScale > 0.0f && s_hudSize.x > 0.0f && fabsf(m_options.hud.scale - s_lastScale) > 1e-4f)
+        if(m_windowMode)
         {
-            const float k = m_options.hud.scale / s_lastScale; // the window follows the new scale
-            ImGui::SetNextWindowSize(ImVec2(s_hudSize.x * k, s_hudSize.y * k), ImGuiCond_Always);
+            // window mode: the HUD fills the whole window (the window itself is moved and sized by Windows)
+            ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+            ImGui::SetNextWindowSize(viewport, ImGuiCond_Always);
         }
         else
-            ImGui::SetNextWindowSize(mainWindowSize, ImGuiCond_FirstUseEver);
-        s_lastScale = m_options.hud.scale;
-        ImGui::SetNextWindowPos(mainWindowPos, ImGuiCond_FirstUseEver);
+        {
+            ImGui::SetNextWindowSizeConstraints(ImVec2((std::min)(48 * fs, viewport.x), (std::min)(28 * fs, viewport.y)), viewport);
+            if(s_lastScale > 0.0f && s_hudSize.x > 0.0f && fabsf(HudScale() - s_lastScale) > 1e-4f)
+            {
+                const float k = HudScale() / s_lastScale; // the window follows the new scale
+                ImGui::SetNextWindowSize(ImVec2(s_hudSize.x * k, s_hudSize.y * k), ImGuiCond_Always);
+            }
+            else
+                ImGui::SetNextWindowSize(mainWindowSize, ImGuiCond_FirstUseEver);
+            ImGui::SetNextWindowPos(mainWindowPos, ImGuiCond_FirstUseEver);
+        }
+        s_lastScale = HudScale();
         // OSD layout: status banner on top, category rail on the left, settings of the category in the middle, action bar at the bottom.
         // The window has no title bar of its own (the banner is drawn instead) and no scrolling: the settings pane scrolls.
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
-        const bool hudShown = ImGui::Begin("Nbeam 3D Vision###NbeamHud2", nullptr,
-                                           ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+        const ImGuiWindowFlags hudFlags = ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse |
+                                          (m_windowMode ? (ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoBringToFrontOnFocus) : 0);
+        const bool hudShown = ImGui::Begin(m_windowMode ? "Nbeam 3D Vision###NbeamWin" : "Nbeam 3D Vision###NbeamHud2", nullptr, hudFlags);
         s_hudSize = ImGui::GetWindowSize();
         ImGui::PopStyleVar();
         const ImVec2 hudSize = ImGui::GetWindowSize();
@@ -956,6 +970,8 @@ void UI::Render()
 
             if(activeMode != SF_MANUAL)
             {
+                ImGui::Checkbox(Tr("Uniform brightness"), &m_options.uniformBrightness);
+                ShowHelpMarker(Tr("Auto changes the SubFrames with the game frame rate, so the brightness of the BFI changes too (more SubFrames = darker). Checked: the picture is kept at the brightness the BFI has at the low FPS threshold, whatever the frame rate (also when the BFI is disabled or doubled below it). The lower the threshold, the darker the picture. Simple BFI only."));
                 ImGui::PushItemWidth(m_fontSize * 16);
                 SliderFloatStep(Tr("Low FPS threshold"), &m_options.lowFps.threshold, 20.0f, 120.0f, "%.0f fps", 1.0f);
                 ImGui::PopItemWidth();
@@ -1950,6 +1966,12 @@ void UI::Render()
                 if(ImGui::Checkbox(Tr("Start minimized"), &m_options.startMinimized))
                     m_options.SaveApp();
                 ShowHelpMarker(Tr("Nbeam starts without showing the HUD (reduced to the notification area if that option is on)."));
+                if(ImGui::Checkbox(Tr("Window mode"), &m_options.windowMode))
+                {
+                    m_options.SaveApp();
+                    PostMessage(m_options.outputWindow, WM_USER_EFFECTS, 2, 0);
+                }
+                ShowHelpMarker(Tr("Nbeam opens as a normal window (like Lossless Scaling): the settings are made there, with the effects off. The effects start when a detected program runs or when Activate effects is pressed, and stop when that program closes, when Deactivate effects is pressed or with the Show / hide effects hotkey. While they run, the HUD works as before (its hotkey). Unchecked: the HUD over the screen only, as before."));
             }
 
             }
@@ -1964,12 +1986,12 @@ void UI::Render()
                     static float s_sizePct = 100.0f;
                     static bool  s_sizeEdit = false;
                     if(!s_sizeEdit)
-                        s_sizePct = m_options.hud.scale * 100.0f;
+                        s_sizePct = HudScale() * 100.0f;
                     if(ImGui::SliderFloat(Tr("HUD Size"), &s_sizePct, 60.0f, 200.0f, "%.0f %%", ImGuiSliderFlags_AlwaysClamp))
                         s_sizeEdit = true;
                     if(ImGui::IsItemDeactivatedAfterEdit())
                     {
-                        m_options.hud.scale = std::clamp(s_sizePct / 100.0f, 0.6f, 2.0f);
+                        HudScale() = std::clamp(s_sizePct / 100.0f, 0.6f, 2.0f); // the size of the mode in use (window or HUD over the screen)
                         s_sizeEdit          = false;
                         changed             = true;
                     }
@@ -2028,9 +2050,10 @@ void UI::Render()
                 }
                 if(ImGui::Button(Tr("Reset appearance")))
                 {
-                    const float keepScale = m_options.hud.scale;
-                    m_options.hud         = Options::Hud();
-                    m_options.hud.scale   = keepScale;
+                    const float keepScale = m_options.hud.scale, keepWin = m_options.hud.scaleWin;
+                    m_options.hud          = Options::Hud();
+                    m_options.hud.scale    = keepScale;
+                    m_options.hud.scaleWin = keepWin;
                     changed       = true;
                 }
                 ImGui::PopItemWidth();
@@ -2063,7 +2086,10 @@ void UI::Render()
             ImGui::PopStyleVar();
             {
                 const ImGuiStyle& st        = ImGui::GetStyle();
-                const char*       labels[4] = { Tr("About"), Tr("Benchmark"), m_options.effectsSuspended ? Tr("Show") : Tr("Hide"), Tr("Restart") };
+                // window mode: the third button starts the effects (in the window) or stops them (in the HUD over the screen)
+                const char*       labels[4] = { Tr("About"), Tr("Benchmark"),
+                                                m_options.windowMode ? (m_windowMode ? Tr("Activate effects") : Tr("Deactivate effects")) : (m_options.effectsSuspended ? Tr("Show") : Tr("Hide")),
+                                                Tr("Restart") };
                 const float       btnH      = ImGui::GetFontSize() + st.FramePadding.y * 2;
                 const float       y         = (footerH - btnH) * 0.5f;
                 {
@@ -2115,13 +2141,28 @@ void UI::Render()
                 if(ImGui::Button(labels[0]))
                     ImGui::OpenPopup("About");
                 ImGui::SameLine();
+                if(m_windowMode)
+                    ImGui::BeginDisabled(); // the benchmark needs the effects running
                 if(ImGui::Button(labels[1]))
                     PostMessage(m_options.outputWindow, WM_USER_BENCHMARK, 0, 0);
+                if(m_windowMode)
+                    ImGui::EndDisabled();
                 ImGui::SameLine();
-                if(ImGui::Button(labels[2]))
-                    m_options.effectsSuspended = !m_options.effectsSuspended; // all effects and the emitter off / on (see Renderer::EffectsOff, EffectsHidden)
-                if(ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", Tr("Hide: turns off all the effects and the 3D emitter (the picture is shown as it is). They stay off, even when the HUD is closed, until Show is pressed."));
+                if(m_options.windowMode)
+                {
+                    if(ImGui::Button(labels[2]))
+                        PostMessage(m_options.outputWindow, WM_USER_EFFECTS, m_windowMode ? 1 : 0, 0);
+                    if(ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", m_windowMode ? Tr("Starts the effects and the 3D on the screen (this window is hidden while they run). A detected program starts them by itself.")
+                                                             : Tr("Stops the effects and the 3D and brings the window back."));
+                }
+                else
+                {
+                    if(ImGui::Button(labels[2]))
+                        m_options.effectsSuspended = !m_options.effectsSuspended; // all effects and the emitter off / on (see Renderer::EffectsOff, EffectsHidden)
+                    if(ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", Tr("Hide: turns off all the effects and the 3D emitter (the picture is shown as it is). They stay off, even when the HUD is closed, until Show is pressed."));
+                }
                 ImGui::SameLine();
                 if(ImGui::Button(labels[3]))
                     PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
@@ -2226,7 +2267,9 @@ void UI::Render()
     // HDR output: the HUD stays an SDR image (sRGB colors converted to scRGB at the HUD brightness chosen in Appearance)
     // Windows HDR on: scRGB, 1.0 = 80 nits. Windows HDR off: the HUD is dimmed relative to full brightness (sdrBrightness / 100).
     const float sdrMul = (std::max)(m_options.hud.sdrBrightness / 100.0f, 0.001f);
-    if(WindowsHdrOn(m_options.outputWindow))
+    if(m_windowMode)
+        ImGui_ImplDX11_SetHdrScale(0.0f, 0.0f); // the window is a plain SDR picture: colours as they are
+    else if(WindowsHdrOn(m_options.outputWindow))
         ImGui_ImplDX11_SetHdrScale(m_options.useHdr ? (std::max)(s_sdrWhiteScale, 0.001f) : 0.0f, 0.0f);
     else
         ImGui_ImplDX11_SetHdrScale(m_options.useHdr ? sdrMul : 0.0f, m_options.useHdr ? 0.0f : sdrMul);
@@ -2377,6 +2420,11 @@ bool UI::HudBounds(RECT& r) const
 
 void UI::ShowBanner()
 {
+    if(m_windowMode)
+    {
+        m_bannerUntil = 0; // window mode: no 3D banner in the window (the effects are off there)
+        return;
+    }
     const int sec = m_options.hud.bannerSeconds;
     const bool on = m_options.emitter.sourceFormat != StereoSource::Off && !m_options.emitter.hold && m_options.StereoAllowed() && sec > 0;
     m_bannerUntil = !on ? 0 : (sec > 10 ? ~0ULL : GetTickCount64() + (ULONGLONG)sec * 1000ULL);
@@ -2740,7 +2788,7 @@ void UI::AddWindow(HWND hWnd)
 {
     wchar_t name[128];
     wchar_t wclass[128];
-    if(hWnd != m_options.outputWindow && IsWindowVisible(hWnd) && IsAltTabWindow(hWnd) && !IsIconic(hWnd) && GetWindowText(hWnd, name, 127))
+    if(hWnd != m_options.outputWindow && hWnd != m_hwnd && IsWindowVisible(hWnd) && IsAltTabWindow(hWnd) && !IsIconic(hWnd) && GetWindowText(hWnd, name, 127))
     {
         auto style      = GetWindowLongPtr(hWnd, GWL_STYLE);
         bool fullscreen = !(style & WS_CAPTION) && !(style & WS_THICKFRAME);
