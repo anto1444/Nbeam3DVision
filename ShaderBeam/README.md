@@ -2,7 +2,17 @@
 
 **Version 2.1.0 — par anto1444, 2026**
 
-<p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision" width="420"></p>
+<p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision - NVIDIA 3D Vision glasses, BFI and CRT beam simulator overlay for Windows" width="420"></p>
+
+> **English** — **Nbeam 3D Vision brings NVIDIA 3D Vision back to life on any monitor.** It is a free, open-source Windows overlay that drives the NVIDIA 3D Vision USB IR emitter (or an Arduino emitter) directly, so **active-shutter 3D glasses** work again on modern Windows 10 / 11 PCs **without the discontinued 3D Vision driver, without a certified 3D monitor and without a compatible game**: it works on the desktop, in windowed mode and in any game, multiplayer included.
+>
+> - **Stereoscopic 3D** from side-by-side (SBS), top-bottom (TB) or checkerboard content, or from any **2D game or video converted to 3D in real time by AI** (a depth-estimation model such as Depth Anything V2, run on the GPU with DirectML; ONNX Runtime and the model are not included, see below), with convergence and depth controls.
+> - **Motion blur reduction** on fast LCD and OLED screens (120 to 480 Hz): **BFI (black frame insertion)** and the **CRT beam simulator** from Blur Busters, alone or together with 3D.
+> - **Per-game profiles** loaded automatically when the game's .exe is detected, separate desktop settings, live adjustment of the glasses (sync offset, open duration), a **motion test** with scrolling cars to compare settings and check eye inversion, hotkeys and gamepad support.
+> - Requirements: Windows 10 (1903) or 11 64-bit, DirectX 11 GPU, a 100 Hz+ display for 3D or BFI (240 Hz+ for both). Download the latest version from the [Releases](https://github.com/anto1444/Nbeam3DVision/releases) page. The interface and the full guide below are in French (switch the interface to English in Application → Language / Langue).
+>
+> *Keywords: NVIDIA 3D Vision, 3D Vision emitter, 3D Vision Windows 11, 3D Vision without driver, active shutter glasses, stereoscopic 3D gaming, 2D to 3D conversion, SBS 3D, BFI, black frame insertion, CRT beam simulator, motion blur reduction, OLED, high refresh rate, ShaderBeam.*
+
 
 **Ressortez vos vieux kits du placard : la résurrection de l'émetteur NVIDIA 3D Vision est là !** Nbeam pilote directement l'émetteur USB pour créer un flux 3D séquentiel synchronisé avec votre écran, sans pilote d'affichage « 3D Vision » ni écran certifié. La 3D active fonctionne donc **partout sur le bureau, sur n'importe quel écran, même en fenêtré**, en capturant un programme précis. Avec la 3D par IA, plus besoin de jeux compatibles 3D Vision : le rendu par IA fonctionne sur n'importe quel jeu, même les jeux multijoueurs. Les **changements de profil et les réglages des lunettes sont instantanés** : on règle en direct, et chaque jeu retrouve tout seul ses propres réglages.
 
