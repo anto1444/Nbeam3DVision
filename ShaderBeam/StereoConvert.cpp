@@ -25,7 +25,7 @@ cbuffer Params : register(b0)
     uint  outW;
     uint  outH;
     float halo;     // AI depth: anti-halo search radius, fraction of the width
-    uint  pad1;
+    float shift;    // SBS / TB / Checkerboard: convergence, horizontal shift of this eye (fraction of the width, + = the picture moves right)
     uint  pad2;
 };
 
@@ -100,19 +100,23 @@ float4 PSmain(VSOut i) : SV_Target
             return float4(0.0, 0.0, 0.0, 1.0);
         return src.SampleLevel(lin, duv, 0.0);
     }
+    // convergence (SBS / TB / Checkerboard): each eye is moved sideways, the uncovered edge is black
+    float x = i.uv.x - shift;
+    if(x < 0.0 || x > 1.0)
+        return float4(0.0, 0.0, 0.0, 1.0);
     if(mode == 1)
     {
-        float2 uv = float2(i.uv.x * 0.5 + 0.5 * eye, i.uv.y);
+        float2 uv = float2(x * 0.5 + 0.5 * eye, i.uv.y);
         return src.SampleLevel(lin, uv, 0.0);
     }
     if(mode == 2)
     {
-        float2 uv = float2(i.uv.x, i.uv.y * 0.5 + 0.5 * eye);
+        float2 uv = float2(x, i.uv.y * 0.5 + 0.5 * eye);
         return src.SampleLevel(lin, uv, 0.0);
     }
     // checkerboard: left eye on pixels with (x + y) even, right eye on odd; the missing pixels of the
     // requested eye are the average of the four neighbours (which all belong to that eye)
-    int2 p = int2(i.pos.xy);
+    int2 p = int2((int)(x * width), (int)i.pos.y);
     if((uint)((p.x + p.y) & 1) == eye)
         return src.Load(int3(p, 0));
     int2 m = int2(width - 1, height - 1);
@@ -221,6 +225,14 @@ void StereoConverter::Convert(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView
         p[6] = ai->showDepth ? 1u : 0u;
         const float halo = ai->antiHalo * 0.01f * 0.012f; // 100 % = 1.2% of the width (slider -300 to 300 %, negative = inverted)
         memcpy(&p[9], &halo, sizeof(float));
+    }
+    else if(ai)
+    {
+        // convergence of the 3D formats (the 2D to 3D setting): 50 = as captured, below = in front of the screen, above = behind;
+        // up to 1.5 % of the width each way. Crossed (in front): the left eye moves right, the right eye left.
+        const float total = (50.0f - ai->convergence) / 50.0f * 0.015f;
+        const float shift = (eye == Eye::Left ? 0.5f : -0.5f) * total;
+        memcpy(&p[10], &shift, sizeof(float));
     }
     SetParams(ctx, p);
     Draw(ctx, source, depth, target, width, height);

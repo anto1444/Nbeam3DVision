@@ -96,7 +96,15 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         wasOpen = false;
     Help(Tr("Layout of the 3D content you capture.\nOff: 3D is disabled and the emitters are switched off.\nSBS / TB / Checkerboard: each captured frame holds both eyes; ShaderBeam extracts one eye, scales it to full screen and shows it alternately.\nThe eye changes every SubFrames output frames (eye rate = display Hz / SubFrames, e.g. 240 Hz with SubFrames 4 = 60 Hz), so each eye gets its BFI / CRT sub-frames.\nThe emitters (NVIDIA 3D Vision, ComPort) run whenever this is not Off. Changing this restarts the renderer."));
     if(s.sourceFormat != StereoSource::Off)
+    {
         ImGui::TextDisabled(Tr("Each eye is shown for %d output frame(s); every captured frame provides one eye."), ctx.subFrames);
+        // convergence: every 3D format (and the cars of the motion test, which always come out of the screen)
+        // shown -100..+100 (stored 0..100 as before: +100 = 0, 0 = 50, -100 = 100)
+        float conv = (50.0f - s.ai.convergence) * 2.0f;
+        if(ImGui::SliderFloat(Tr("Convergence"), &conv, -100.0f, 100.0f, "%+.0f"))
+            s.ai.convergence = std::clamp(50.0f - conv * 0.5f, 0.0f, 100.0f);
+        Help(Tr("Where the picture sits relative to the screen, -100 to +100. Negative = into the depth of the screen, positive = out of the screen, 0 = the default depth (2D to 3D: split around the screen; SBS / TB / Checkerboard: as captured). The cars of the motion test use it too."));
+    }
 
     // ---- 2D to 3D (AI): depth model parameters ----
     if(s.sourceFormat == StereoSource::AiDepth)
@@ -132,8 +140,6 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
 
         ImGui::SliderFloat(Tr("Depth Strength (%)"), &s.ai.strength, 0.0f, 10.0f, "%.1f");
         Help(Tr("Maximum parallax between the two eyes, as a percentage of the screen width. 0 = flat; around 2-4 is comfortable."));
-        ImGui::SliderFloat(Tr("Convergence (%)"), &s.ai.convergence, 0.0f, 100.0f, "%.0f");
-        Help(Tr("Which depth stays on the screen plane. 0 = everything pops out of the screen, 100 = everything goes behind it; 50 splits the depth around the screen."));
         ImGui::SliderFloat(Tr("Depth smoothing (%)"), &s.ai.smoothing, 0.0f, 95.0f, "%.0f");
         Help(Tr("Averages the depth map over time so it does not flicker. Higher = steadier but slower to follow fast changes."));
         ImGui::SliderFloat(Tr("Anti-halo (%)"), &s.ai.antiHalo, -300.0f, 300.0f, "%.0f");

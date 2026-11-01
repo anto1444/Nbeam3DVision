@@ -1,6 +1,6 @@
 # Nbeam 3D Vision
 
-**Version 2.0.0 — par anto1444, 2026**
+**Version 2.1.0 — par anto1444, 2026**
 
 <p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision" width="420"></p>
 
@@ -10,8 +10,8 @@ Nbeam 3D Vision est une surcouche (overlay) Windows qui s'affiche par-dessus un 
 
 - le **BFI** et le **CRT Beam Simulator** pour supprimer le flou de mouvement d'un écran LCD/OLED rapide ;
 - la **3D active** (lunettes NVIDIA 3D Vision ou émetteur Arduino) à partir d'un contenu 3D en côte à côte, haut/bas ou damier, avec ou sans les effets ci-dessus, ou depuis une image 2D grâce à l'IA ;
-- des **profils** par jeu, chargés automatiquement ;
-- un **mode fenêtre** (comme Lossless Scaling) : on règle tout dans une fenêtre normale, et les effets ne démarrent que quand un jeu détecté se lance ou quand on clique sur « Activer les effets ».
+- des **profils** par jeu, chargés automatiquement quand le jeu est détecté (le bureau a ses propres réglages) ;
+- un **mode fenêtre** : on règle tout dans une fenêtre normale, et les effets ne démarrent que quand un jeu détecté se lance ou quand on clique sur « Activer les effets ».
 
 > **Attention** — ce logiciel produit des images qui clignotent très vite. Prudence si vous êtes photosensible.
 
@@ -31,7 +31,7 @@ Au tout premier lancement (quand le dossier `Profils` est créé), Nbeam affiche
 ## Démarrage rapide
 
 1. Placez `Nbeam3DVision.exe` dans un dossier où il peut écrire.
-2. Lancez-le : le dossier `Profils\` et le profil d'exemple `Defaut.ini` sont créés.
+2. Lancez-le : le dossier `Profils\` est créé, avec le profil d'exemple `Defaut.ini` et les réglages du bureau `Bureau.cfg`.
 3. Dans la fenêtre de Nbeam, choisissez l'**écran de sortie** (votre écran rapide) et le nombre de **sous-images**.
 4. Cliquez sur **Activer les effets**, ou ajoutez votre jeu dans la détection de profil : les effets démarreront tout seuls à son lancement.
 
@@ -39,14 +39,13 @@ Principe : Nbeam **capture** l'écran ou la fenêtre d'un programme, applique l'
 
 ## Mode fenêtre
 
-Par défaut, Nbeam s'ouvre dans une **fenêtre Windows normale** (déplaçable, redimensionnable), avec la même présentation que le HUD : bandeau, catégories à gauche, réglages au centre, barre du bas. On y fait tous les réglages **effets coupés** (rien n'est capturé).
+Nbeam s'ouvre toujours dans une **fenêtre Windows normale** (déplaçable, redimensionnable), avec la même présentation que le HUD : bandeau, catégories à gauche, réglages au centre, barre du bas. On y fait tous les réglages **effets coupés** (rien n'est capturé).
 
 - **Les effets démarrent** avec le bouton **Activer les effets** (en bas), le raccourci **Afficher / masquer les effets**, le menu de l'icône de notification, ou tout seuls quand un **programme détecté** se lance. La fenêtre disparaît et l'overlay s'affiche par-dessus l'écran.
 - **Pendant que les effets tournent**, le HUD par-dessus l'écran fonctionne comme avant (son raccourci) ; son bouton du bas devient **Désactiver les effets**.
 - **Les effets s'arrêtent** à la fermeture du programme détecté, avec **Désactiver les effets** ou avec le même raccourci ; la fenêtre revient (sans prendre le focus du jeu quand c'est le raccourci).
-- **La croix** de la fenêtre la range dans la zone de notification si cette option est cochée (les détections continuent), sinon elle quitte Nbeam.
+- **La croix** de la fenêtre la réduit si **Réduire au lieu de fermer** est coché (Application) : dans la zone de notification si cette option est cochée, les détections continuent. Décochée, la croix quitte Nbeam.
 - La **taille de l'interface** se règle séparément pour la fenêtre et pour le HUD par-dessus l'écran (Apparence → Taille du HUD, dans le mode concerné).
-- Décochez **Mode fenêtre** (Application) pour revenir à l'ancien fonctionnement : uniquement le HUD par-dessus l'écran.
 
 ## BFI simple
 
@@ -97,6 +96,10 @@ Avec la **2D vers 3D (IA)**, le tampon d'image fonctionne comme ailleurs. La syn
 
 > **Images en file à 0 (tearing) : fortement déconseillé en 3D.** Le tearing perturbe l'alternance gauche/droite et provoque des images fantômes et du scintillement dans les lunettes. Nbeam affiche un avertissement en rouge si vous le choisissez avec la 3D active. Gardez une valeur de file de 1 ou plus.
 
+**Convergence** (tous les formats 3D), de **-100 à +100** : négatif = l'image part dans la profondeur de l'écran, positif = elle sort de l'écran, 0 = la profondeur par défaut (la 2D vers 3D répartit la profondeur autour de l'écran, les formats SBS / TB / damier restent comme capturés ; aux extrêmes, toute l'image est décalée de 1,5 % de la largeur).
+
+**Émetteur non reconnu** : si aucun émetteur n'est reconnu au démarrage (émetteur NVIDIA 3D Vision débranché ou sans pilote, et pas d'émetteur Arduino réglé), Nbeam affiche un avertissement avec un lien cliquable vers le [pilote NVIDIA 3D Vision USB](https://www.nvidia.com/en-us/drivers/nv3dvisionusb/390_41/nv3dvisionusb-dch-driver/) et un bouton OK ; tant que l'émetteur n'est pas connecté, « Émetteur 3D non connecté » s'affiche en rouge dans la barre du bas, entre FPS contenu et À propos.
+
 **2D vers 3D (IA)** : un modèle de profondeur estime la profondeur de chaque pixel pour créer les deux vues. Il faut placer à côté de l'exe `onnxruntime.dll`, `onnxruntime_providers_shared.dll` et un modèle `.onnx` (ex. `model_fp16.onnx`) ; ces fichiers ne sont exigés que pour cette source. Les bords gauche et droit sont masqués par des bandes noires droites (à la profondeur de l'écran) ; **Inverser les yeux** inverse aussi la profondeur ; l'**anti-halo** (de -300 à 300 % ; une valeur négative fait la même chose à l'envers, pour une profondeur inversée) limite le débordement de la profondeur d'un objet sur le fond ; le **Tampon de carte** cale la profondeur sur l'image (voir Tampon d'image).
 
 > **Ces fichiers ne sont pas fournis avec Nbeam** (pour des raisons de licence et de taille). `onnxruntime.dll` et `onnxruntime_providers_shared.dll` proviennent d'une version DirectML d'[ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) (Microsoft, MIT) ; le modèle `.onnx` est un modèle d'estimation de profondeur à fournir vous-même, en respectant sa licence. Copiez ces trois fichiers à côté de `Nbeam3DVision.exe`. Sans eux, Nbeam fonctionne normalement : seule la source « 2D vers 3D (IA) » est indisponible.
@@ -111,16 +114,32 @@ Tous les raccourcis sont **entièrement personnalisables**, au clavier comme à 
 
 Les raccourcis sont les mêmes pour tous les profils : changer de profil ne les modifie jamais.
 
-**Afficher / Masquer les effets** : le bouton du bas du HUD, le raccourci et le menu de l'icône de notification coupent **tous les effets et l'émetteur 3D** (l'image s'affiche telle quelle, pour comparer). Ils restent coupés, HUD ouvert ou fermé, jusqu'à « Afficher ». Ouvrir le HUD ne coupe plus les effets. En **mode fenêtre**, ils activent / désactivent les effets (voir Mode fenêtre).
+**Afficher / Masquer les effets** : le bouton du bas du HUD, le raccourci et le menu de l'icône de notification coupent **tous les effets et l'émetteur 3D** (l'image s'affiche telle quelle, pour comparer). Ils restent coupés, HUD ouvert ou fermé, jusqu'à « Afficher ». Ouvrir le HUD ne coupe plus les effets. Dans la fenêtre de Nbeam, ils activent / désactivent les effets (voir Mode fenêtre).
+
+## Test
+
+La catégorie **Test** (juste au-dessus de Profils, icône de compteur de vitesse) sert à comparer les réglages. Elle disparaît tant qu'un programme détecté ou capturé tourne, et revient à sa fermeture :
+
+- **Test de mouvement** : des voitures détaillées, de la couleur d'accent, défilent sur tout l'écran dans une **fenêtre DirectX à part** (un processus dédié), que Nbeam capture exactement comme un jeu : une nouvelle position à chaque rafraîchissement de l'écran, et la fenêtre se ferme avec Nbeam. Elle reste noire jusqu'à ce que les effets tournent avec les bons réglages (le profil à régler est chargé d'abord). Chaque voiture a sa case, avec « NBEAM » en dessous et le logo de Nbeam en bas à gauche. Le pointeur de la souris est masqué sur les voitures et les clics restent dans le test. L'image passe par tous les effets utilisés (BFI, CRT, 3D...) : on compare le flou de mouvement d'un réglage à l'autre.
+- **En 3D** : avec une source côte à côte, haut / bas ou damier, les voitures sont dessinées dans ce format. Elles et leur grille sortent de l'écran (la **Convergence** du menu 3D déplace toute l'image ; le logo reste au niveau de l'écran) et portent la lettre de leur œil de chaque côté de « NBEAM » (G / D) : si l'on voit l'autre lettre, les yeux sont inversés. En 2D vers 3D par IA, les voitures sont en 2D et l'IA crée la profondeur.
+- La case est grisée pendant qu'un programme détecté tourne.
+- **Vitesse des voitures** (0 à 3840 pixels/s), **taille des voitures** (25 à 200 % : plus petites = plus de voitures affichées) et **couleur du fond** des cases.
+- Décochez la case, ou appuyez sur la **touche Windows** ou **Échap**, pour arrêter : on revient en mode bureau. Le raccourci du HUD affiche le HUD par-dessus le test pour changer les réglages en direct.
+- **Écran partagé** : la moitié de l'écran avec l'effet, l'autre sans, pour comparer avant / après ; **Inverser** met l'effet sur l'autre moitié.
 
 ## Profils
 
-Un **profil** est un fichier `.ini` du dossier `Profils\` qui mémorise tous les réglages de rendu, d'affichage et de 3D. On en change depuis le HUD ou le menu de l'icône de notification.
+Un **profil** est un fichier `.ini` du dossier `Profils\` qui mémorise tous les réglages de rendu, d'affichage et de 3D. **Un profil ne s'applique que lorsqu'un programme (.exe) lié est détecté.** Sans programme détecté, Nbeam utilise les **réglages du bureau** (fichier `Bureau.cfg` du même dossier, créé à la mise à jour à partir de l'ancien profil par défaut ou du profil actif).
+
+- **Profil à régler** : choisissez un profil dans cette liste pour le régler sans lancer son jeu. Le test de mouvement s'ouvre avec ce profil chargé et le HUD par-dessus les voitures ; changez les réglages en regardant le résultat. Quand on quitte le test (touche Windows ou Échap), le profil est enregistré et les réglages du bureau reviennent.
+- **Créer un profil / Enregistrer sous** : enregistre les réglages actuels sous un nouveau nom, sans changer les réglages actifs.
 
 Une **détection de profil** associe un programme (`.exe`) à un profil. Pour ajouter un programme, saisissez son nom d'exe, choisissez-le avec **Ajouter depuis la barre des tâches** (liste des programmes ouverts, sans ceux déjà ajoutés), ou, depuis le programme lui-même, appuyez sur le raccourci **Ajouter le programme aux profils** (Ctrl+Maj+P par défaut) : son exe est ajouté à la liste. Ensuite :
 
 - quand le programme est détecté (fenêtre visible dans la barre des tâches, après un délai réglable), son profil est chargé, il est capturé et le HUD se réduit ;
-- à sa fermeture, le **profil par défaut** revient (case « Profil par défaut » à côté du choix du profil), ou le profil précédent si aucun n'est défini ; tout autre profil que celui par défaut réaffiche les effets s'ils avaient été masqués ;
+- à sa fermeture, les **réglages du bureau** reviennent ; un profil réaffiche les effets s'ils avaient été masqués sur le bureau ;
+- pendant qu'il tourne, changer son profil dans la détection **l'applique tout de suite** (les réglages en cours sont d'abord enregistrés dans l'ancien profil) ;
+- tant qu'un programme détecté tourne, les réglages des profils (Profil à régler, Créer un profil) sont **masqués** et un message indique le programme et le profil utilisé ; ils reviennent à sa fermeture ;
 - un même programme peut avoir jusqu'à 3 profils, un par écran ; celui de l'écran où se trouve sa fenêtre est choisi ;
 - chaque écran peut avoir son propre **taux de rafraîchissement**, appliqué pendant la capture puis rétabli ;
 - une détection peut être désactivée sans être supprimée ;
@@ -128,7 +147,7 @@ Une **détection de profil** associe un programme (`.exe`) à un profil. Pour aj
 
 ## Tutos d'usage
 
-**Un jeu 60 images/s sur un écran 240 Hz, sans flou** : créez un profil, choisissez le CRT Beam Simulator ou le BFI simple, 4 sous-images, plafonnez le jeu à 60 images/s, puis liez le `.exe` du jeu à ce profil dans « Détection de profil ».
+**Un jeu 60 images/s sur un écran 240 Hz, sans flou** : créez un profil, choisissez-le dans « Profil à régler » et réglez-le sur le test des voitures (CRT Beam Simulator ou BFI simple, 4 sous-images), plafonnez le jeu à 60 images/s, puis liez le `.exe` du jeu à ce profil dans « Détection de profil ».
 
 **Un jeu en 3D (côte à côte)** : choisissez le format source SBS, l'émetteur de vos lunettes, puis réglez Sync Offset et Open Duration. En 3D, chaque œil reçoit la moitié des sous-images : visez 240 Hz ou plus pour garder du BFI/CRT en plus.
 

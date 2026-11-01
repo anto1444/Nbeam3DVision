@@ -120,7 +120,7 @@ static bool WindowsHdrOn(HWND hWnd)
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
-                               "              Version 2.0.0\n"
+                               "              Version 2.1.0\n"
                                "         Made by anto1444, 2026\n"
                                "\n"
                                "   Based on ShaderBeam (c) 2025-2026 mausimus\n"
@@ -131,7 +131,7 @@ const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
                                "        Timothy Lottes @NOTimothyLottes\n"
                                "          https://blurbusters.com/crt\n\n";
 const char* SHADERBEAM_ABOUT_FR = "             " SHADERBEAM_TITLE "\n"
-                                  "              Version 2.0.0\n"
+                                  "              Version 2.1.0\n"
                                   "         Fait par anto1444, 2026\n"
                                   "\n"
                                   "   Basé sur ShaderBeam (c) 2025-2026 mausimus\n"
@@ -536,7 +536,7 @@ void UI::RenderHudHeader(float height)
     if(m_logo)
         dl->AddImage(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(logoX, p0.y + (height - logoSz) * 0.5f), ImVec2(logoX + logoSz, p0.y + (height + logoSz) * 0.5f));
     dl->AddText(font, titleSz, ImVec2(titleX, p0.y + height * 0.5f - titleSz * 0.95f), cOnAcc, title);
-    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v2.0.0");
+    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v2.1.0");
 
     // output mode (like "3440 x 1440 | 240Hz")
     char mode[64];
@@ -604,7 +604,7 @@ void UI::RenderHudHeader(float height)
     }
 
     // cells, from the right: profile, HDR (the ones that do not fit are left out)
-    std::string profile = m_options.profileFile;
+    std::string profile = m_options.IsDesktopSettings() ? std::string(Tr("Desktop")) : m_options.profileFile;
     if(profile.size() > 4 && _stricmp(profile.c_str() + profile.size() - 4, ".ini") == 0)
         profile.resize(profile.size() - 4);
     if(profile.size() > 18)
@@ -754,8 +754,9 @@ void UI::Render()
             ImGui::SetCursorPos(ImVec2(0, 0));
 
             const float bodyH = (std::max)(ImGui::GetWindowHeight() - headerH - footerH, fs * 4); // header on top, footer at the very bottom of the window
-            static const char* catKeys[] = { "Input / Output", "Render / Shaders", "3D", "Profiles", "Hotkeys", "Appearance", "Application" };
-            static const int   catIcon[] = { 1, 2, 3, 4, 7, 6, 5 }; // icon of each category (see DrawCategoryIcon)
+            static const char* catKeys[] = { "Input / Output", "Render / Shaders", "3D", "Profiles", "Hotkeys", "Appearance", "Application", "Test" };
+            static const int   catIcon[] = { 1, 2, 3, 4, 7, 6, 5, 0 }; // icon of each category (see DrawCategoryIcon); Test: the speedometer
+            static const int   catOrder[] = { 0, 1, 2, 7, 3, 4, 5, 6 }; // order in the rail: Test right above Profiles
             const int          catCount  = (int)(sizeof(catKeys) / sizeof(catKeys[0]));
             static int         s_cat     = 0;
             static int         s_lastCat = -1;
@@ -769,8 +770,14 @@ void UI::Render()
             s_railWin = ImGui::GetCurrentWindow();
             ImGui::PopStyleColor();
             ImGui::PopStyleVar();
-            for(int i = 0; i < catCount; i++)
+            const bool testHidden = !m_options.captureProcess.empty() && !m_options.motionTest; // a program runs: no Test category
+            if(testHidden && s_cat == 7)
+                s_cat = 0;
+            for(int oi = 0; oi < catCount; oi++)
             {
+                const int i = catOrder[oi];
+                if(i == 7 && testHidden)
+                    continue;
                 ImGui::PushID(i);
                 const ImVec2 sz(ImGui::GetContentRegionAvail().x, fs * 2.7f);
                 const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -1223,24 +1230,7 @@ void UI::Render()
             }
             ShowHelpMarker(Tr("GPU used for rendering. If you have another dGPU or iGPU, try using it here for best experience.\nIf you have a single GPU but are seeing it multiple times, try using the second version as Shader GPU here."));
 
-            if(ImGui::BeginCombo(Tr("Split-screen"), Tr(m_splitScreens[m_pending.splitScreen].c_str()), 0))
-            {
-                for(auto i = 0; i < m_splitScreens.size(); i++)
-                {
-                    auto selected = i == m_pending.splitScreen;
-                    if(ImGui::Selectable(Tr(m_splitScreens[i].c_str()), selected))
-                    {
-                        m_pending.splitScreen = i;
-                        SetApplyRequired();
-                    }
-                    if(selected)
-                    {
-                        ImGui::SetItemDefaultFocus();
-                    }
-                }
-                ImGui::EndCombo();
-            }
-            ShowHelpMarker(Tr("Split-screen mode for before/after comparison."));
+
 
             if(ImGui::BeginCombo(Tr("Queued Frames"), Tr(m_queuedFrames[m_pending.maxQueuedFrames].c_str()), 0))
             {
@@ -1334,77 +1324,93 @@ void UI::Render()
                     s_profiles      = Options::ListProfiles();
                     s_profilesDirty = false;
                 }
-                ImGui::PushItemWidth(m_fontSize * 14);
-                if(ImGui::BeginCombo(Tr("Settings Profile"), m_options.profileFile.c_str(), 0))
+                // The profiles only apply while their program runs (detections below); the desktop has its own settings. "Profile to adjust":
+                // the motion test opens with that profile loaded, it is set over the cars; the end of the test goes back to the desktop.
+                // a detected program runs: its profile is in use, the settings of the profiles are hidden (its profile is changed in the
+                // detection below, applied at once)
+                const bool programRuns = !m_options.captureProcess.empty() && !m_options.motionTest;
+                if(programRuns)
                 {
-                    for(const auto& name : s_profiles)
+                    const ImVec4 warn(1.0f, 0.78f, 0.25f, 1.0f);
+                    ImGui::PushTextWrapPos(0.0f);
+                    ImGui::TextColored(warn, "%s %s", Tr("Detected program running:"), m_options.captureProcess.c_str());
+                    ImGui::Text("%s %s", Tr("Profile in use:"), m_options.IsDesktopSettings() ? Tr("Desktop") : m_options.profileFile.c_str());
+                    ImGui::TextDisabled("%s", Tr("The profile settings come back when the program closes. To use another profile for this program, change it in the profile detection below: it is applied at once."));
+                    ImGui::PopTextWrapPos();
+                }
+                else
+                {
+                    const bool adjusting   = m_options.motionTest && !m_options.IsDesktopSettings();
+                    ImGui::AlignTextToFramePadding();
+                    ImGui::TextDisabled("%s", Tr("Active settings:"));
+                    ImGui::SameLine();
+                    if(m_options.IsDesktopSettings())
+                        ImGui::TextUnformatted(Tr("Desktop"));
+                    else
+                        ImGui::Text("%s (%s)", m_options.profileFile.c_str(), adjusting ? Tr("adjusting") : Tr("detected program"));
+                    ImGui::PushItemWidth(m_fontSize * 14);
+                    if(ImGui::BeginCombo(Tr("Profile to adjust"), adjusting ? m_options.profileFile.c_str() : Tr("(choose)"), 0))
                     {
-                        const bool selected = name == m_options.profileFile;
-                        if(ImGui::Selectable(name.c_str(), selected) && !selected)
+                        for(const auto& name : s_profiles)
                         {
-                            m_options.pendingProfile = name;
-                            PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
+                            const bool selected = adjusting && name == m_options.profileFile;
+                            if(ImGui::Selectable(name.c_str(), selected) && !selected)
+                            {
+                                m_options.testProfile = name;
+                                PostMessage(m_options.outputWindow, WM_USER_GLASSESTEST, 1, 0);
+                            }
+                            if(selected)
+                                ImGui::SetItemDefaultFocus();
                         }
-                        if(selected)
-                            ImGui::SetItemDefaultFocus();
+                        ImGui::EndCombo();
                     }
-                    ImGui::EndCombo();
-                }
-                ShowHelpMarker(Tr("Choose one of the .ini files of the Profils folder (next to the exe).\nThe current settings are saved into the active profile first, then the chosen profile is loaded (the renderer restarts)."));
-                ImGui::SameLine();
-                {
-                    bool isDefault = !m_options.defaultProfile.empty() && _stricmp(m_options.defaultProfile.c_str(), m_options.profileFile.c_str()) == 0;
-                    if(ImGui::Checkbox(Tr("Default profile"), &isDefault))
-                    {
-                        std::lock_guard<std::recursive_mutex> linksLock(m_options.linksMutex); // SaveApp (main thread too) reads it
-                        m_options.defaultProfile = isDefault ? m_options.profileFile : std::string();
-                        m_options.SaveApp();
-                    }
-                    ShowHelpMarker(Tr("The active profile becomes the default profile: it always comes back when a detected program is no longer running. Only one profile can be the default one.\nThe effects hidden with Show / Hide stay hidden in the default profile; any other profile shows them again when it is loaded."));
-                }
-                ImGui::SameLine();
-                if(ImGui::Button(Tr("Refresh")))
-                    s_profilesDirty = true;
-                ImGui::SameLine();
-                {
-                    // small Explorer (folder) button: opens the Profils folder
-                    const float  bh = ImGui::GetFrameHeight();
-                    const ImVec2 p  = ImGui::GetCursorScreenPos();
-                    if(ImGui::Button("##openProfiles", ImVec2(bh * 1.3f, bh)))
-                    {
-                        Options::EnsureProfilesDir();
-                        ShellExecuteW(nullptr, L"open", Options::ProfilesDir().wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                    }
-                    if(ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", Tr("Open the Profils folder in the Explorer"));
-                    ImDrawList*  dl = ImGui::GetWindowDrawList();
-                    const ImVec2 c(p.x + bh * 0.65f, p.y + bh * 0.5f);
-                    const float  u  = bh * 0.30f;
-                    const ImU32  fc = IM_COL32(245, 200, 80, 255), fb = IM_COL32(225, 170, 50, 255);
-                    dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.95f), ImVec2(c.x - u * 0.1f, c.y - u * 0.4f), fb, u * 0.12f);
-                    dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.55f), ImVec2(c.x + u * 1.25f, c.y + u * 0.95f), fc, u * 0.12f);
-                }
-                ImGui::InputText(Tr("Create a profile"), s_newProfile, sizeof(s_newProfile));
-                ImGui::SameLine();
-                if(ImGui::Button(Tr("Save as")) && s_newProfile[0])
-                {
-                    std::string name = s_newProfile;
-                    for(char& c : name)
-                        if(strchr("\\/:*?\"<>|", c))
-                            c = '_';
-                    if(name.size() < 4 || _stricmp(name.c_str() + name.size() - 4, ".ini") != 0)
-                        name += ".ini";
-                    if(_stricmp(name.c_str(), "imgui.ini") != 0)
-                    {
-                        m_options.profileFile = name;
-                        m_options.Save(m_shaderManager);
-                        m_options.RememberProfile();
+                    ShowHelpMarker(Tr("The profiles only apply while their program runs (Profile detection below); without a detected program the desktop settings are used.\nChoose a profile here to adjust it: the motion test opens with that profile loaded and the HUD over the cars; change the settings and watch the result. Ending the test (Windows key or Escape) saves the profile and goes back to the desktop settings."));
+                    ImGui::SameLine();
+                    if(ImGui::Button(Tr("Refresh")))
                         s_profilesDirty = true;
-                        s_newProfile[0] = 0;
+                    ImGui::SameLine();
+                    {
+                        // small Explorer (folder) button: opens the Profils folder
+                        const float  bh = ImGui::GetFrameHeight();
+                        const ImVec2 p  = ImGui::GetCursorScreenPos();
+                        if(ImGui::Button("##openProfiles", ImVec2(bh * 1.3f, bh)))
+                        {
+                            Options::EnsureProfilesDir();
+                            ShellExecuteW(nullptr, L"open", Options::ProfilesDir().wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                        }
+                        if(ImGui::IsItemHovered())
+                            ImGui::SetTooltip("%s", Tr("Open the Profils folder in the Explorer"));
+                        ImDrawList*  dl = ImGui::GetWindowDrawList();
+                        const ImVec2 c(p.x + bh * 0.65f, p.y + bh * 0.5f);
+                        const float  u  = bh * 0.30f;
+                        const ImU32  fc = IM_COL32(245, 200, 80, 255), fb = IM_COL32(225, 170, 50, 255);
+                        dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.95f), ImVec2(c.x - u * 0.1f, c.y - u * 0.4f), fb, u * 0.12f);
+                        dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.55f), ImVec2(c.x + u * 1.25f, c.y + u * 0.95f), fc, u * 0.12f);
                     }
+                    ImGui::InputText(Tr("Create a profile"), s_newProfile, sizeof(s_newProfile));
+                    ImGui::SameLine();
+                    if(ImGui::Button(Tr("Save as")) && s_newProfile[0])
+                    {
+                        std::string name = s_newProfile;
+                        for(char& c : name)
+                            if(strchr("\\/:*?\"<>|", c))
+                                c = '_';
+                        if(name.size() < 4 || _stricmp(name.c_str() + name.size() - 4, ".ini") != 0)
+                            name += ".ini";
+                        if(_stricmp(name.c_str(), "imgui.ini") != 0)
+                        {
+                            // written under the new name; the active settings stay the same
+                            const std::string keep = m_options.profileFile;
+                            m_options.profileFile  = name;
+                            m_options.Save(m_shaderManager);
+                            m_options.profileFile = keep;
+                            s_profilesDirty       = true;
+                            s_newProfile[0]       = 0;
+                        }
+                    }
+                    ShowHelpMarker(Tr("Saves the current settings as a profile under a new name (or overwrites an existing profile). Then link it to a program (Profile detection) and adjust it with \"Profile to adjust\"."));
+                    ImGui::PopItemWidth();
                 }
-                ShowHelpMarker(Tr("Saves the current settings under a new name (or overwrites an existing profile) and makes it the active profile."));
-                ImGui::PopItemWidth();
             }
 
 
@@ -1412,7 +1418,7 @@ void UI::Render()
             {
                 // the detections are also read by the main thread (ProfileLinkPoll): no change of the list while it reads it
                 std::lock_guard<std::recursive_mutex> linksLock(m_options.linksMutex);
-                ShowHelpMarker(Tr("When a program is detected running, its profile is loaded. When the program closes, the default profile comes back (or the previous one if no profile is set as default).\nEnter the full path of the .exe or just its file name (e.g. game.exe), or press the \"Add the program to the profiles\" hotkey while the program is in front.\nEach program can have up to 3 profiles, each for a different screen: the profile of the Windows main screen is used first, then the one of another connected screen. The output goes to the screen of the profile."));
+                ShowHelpMarker(Tr("When a program is detected running, its profile is loaded. When the program closes, the desktop settings come back.\nEnter the full path of the .exe or just its file name (e.g. game.exe), or press the \"Add the program to the profiles\" hotkey while the program is in front.\nEach program can have up to 3 profiles, each for a different screen: the profile of the Windows main screen is used first, then the one of another connected screen. The output goes to the screen of the profile."));
                 if(s_profilesDirty)
                 {
                     s_profiles      = Options::ListProfiles();
@@ -1933,6 +1939,72 @@ void UI::Render()
             }
 
             }
+            if(s_cat == 7)
+            {
+            SectionHeader(Tr("Motion test"));
+            {
+                const bool desktop = m_options.captureProcess.empty() || m_options.motionTest; // never while a detected program runs
+                bool       on      = m_options.motionTest;
+                if(!desktop && !on)
+                    ImGui::BeginDisabled();
+                if(ImGui::Checkbox(Tr("Motion test"), &on))
+                {
+                    m_options.testProfile.clear(); // (the active settings)
+                    PostMessage(m_options.outputWindow, WM_USER_GLASSESTEST, on ? 1 : 0, 0);
+                }
+                if(!desktop && !on)
+                    ImGui::EndDisabled();
+                if(!desktop && !on && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                    ImGui::SetTooltip("%s", Tr("Not while a detected program runs."));
+                ShowHelpMarker(Tr("Detailed cars scroll in a window of their own over the whole screen, captured like a game, through all the effects in use (BFI, CRT, 3D...): to compare the motion blur from one setting to another. The mouse pointer is hidden over the cars and the clicks stay in the test. With a side by side, top / bottom or checkerboard source the cars are drawn in that format and come out of the screen (the Convergence of the 3D menu moves them), with the letter of each eye next to NBEAM (G / D): if the other letter is seen, the eyes are swapped (2D to 3D by AI: the cars are 2D, the AI makes the depth). Uncheck it, or press the Windows key or Escape, to end it; the HUD hotkey shows the HUD over the test to change the settings live."));
+                ImGui::PushItemWidth(m_fontSize * 16);
+                int speed = m_options.ufoSpeed;
+                if(SliderIntStep(Tr("Car speed"), &speed, 0, 3840, 120))
+                    m_options.ufoSpeed = std::clamp(speed, 0, 7680);
+                ShowHelpMarker(Tr("Speed of the cars in pixels per second, 0 to 3840 (0 = still, 960 = the usual motion test speed). Faster shows the motion blur more clearly."));
+                int size = m_options.carSize;
+                if(SliderIntStep(Tr("Car size"), &size, 25, 200, 5, nullptr))
+                    m_options.carSize = std::clamp(size, 25, 200);
+                ShowHelpMarker(Tr("Size of the cars, 25 to 200 %. Careful: smaller = more cars on the screen."));
+                ImGui::ColorEdit3(Tr("Background colour"), m_options.testBg, ImGuiColorEditFlags_NoInputs);
+                ShowHelpMarker(Tr("Colour of the cells behind the cars (the grid between them stays black)."));
+                ImGui::PopItemWidth();
+                // saved (Nbeam.app.cfg) once the controls are released
+                static int   s_saved[2] = { -1, -1 };
+                static float s_savedBg[3] = { -1, -1, -1 };
+                const bool   changed = s_saved[0] != m_options.ufoSpeed || s_saved[1] != m_options.carSize || memcmp(s_savedBg, m_options.testBg, sizeof(s_savedBg)) != 0;
+                if(changed && !ImGui::IsAnyItemActive())
+                {
+                    const bool first = s_saved[0] < 0;
+                    s_saved[0] = m_options.ufoSpeed;
+                    s_saved[1] = m_options.carSize;
+                    memcpy(s_savedBg, m_options.testBg, sizeof(s_savedBg));
+                    if(!first)
+                        m_options.SaveApp();
+                }
+            }
+            SectionHeader(Tr("Comparison"));
+            if(ImGui::BeginCombo(Tr("Split-screen"), Tr(m_splitScreens[m_pending.splitScreen].c_str()), 0))
+            {
+                for(auto i = 0; i < m_splitScreens.size(); i++)
+                {
+                    auto selected = i == m_pending.splitScreen;
+                    if(ImGui::Selectable(Tr(m_splitScreens[i].c_str()), selected))
+                    {
+                        m_pending.splitScreen = i;
+                        SetApplyRequired();
+                    }
+                    if(selected)
+                    {
+                        ImGui::SetItemDefaultFocus();
+                    }
+                }
+                ImGui::EndCombo();
+            }
+            ShowHelpMarker(Tr("Split-screen mode for before/after comparison."));
+            ImGui::Checkbox(Tr("Invert"), &m_options.splitInvert);
+            ShowHelpMarker(Tr("Puts the effect on the other half of the screen (right or bottom instead of left or top)."));
+            }
             if(s_cat == 6)
             {
             {
@@ -1966,12 +2038,9 @@ void UI::Render()
                 if(ImGui::Checkbox(Tr("Start minimized"), &m_options.startMinimized))
                     m_options.SaveApp();
                 ShowHelpMarker(Tr("Nbeam starts without showing the HUD (reduced to the notification area if that option is on)."));
-                if(ImGui::Checkbox(Tr("Window mode"), &m_options.windowMode))
-                {
+                if(ImGui::Checkbox(Tr("Minimize instead of closing"), &m_options.closeMinimizes))
                     m_options.SaveApp();
-                    PostMessage(m_options.outputWindow, WM_USER_EFFECTS, 2, 0);
-                }
-                ShowHelpMarker(Tr("Nbeam opens as a normal window (like Lossless Scaling): the settings are made there, with the effects off. The effects start when a detected program runs or when Activate effects is pressed, and stop when that program closes, when Deactivate effects is pressed or with the Show / hide effects hotkey. While they run, the HUD works as before (its hotkey). Unchecked: the HUD over the screen only, as before."));
+                ShowHelpMarker(Tr("The cross of the window minimizes it (to the notification area if that option is on: the profile detections keep working) instead of quitting Nbeam."));
             }
 
             }
@@ -2135,6 +2204,20 @@ void UI::Render()
                         if(ImGui::IsItemHovered())
                             ImGui::SetTooltip("%s", fc[k].help);
                         fx += cw + fs * 1.6f;
+                    }
+                    if(!m_options.emitterPresent)
+                    {
+                        // between Content FPS and About: the 3D emitter is not connected (checked every 2 s)
+                        const char* note = Tr("3D emitter not connected");
+                        float       sz   = fs * 1.0f;
+                        float       nw   = ffont->CalcTextSizeA(sz, FLT_MAX, 0.0f, note).x;
+                        if(fx + nw > limit)
+                        {
+                            sz = fs * 0.8f;
+                            nw = ffont->CalcTextSizeA(sz, FLT_MAX, 0.0f, note).x;
+                        }
+                        if(fx + nw <= limit)
+                            fdl->AddText(ffont, sz, ImVec2(wp.x + fx, wp.y + (footerH - sz) * 0.5f), IM_COL32(255, 70, 60, 255), note);
                     }
                 }
                 ImGui::SetCursorPos(ImVec2((std::max)(x, fs * 14.0f), y));

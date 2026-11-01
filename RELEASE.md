@@ -1,36 +1,35 @@
-# Nbeam 3D Vision 2.0.0
+# Nbeam 3D Vision 2.1.0
 
-Mise à jour de la version 1.2.0. Surcouche Windows : BFI, CRT Beam Simulator et 3D active (lunettes NVIDIA 3D Vision ou émetteur Arduino), sur n'importe quel écran — et désormais aussi un vrai logiciel en fenêtre.
+Mise à jour de la version 2.0.0. Surcouche Windows : BFI, CRT Beam Simulator et 3D active (lunettes NVIDIA 3D Vision ou émetteur Arduino), sur n'importe quel écran.
 
-> **À savoir après la mise à jour** : Nbeam s'ouvre maintenant **dans une fenêtre** (mode fenêtre, coché par défaut). Pour retrouver l'ancien fonctionnement (HUD par-dessus l'écran uniquement), décochez **Mode fenêtre** dans Application. Le **Sync Offset** ne se règle plus qu'en négatif : une valeur positive d'un ancien profil revient à 0, réglez-le une fois.
+> **À savoir après la mise à jour** : les **profils ne s'appliquent plus que quand leur programme (.exe) est détecté**. Sans programme détecté, Nbeam utilise les **réglages du bureau** (`Profils\Bureau.cfg`), créés au premier lancement à partir de votre ancien profil par défaut (ou du profil qui était actif) : vous retrouvez vos réglages. La case « Profil par défaut » et la liste des profils du menu de l'icône de notification disparaissent. Le mode fenêtre est toujours actif.
 
 ## Nouveautés
 
-### Mode fenêtre (comme Lossless Scaling)
-- Nbeam s'ouvre dans une **fenêtre Windows normale** (déplaçable, redimensionnable) avec la même présentation que le HUD. On y règle tout **effets coupés** : rien n'est capturé tant que les effets ne tournent pas.
-- **Activer les effets** : bouton en bas de la fenêtre, raccourci Afficher / masquer les effets, menu de l'icône de notification, ou automatiquement quand un **programme détecté** se lance. La fenêtre disparaît et l'overlay reprend par-dessus l'écran.
-- **Pendant les effets**, le HUD par-dessus l'écran fonctionne comme avant (son raccourci) ; son bouton devient **Désactiver les effets**.
-- **Arrêt** à la fermeture du programme détecté, avec Désactiver les effets ou avec le raccourci : la fenêtre revient (sans voler le focus du jeu quand c'est le raccourci).
-- La croix range la fenêtre dans la zone de notification (si l'option est cochée, les détections continuent), sinon elle quitte Nbeam.
-- **Taille de l'interface séparée** entre la fenêtre et le HUD par-dessus l'écran (Apparence → Taille du HUD, dans le mode concerné).
+### Profils
+- **Réglages du bureau** séparés des profils : un profil ne s'applique que pendant que son programme tourne, puis le bureau revient.
+- **Profil à régler** : choisissez un profil pour le régler sans lancer son jeu. Le test des voitures s'ouvre avec ce profil chargé et le HUD par-dessus ; en quittant le test (touche Windows ou Échap), le profil est enregistré et on revient au bureau.
+- **Créer un profil / Enregistrer sous** ne change plus les réglages actifs.
+- **Changement instantané** : changer le profil du programme en cours dans la détection l'applique tout de suite.
+- Tant qu'un programme détecté tourne, les réglages des profils sont masqués et un message indique le programme et le profil utilisé.
 
-### Effets
-- **Luminosité uniforme** (sous-images Auto, BFI simple) : case au-dessus du seuil de FPS bas. L'image garde toujours la luminosité qu'a le BFI au seuil de FPS bas, quelle que soit la cadence du jeu (y compris BFI doublé ou coupé sous le seuil) ; plus le seuil est bas, plus l'image est sombre.
+### Test (nouvelle catégorie, icône de compteur de vitesse)
+- **Test de mouvement** : des voitures détaillées, de la couleur d'accent, défilent dans une **fenêtre DirectX à part** que Nbeam capture comme un jeu, à travers tous les effets (BFI, CRT, 3D) : on compare le flou de mouvement d'un réglage à l'autre.
+- **En 3D** (côte à côte, haut/bas, damier) : les voitures et leur grille sortent de l'écran et portent la lettre de leur œil (G / D) de chaque côté de « NBEAM » : si l'on voit l'autre lettre, les yeux sont inversés.
+- **Vitesse des voitures** (0 à 3840 px/s), **taille des voitures** (25 à 200 %) et **couleur du fond**.
+- **Écran partagé** déplacé dans Test, avec la case **Inverser** (l'effet sur l'autre moitié).
+- La catégorie Test est masquée tant qu'un programme détecté tourne.
 
 ### 3D
-- **Sync Offset négatif uniquement** : de 0 à moins une période d'œil (curseur et raccourcis), pour ne plus inverser les yeux par erreur avec une valeur positive.
-- **Anti-halo de -300 à 300 %** : une valeur négative fait la même chose à l'envers, pour une profondeur inversée (Inverser les yeux coché en 2D vers 3D).
+- **Convergence pour tous les formats 3D** (côte à côte, haut/bas, damier, plus seulement la 2D vers 3D), réglée **de -100 à +100** : négatif = dans la profondeur de l'écran, positif = sort de l'écran, 0 = profondeur par défaut.
+- **Avertissement au démarrage** si aucun émetteur 3D n'est reconnu, avec le lien cliquable du pilote NVIDIA, et rappel en rouge en bas de la fenêtre tant qu'il n'est pas branché.
 
-### Raccourcis
-- **Écoute directe du clavier** : les raccourcis passent maintenant aussi dans les jeux qui s'approprient le clavier (DirectInput exclusif, Raw Input), comme Mirror's Edge. Les touches ne sont jamais bloquées pour le jeu. Si un jeu tourne en administrateur, lancez Nbeam en administrateur.
-
-## Correctifs
-
-- La fenêtre de Nbeam n'apparaît plus dans la liste des fenêtres à capturer.
+### Application
+- **Réduire au lieu de fermer** remplace l'option Mode fenêtre (toujours actif) : la croix réduit Nbeam (dans la zone de notification si l'option est cochée) au lieu de le quitter.
 
 ## Contenu de l'archive
 
-- `Nbeam3DVision.exe` : le programme
+- `Nbeam3DVision.exe` : le programme (il lance aussi la fenêtre du test des voitures)
 - `Nbeam3DVision.pdb` : les symboles, pour que le journal de plantage indique les noms des fonctions (facultatif, à garder à côté de l'exe)
 - `Shaders\CRTBeamSimulator.hlsl` : le shader du CRT Beam Simulator (à garder à côté de l'exe)
 - `README.md` : le mode d'emploi complet ; `RELEASE.md` : ces notes

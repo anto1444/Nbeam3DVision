@@ -408,6 +408,22 @@ nvopendurationus=5785.000000
     catch(...)
     { }
     LoadApp();
+    // The desktop settings (no detected program): their own file. Made once from what the desktop used before this version: the old
+    // "Default profile", or else the profile that was active.
+    try
+    {
+        const auto desk = ProfilesDir() / DESKTOP_SETTINGS;
+        if(!std::filesystem::exists(desk))
+        {
+            const std::string from = !defaultProfile.empty() && std::filesystem::exists(ProfilesDir() / defaultProfile) ? defaultProfile : profileFile;
+            if(!from.empty() && std::filesystem::exists(ProfilesDir() / from))
+                std::filesystem::copy_file(ProfilesDir() / from, desk);
+        }
+    }
+    catch(...)
+    { }
+    defaultProfile.clear();
+    profileFile = DESKTOP_SETTINGS; // Nbeam always starts on the desktop settings
 }
 
 // [hotkeys] "mods,vk" ("0,0" = no shortcut) and [gamepad] button bits, keyed by the action name
@@ -459,7 +475,19 @@ void Options::LoadApp()
             auto& a = ini["app"];
             LOAD_BOOL(a, startWithWindows)
             LOAD_BOOL(a, startMinimized)
-            LOAD_BOOL(a, windowMode)
+            LOAD_BOOL(a, closeMinimizes)
+            LOAD_INT(a, ufoSpeed)
+            ufoSpeed = std::clamp(ufoSpeed, 0, 7680);
+            LOAD_INT(a, carSize)
+            carSize = std::clamp(carSize, 25, 200);
+            if(a.has("testBg"))
+            {
+                const std::string v = a.get("testBg");
+                float             c[3] {};
+                if(sscanf_s(v.c_str(), "%f,%f,%f", &c[0], &c[1], &c[2]) == 3)
+                    for(int i = 0; i < 3; i++)
+                        testBg[i] = std::clamp(c[i], 0.0f, 1.0f);
+            }
             if(a.has("defaultProfile"))
                 defaultProfile = a.get("defaultProfile");
             if(a.has("hzSwitchMs"))
@@ -554,7 +582,10 @@ void Options::SaveApp() const
         auto&              a = ini["app"];
         SAVE_BOOL(a, startWithWindows)
         SAVE_BOOL(a, startMinimized)
-        SAVE_BOOL(a, windowMode)
+        SAVE_BOOL(a, closeMinimizes)
+        SAVE_INT(a, ufoSpeed)
+        SAVE_INT(a, carSize)
+        a["testBg"] = std::to_string(testBg[0]) + "," + std::to_string(testBg[1]) + "," + std::to_string(testBg[2]);
         a["defaultProfile"] = defaultProfile;
         a["hzSwitchMs"] = std::to_string((int)hzSwitchMs);
         a["hzSwitchN"]  = std::to_string(hzSwitchCount);
@@ -1099,6 +1130,7 @@ void Options::Save(const ShaderManager& shaderManager) const
             SAVE_BOOL(s, outputOnProcess)
             SAVE_INT(s, captureMethod)
             SAVE_INT(s, splitScreen)
+            SAVE_BOOL(s, splitInvert)
             SAVE_BOOL(s, hardwareSrgb)
             SAVE_INT(s, monitorType)
             SAVE_INT(s, frameBuffer)
@@ -1168,6 +1200,7 @@ void Options::Load(ShaderManager& shaderManager)
                 LOAD_BOOL(s, outputOnProcess)
                 LOAD_INT(s, captureMethod)
                 LOAD_INT(s, splitScreen)
+                LOAD_BOOL(s, splitInvert)
                 LOAD_BOOL(s, hardwareSrgb)
                 LOAD_INT(s, monitorType)
                 LOAD_INT(s, frameBuffer)

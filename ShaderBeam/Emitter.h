@@ -12,6 +12,9 @@ MIT License
 namespace ShaderBeam
 {
 
+// true when an NVIDIA 3D Vision USB emitter is plugged in and its driver is loaded (no pipe is opened)
+bool NvidiaEmitterReady();
+
 // Everything an emitter may need to know about the running output
 struct EmitterEnv
 {

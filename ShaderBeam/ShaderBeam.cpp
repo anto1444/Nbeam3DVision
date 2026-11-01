@@ -50,13 +50,7 @@ void ShaderBeam::Create(HWND window)
     timeBeginPeriod(1);
     Helpers::InitQPC();
 
-    m_options.InitProfile();
-    // "Default profile": Nbeam always starts on it (not on the profile of a program that was running when it was closed)
-    if(!m_options.defaultProfile.empty() && std::filesystem::exists(Options::ProfilesDir() / m_options.defaultProfile))
-    {
-        m_options.profileFile = m_options.defaultProfile;
-        m_options.RememberProfile();
-    }
+    m_options.InitProfile(); // (the desktop settings: Nbeam always starts on them)
     m_options.Load(m_shaderManager);
 
     // the screens are identified only now: the settings (detections, remembered screens) are loaded, a save before would erase them
@@ -122,8 +116,8 @@ void ShaderBeam::SwitchProfile()
     // Stop() has just saved the previous profile; load the new one on top of the current values
     m_options.profileFile    = m_options.pendingProfile;
     m_options.pendingProfile.clear();
-    // any profile but the default one shows the effects again (they may have been hidden with Show / Hide)
-    if(m_options.defaultProfile.empty() || _stricmp(m_options.defaultProfile.c_str(), m_options.profileFile.c_str()) != 0)
+    // any profile shows the effects again (they may have been hidden with Show / Hide on the desktop)
+    if(!m_options.IsDesktopSettings())
         m_options.effectsSuspended = false;
     {
         // hotkeys are global: a profile never changes them

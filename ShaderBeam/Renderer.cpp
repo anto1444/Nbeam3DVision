@@ -9,6 +9,7 @@ MIT License
 #include "Renderer.h"
 #include "Helpers.h"
 #include "CaptureBase.h"
+#include "Lang.h"
 
 namespace ShaderBeam
 {
@@ -186,6 +187,14 @@ void Renderer::Render(bool present, bool ui)
         D3D11_RECT scissor {};
         scissor.right  = m_options.splitScreen == 1 ? m_options.outputWidth / 2 : m_options.outputWidth;
         scissor.bottom = m_options.splitScreen == 2 ? m_options.outputHeight / 2 : m_options.outputHeight;
+        if(m_options.splitInvert && m_options.splitScreen)
+        {
+            // inverted: the effect on the right / bottom half
+            scissor.left   = m_options.splitScreen == 1 ? m_options.outputWidth / 2 : 0;
+            scissor.top    = m_options.splitScreen == 2 ? m_options.outputHeight / 2 : 0;
+            scissor.right  = m_options.outputWidth;
+            scissor.bottom = m_options.outputHeight;
+        }
         m_renderContext.deviceContext->RSSetScissorRects(1, &scissor);
     }
 
@@ -206,6 +215,16 @@ void Renderer::Render(bool present, bool ui)
         box.top         = destY;
         box.right       = m_options.outputWidth;
         box.bottom      = m_options.outputHeight;
+        if(m_options.splitInvert)
+        {
+            // inverted: the picture without effect on the left / top half
+            destX      = 0;
+            destY      = 0;
+            box.left   = 0;
+            box.top    = 0;
+            box.right  = m_options.splitScreen == 1 ? m_options.outputWidth / 2 : m_options.outputWidth;
+            box.bottom = m_options.splitScreen == 2 ? m_options.outputHeight / 2 : m_options.outputHeight;
+        }
         box.front       = 0;
         box.back        = 1;
         m_renderContext.deviceContext->CopySubresourceRegion(
@@ -765,16 +784,16 @@ Eye Renderer::StereoImageEye()
     return (((frameNo & 1) != 0) != m_options.emitter.swapEyes) ? Eye::Right : Eye::Left;
 }
 
-void Renderer::ConvertStereoInput(bool newFrame)
+bool Renderer::ConvertStereoInput(bool newFrame)
 {
     if(!m_stereoActive)
-        return;
+        return newFrame;
     if(newFrame)
         m_stereoHaveRaw = true;
     if(!m_stereoHaveRaw)
-        return;
+        return newFrame;
     if(EffectsOff())
-        return; // effects suspended: the captured frame is shown as it is, without 3D decoding
+        return newFrame; // effects suspended: the captured frame is shown as it is, without 3D decoding
     // new frame: goes to the slot RollInput() will make current; no new frame: refresh the current slot with the other eye
     const int slot = newFrame ? GetNextSlotForStereo() : m_renderContext.inputSlots.front();
     if(m_options.emitter.sourceFormat == StereoSource::AiDepth)
@@ -788,6 +807,7 @@ void Renderer::ConvertStereoInput(bool newFrame)
                      m_options.outputHeight,
                      m_depthGpuSrv.get(),
                      &m_options.emitter.ai);
+    return newFrame;
 }
 
 void Renderer::CreateDepthResources()

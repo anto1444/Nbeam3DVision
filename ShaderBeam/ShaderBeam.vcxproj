@@ -156,6 +156,7 @@
     <ClInclude Include="Gamepad.h" />
     <ClInclude Include="Common.h" />
     <ClInclude Include="Renderer.h" />
+    <ClInclude Include="CarTest.h" />
     <ClInclude Include="Emitter.h" />
     <ClInclude Include="SubFrameModes.h" />
     <ClInclude Include="Lang.h" />
@@ -186,6 +187,7 @@
     <ClCompile Include="SinglePassShaderProfile.cpp" />
     <ClCompile Include="Watcher.cpp" />
     <ClCompile Include="Renderer.cpp" />
+    <ClCompile Include="CarTest.cpp" />
     <ClCompile Include="EmitterSettings.cpp" />
     <ClCompile Include="EmitterManager.cpp" />
     <ClCompile Include="EmitterComPort.cpp" />

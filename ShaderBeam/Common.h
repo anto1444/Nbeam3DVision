@@ -24,6 +24,7 @@ namespace ShaderBeam
 #define WM_USER_BENCHMARK (WM_USER + 1)
 #define WM_USER_NOWINDOW (WM_USER + 2)
 #define WM_USER_EFFECTS (WM_USER + 4) // window mode: wParam 1 = activate the effects, 0 = deactivate, 2 = the window mode option changed
+#define WM_USER_GLASSESTEST (WM_USER + 5) // 3D panel: wParam = glasses test to show (1, 2), 0 = end it
 #define TIMER_RETRY_START 3 // window timer: the start failed (no display, Windows / graphics card error): try again
 
 #define HOTKEY_TOGGLEUI 0
@@ -176,6 +177,7 @@ struct Options
     bool StereoAllowed() const { return EffectiveSubFramesMode() == SF_MANUAL; }
     int  captureMethod { 0 };
     int  splitScreen { 0 };
+    bool splitInvert { false }; // split-screen: the effect on the other half (right / bottom)
     bool hardwareSrgb { false };
     int  monitorType { MONITOR_LCD };
     int  frameBuffer { 0 };    // anti-stutter buffer: game frames kept in advance (-1 = Auto, 0 = off, 1..5); profile setting
@@ -230,9 +232,14 @@ struct Options
     bool               RegisterHotkey(int id) const;
     void               UnregisterHotkey(int id) const;
 
-    // settings profiles: *.ini files next to the exe; profileFile is the active one (file name only)
-    std::string profileFile { "Nbeam3DVision.ini" };
+    // Settings: the desktop has its own settings (DESKTOP_SETTINGS, used whenever no detected program runs); the profiles (*.ini of the
+    // Profils folder) only apply while their program runs (profile detections), or while one is adjusted over the motion test.
+    // profileFile is the active file (file name only).
+    static constexpr const char* DESKTOP_SETTINGS = "Bureau.cfg";
+    std::string profileFile { DESKTOP_SETTINGS };
     std::string pendingProfile; // set by the UI, applied on the next restart
+    std::string testProfile;    // set by the UI before it starts the motion test: the profile adjusted over the test (empty = the desktop settings)
+    bool        IsDesktopSettings() const { return _stricmp(profileFile.c_str(), DESKTOP_SETTINGS) == 0; }
     static std::filesystem::path ExeDir();
     static std::filesystem::path ProfilesDir();   // "Profils" folder next to the exe: where the profile .ini files live
     static bool                  FirstRun(); // true when the profile folder was created by this start (first launch)
@@ -247,8 +254,14 @@ struct Options
     bool          startWithWindows { false };
     bool          minimizeToTray { true }; // the notification area icon always exists
     bool          startMinimized { false };
-    bool          windowMode { true }; // "Window mode": Nbeam opens as a normal window, the effects run only when activated or when a detected program runs
-    std::string   defaultProfile; // "Default profile": the profile that comes back when a detected program is no longer running (empty = the previous one)
+    bool          windowMode { true }; // window mode, always on: Nbeam opens as a normal window, the effects run only when activated or when a detected program runs
+    bool          closeMinimizes { true }; // "Minimize instead of closing": the cross of the window minimizes it (to the notification area with that option)
+    volatile bool motionTest { false };   // motion test running (the cars window, see CarTest.h, captured like a game); not saved
+    int           ufoSpeed { 960 };       // motion test (Nbeam.app.cfg): speed of the cars, pixels per second (0 = still)
+    int           carSize { 100 };        // ... size of the cars, % (100 = 3 rows; smaller = more cars)
+    float         testBg[3] { 0.16f, 0.17f, 0.19f }; // ... background colour of the cells
+    volatile bool emitterPresent { true }; // a 3D emitter is recognized (NVIDIA driver loaded, or a COM port emitter set); red note in the bottom bar otherwise
+    std::string   defaultProfile; // old "Default profile" (read once to make the desktop settings from it, then always empty)
     struct ProfileLink
     {
         std::string exe;     // full path of the program, or just its file name

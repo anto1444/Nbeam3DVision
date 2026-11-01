@@ -43,7 +43,7 @@ public:
     bool                                   BufferActive() const; // anti-stutter buffer in use (Options::frameBuffer)
     void                                   BufferedStep(const std::shared_ptr<CaptureBase>& capture); // replaces PollCapture while the buffer is active
     void                                   RollInput(bool newFrame);
-    void                                   ConvertStereoInput(bool newFrame); // SBS/TB/Checkerboard -> one eye, call after capture Poll and before RollInput
+    bool                                   ConvertStereoInput(bool newFrame); // SBS/TB/Checkerboard -> one eye, call after capture Poll and before RollInput; returns newFrame
 
 
     // SubFrames modes (see SubFrameModes.h). Auto: UpdateSubFramesMode() every vsync measures the game frame rate and changes

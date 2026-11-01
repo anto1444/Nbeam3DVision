@@ -17,7 +17,9 @@ MIT License
 #include "Emitter.h"
 #include "NvidiaProtocol.h"
 
+#include <cfgmgr32.h>
 #pragma comment(lib, "setupapi.lib")
+#pragma comment(lib, "cfgmgr32.lib")
 
 namespace ShaderBeam
 {
@@ -65,6 +67,38 @@ static std::wstring FindEmitterPath()
     }
     SetupDiDestroyDeviceInfoList(set);
     return found;
+}
+
+// Startup check (3D menu, warning): a present USB device with an emitter id whose driver is loaded without problem.
+// The device instance id (USB\VID_0955&PID_0007\...) is matched like the interface paths (usb#vid_0955&pid_0007...).
+bool NvidiaEmitterReady()
+{
+    bool     ready = false;
+    HDEVINFO set   = SetupDiGetClassDevsW(nullptr, L"USB", nullptr, DIGCF_PRESENT | DIGCF_ALLCLASSES);
+    if(set == INVALID_HANDLE_VALUE)
+        return false;
+    SP_DEVINFO_DATA dd {};
+    dd.cbSize = sizeof(dd);
+    for(DWORD i = 0; !ready && SetupDiEnumDeviceInfo(set, i, &dd); i++)
+    {
+        wchar_t id[512] {};
+        if(!SetupDiGetDeviceInstanceIdW(set, &dd, id, 511, nullptr))
+            continue;
+        std::string s = ToAscii(id);
+        for(auto& c : s)
+            if(c == '\\')
+                c = '#';
+        bool match = false;
+        for(auto pattern : Nv::kUsbPathPatterns)
+            match = match || s.rfind(pattern, 0) == 0;
+        if(!match)
+            continue;
+        ULONG status = 0, problem = 0;
+        if(CM_Get_DevNode_Status(&status, &problem, dd.DevInst, 0) == CR_SUCCESS && (status & DN_DRIVER_LOADED) && !(status & DN_HAS_PROBLEM))
+            ready = true;
+    }
+    SetupDiDestroyDeviceInfoList(set);
+    return ready;
 }
 
 class NvidiaEmitter : public IEmitter

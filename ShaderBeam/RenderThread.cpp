@@ -52,7 +52,7 @@ void RenderThread::PollCapture()
     m_renderer.RollInput(true);
 #else
     bool newFrame = m_capture->Poll(m_renderer.GetNextInput());
-    m_renderer.ConvertStereoInput(newFrame);
+    newFrame      = m_renderer.ConvertStereoInput(newFrame);
     m_renderer.RollInput(newFrame);
 #endif
 }
