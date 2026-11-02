@@ -173,6 +173,12 @@ struct Options
     AutoSettings   autoSub; // Auto: detection interval
     LowFpsSettings lowFps;  // Auto: behaviour of the BFI when the game runs below the threshold
     bool uniformBrightness { false }; // Auto: brightness kept at the level the BFI has at the low fps threshold (see Renderer::UniformGain)
+    // phase lock (BFI sync 1 or 3, 2D, captured process, no buffer in use): the cycle is shifted by whole refreshes so the game frames
+    // arrive just before the visible subframe (see Renderer::PhaseSample); it follows the SubFrames of BFI auto
+    float          phaseInterval { 1.0f };  // seconds between two measures (0.5 to 3), profile setting
+    volatile int   phaseState { 0 };        // 0 = off, 1 = measuring, 2 = locked, 3 = game frames at an unsteady moment of the cycle
+    volatile float phaseWaitMs { 0.0f };    // median wait of the game frames before they are shown (ms)
+    volatile int   phaseCorrections { 0 };  // cycle shifts made since the effects started
     // 3D (stereo emitter) only exists in Manual mode
     bool StereoAllowed() const { return EffectiveSubFramesMode() == SF_MANUAL; }
     int  captureMethod { 0 };
@@ -180,11 +186,16 @@ struct Options
     bool splitInvert { false }; // split-screen: the effect on the other half (right / bottom)
     bool hardwareSrgb { false };
     int  monitorType { MONITOR_LCD };
-    int  frameBuffer { 0 };    // anti-stutter buffer: game frames kept in advance (-1 = Auto, 0 = off, 1..5); profile setting
-    mutable int frameBufferAuto { 1 }; // Auto: the size the renderer currently uses (1..5)
+    // BFI sync (profile, the menu shown while a program is captured): 0 = none, 1 = phase lock, 2 = frame buffer (frameBuffer), 3 = hybrid
+    // (phase lock while the game is steady, a buffer of one frame during its jolts, gone after 1 calm second)
+    int  bfiSync { 0 };
+    int  frameBuffer { 0 };    // "Frame buffer": the most game frames kept in advance (1..5, at least 1; the renderer uses 1 up to it); profile setting
     mutable int frameBufferStep { 1 }; // buffer: content frames (eye pairs in 3D) each game frame is shown for (game fps = a divisor of the content rate, SubFrames Manual)
-    bool FrameBufferIsAuto() const { return frameBuffer < 0; }
-    int  EffectiveFrameBuffer() const { return FrameBufferIsAuto() ? frameBufferAuto : frameBuffer; }
+    mutable int frameBufferAuto { 0 }; // the buffer the renderer currently uses (Frame buffer: 1 up to the value chosen; hybrid: 0 or 1)
+    int  BufferSetting() const { return bfiSync == 2 ? (std::min)((std::max)(frameBuffer, 1), 5) : bfiSync == 3 ? 1 : 0; } // the most the buffer may use (0 = none)
+    bool FrameBufferIsAuto() const { return BufferSetting() > 0; } // the size is adapted by the renderer (Frame buffer and Hybrid)
+    int  EffectiveFrameBuffer() const { return FrameBufferIsAuto() ? (std::max)(frameBufferAuto, 0) : 0; }
+    bool PhaseLockWanted() const { return bfiSync == 1 || bfiSync == 3; }
     mutable float captureBlack { 0.0f };  // black level of the captured image in scRGB units (nits / 80)
     mutable float captureGain { 1.0f };   // brightness gain of the captured image (1 = unchanged)
     mutable float captureGrey { 1.0f };   // grey level (gamma) of the captured image
@@ -194,6 +205,10 @@ struct Options
     int  tearingLine { 0 };     // tearing control: where the flip happens in the refresh (0 = right after vblank, hidden at the top; 100 = bottom), profile setting
     bool Tearing() const { return maxQueuedFrames == QUEUE_TEARING; }
     bool beamRacing { false }; // tearing: the flip is timed on the real scanout position so the tear lands where the effect hides it; profile setting
+    bool directPresent { false }; // "Direct presentation" (experimental, profile): the overlay is never a layered window, so Windows can show it
+                                  // directly (independent flip / hardware plane) instead of composing it; no click-through (see SetClickThrough)
+    volatile int   presentMode { -1 };       // measured: -1 unknown, 0 composed by Windows, 1 direct (hardware plane), 3 composition failure
+    volatile float presentGlitches { 0.0f }; // measured: frames shown for more or fewer refreshes than presented (late / dropped), per minute
     int  beamLead { 3 };       // beam racing: how early (% of the refresh) the flip is sent, to make up for its delay; profile setting
     mutable int beamRacingState { 0 }; // 1 = working, -1 = the scanout position cannot be read on this display (normal tearing is used)
     bool rememberSettings { true };

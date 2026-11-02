@@ -1,13 +1,13 @@
 # Nbeam 3D Vision
 
-**Version 2.1.0 — par anto1444, 2026**
+**Version 2.2.0 — par anto1444, 2026**
 
 <p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision - NVIDIA 3D Vision glasses, BFI and CRT beam simulator overlay for Windows" width="420"></p>
 
 > **English** — **Nbeam 3D Vision brings NVIDIA 3D Vision back to life on any monitor.** It is a free, open-source Windows overlay that drives the NVIDIA 3D Vision USB IR emitter (or an Arduino emitter) directly, so **active-shutter 3D glasses** work again on modern Windows 10 / 11 PCs **without the discontinued 3D Vision driver, without a certified 3D monitor and without a compatible game**: it works on the desktop, in windowed mode and in any game, multiplayer included.
 >
 > - **Stereoscopic 3D** from side-by-side (SBS), top-bottom (TB) or checkerboard content, or from any **2D game or video converted to 3D in real time by AI** (a depth-estimation model such as Depth Anything V2, run on the GPU with DirectML; ONNX Runtime and the model are not included, see below), with convergence and depth controls.
-> - **Motion blur reduction** on fast LCD and OLED screens (120 to 480 Hz): **BFI (black frame insertion)** and the **CRT beam simulator** from Blur Busters, alone or together with 3D.
+> - **Motion blur reduction** on fast LCD and OLED screens (120 to 480 Hz): **BFI (black frame insertion)** and the **CRT beam simulator** from Blur Busters, alone or together with 3D, with **BFI sync** for captured games (phase lock for lower latency, adaptive frame buffer for stability, or both) and **BFI auto** (SubFrames following the game frame rate).
 > - **Per-game profiles** loaded automatically when the game's .exe is detected, separate desktop settings, live adjustment of the glasses (sync offset, open duration), a **motion test** with scrolling cars to compare settings and check eye inversion, hotkeys and gamepad support.
 > - Requirements: Windows 10 (1903) or 11 64-bit, DirectX 11 GPU, a 100 Hz+ display for 3D or BFI (240 Hz+ for both). Download the latest version from the [Releases](https://github.com/anto1444/Nbeam3DVision/releases) page. The interface and the full guide below are in French (switch the interface to English in Application → Language / Langue).
 >
@@ -74,26 +74,69 @@ Reproduit le balayage d'un tube cathodique : l'image est « dessinée » ligne p
 
 > **Images en file à 0 (tearing) : déconseillé avec le BFI et le CRT.** La déchirure peut couper une image claire ou noire en deux et provoquer des bandes ou un scintillement irrégulier. Gardez une valeur de file de 1 ou plus, ou placez la ligne de tearing tout en haut de l'image (masquée) avec le contrôle du tearing.
 
-### BFI adaptatif (Sous-images : Auto)
+### Présentation directe (expérimental)
 
-Quand un programme est capturé, le curseur **Sous-images** propose **Auto** (avant le 1). C'est le **BFI adaptatif** : Nbeam mesure en continu la cadence réelle du jeu et ajuste tout seul le nombre de sous-images (120 images/s sur 480 Hz → 4, 240 images/s → 2). Ses atouts :
+Case sous « Images en file ». Normalement, l'overlay de Nbeam est une fenêtre transparente aux clics (« layered ») que Windows **recompose** avant l'écran. Cochée, l'overlay n'est plus « layered » : Windows peut l'afficher **directement** (flip indépendant ou plan matériel), soit environ **un rafraîchissement de latence en moins** et des images BFI qui ne sont **jamais affichées en retard par la composition** (pas de « blink »). Le rendu redémarre quand on la change ; c'est un réglage de profil.
+
+- **Plus de clic à travers** : tant que le HUD est caché, l'overlay ne prend pas le focus, ignore les clics et masque le pointeur Windows. Les jeux qui lisent la souris directement (la plupart des jeux 3D) continuent de marcher ; les jeux et menus utilisés avec le pointeur Windows ne reçoivent plus les clics.
+- Windows n'accorde le mode direct que si **rien ne s'affiche par-dessus** l'overlay (notifications, volume, overlays Discord ou Steam...).
+- **Mesure** affichée en dessous :
+  - la **Présentation** : *composée par Windows*, *directe (plan matériel)* ou *inconnue* ;
+  - les **images en retard** par minute : des images restées à l'écran plus ou moins de rafraîchissements que prévu, mesurées sur 10 secondes et non comptées avec le tearing.
+
+  Comparez avec et sans l'option dans le même jeu.
+
+### Synchronisation BFI
+
+Le menu **Synchro BFI** n'apparaît que lorsqu'un **programme est capturé**. Il choisit comment le BFI suit les images du jeu :
+
+- **Aucune (déconseillé)** : une image du jeu est prise au début de chaque cycle BFI (une image qui arrive juste après attend presque un cycle entier : jusqu'à 12 ms à 240 Hz avec 4 sous-images).
+- **Calage de phase (meilleure latence)** (2D) : le cycle reste parfaitement régulier, mais il est décalé pour que les images arrivent juste avant la sous-image visible. Latence plus faible et stable.
+- **Tampon d'image (meilleure stabilité)** : jusqu'à 1 à 5 images du jeu (autant que le jeu en a besoin) sont gardées d'avance pour lisser une cadence irrégulière, au prix d'un peu de latence (fonctionne aussi en 3D).
+- **Hybride** (2D, recommandé) : le calage de phase tant que le jeu est stable ; dès que le jeu a des à-coups, un tampon d'**une seule image** prend le relais, puis s'en va après **1 seconde calme** et le calage reprend la main.
+
+La case **BFI auto** (sous le menu) fonctionne avec chacun de ces choix.
+
+#### Calage de phase
+
+Nbeam enregistre le moment où chaque image arrive dans le cycle, **avec les micro-variations du jeu**, et calcule la position de son cycle qui donne **l'attente la plus courte tout en gardant une marge de sécurité** : aucune image ne doit être prise un cycle et ratée le suivant (ce qui ferait une image doublée puis une sautée). Le cycle est alors **décalé par rafraîchissements entiers**, en raccourcissant des cycles dans leur partie noire :
+
+- **jamais plus d'un rafraîchissement par cycle** : un décalage de 2 se fait sur deux cycles (`F B B │ F B B │ F B B B` avec 4 sous-images) au lieu d'un cycle très court (`F B │ F B B B`) ; un décalage d'un rafraîchissement plus tard se fait avec 3 cycles raccourcis (4 sous-images), aucun cycle n'est allongé ;
+- **luminosité compensée** (BFI simple) : un cycle raccourci donnerait un petit flash (un éclair sur 3 rafraîchissements au lieu de 4 = +33 % de lumière à cet instant) ; sa lumière est baissée d'autant (×3/4 avec 4 sous-images, en tenant compte des images claires et du Gain vs Blur), la luminosité reste régulière. Avec le CRT Beam Simulator, les décalages sont étalés de la même façon mais sans compensation.
+
+- **Intervalle de mesure** de **0,5 à 3 secondes** (1 seconde par défaut) : la fréquence de mesure et de correction, pour suivre la dérive entre le jeu et l'écran. Court = suit plus vite, long = plus posé. Un seul décalage par mesure, seulement s'il fait gagner au moins un demi-rafraîchissement. Si une image rate tout de même son cycle (jeu un peu plus lent que le cycle), le cycle recule d'un rafraîchissement aussitôt.
+- **Compatible avec BFI auto** : le calage se cale sur le nombre de sous-images choisi par BFI auto ; quand il change, la mesure repart de zéro sur le nouveau cycle.
+- Une pause du jeu (menu, chargement, fenêtre en arrière-plan) est détectée : la mesure reprend proprement ensuite.
+- **État** : *mesure*, *calée* (avec l'attente actuelle et le nombre de décalages), *cadence du jeu irrégulière* ou, en Hybride, *en pause, tampon en cours*.
+- **Plafonnez le jeu** près de la valeur affichée (fréquence réelle de l'écran ÷ sous-images, par exemple 59,940 i/s), avec RTSS ou Reflex. Un plafond parfait n'est pas nécessaire, mais plus la cadence est stable, plus le gain est grand.
+
+#### Tampon d'image
+
+Le **tampon d'image** garde quelques images du jeu d'avance pour **lisser un jeu à cadence irrégulière**, au prix d'un peu de latence. La valeur choisie (**1 à 5**) est le **maximum autorisé**, pas une taille fixe :
+
+- le tampon utilise **1 image** et ne monte jusqu'au maximum que si le jeu en a besoin (ses pires écarts entre deux images sur les 2 dernières secondes, ou une image qui n'arrive pas à temps) ;
+- il change **d'une image à la fois, au plus une fois toutes les 2 secondes** (chaque changement montre une image deux fois ou en saute une : jamais plusieurs d'un coup) ;
+- il redescend après **2 secondes calmes** ; si l'on baisse la valeur, il y redescend de la même façon ;
+- la taille utilisée est affichée à côté du curseur (*utilisé : n*, avec la latence en ms).
+
+Avec les **sous-images sur une valeur fixe** (BFI auto décoché), le tampon gère aussi un jeu qui tourne à un **diviseur de la cadence du contenu** : pour un contenu à 120 fps et un jeu à 60, 40, 30 ou 15 fps, chaque image du jeu est affichée exactement 2, 3, 4 ou 8 fois, régulièrement, au lieu d'une alternance irrégulière.
+
+Avec la **2D vers 3D (IA)**, le tampon d'image fonctionne comme ailleurs. La synchronisation des cartes de profondeur est une option à part, le **Tampon de carte** (panneau 3D, sous « Afficher la carte de profondeur ») : le calcul de la profondeur prend du temps et la carte arrive en retard sur l'image ; coché, Nbeam mesure ce délai (affiché dans le panneau 3D) et retient chaque image jusqu'à ce que sa propre carte soit prête, pour que **la profondeur colle à l'image**. Il s'ajoute au tampon d'image (les deux délais se cumulent). Décoché, aucune synchronisation : pas de latence ajoutée, mais la profondeur peut être en retard sur les mouvements rapides.
+
+#### Hybride
+
+Le meilleur des deux : tant que le jeu est stable, le **calage de phase** donne la latence la plus faible (pas de tampon) ; quand Nbeam voit une image arriver en retard ou rater son cycle, il **active aussitôt un tampon d'une image** (jamais plus) pour absorber l'à-coup, puis le **retire après 1 seconde calme** (sans nouvel à-coup) et le calage reprend. La ligne *Tampon : n image(s)* indique la taille utilisée. En 3D, choisissez Aucune ou Tampon d'image.
+
+#### BFI auto
+
+Case à cocher sous le menu (2D, programme capturé) : Nbeam mesure en continu la cadence réelle du jeu et ajuste tout seul le nombre de sous-images (120 images/s sur 480 Hz → 4, 240 images/s → 2) ; le curseur Sous-images est alors remplacé par la valeur choisie. Ses atouts :
 
 - l'effet **reste net et régulier** même quand le jeu change de cadence (cinématique en 30 images/s, menu, chute d'images) : plus besoin de choisir un réglage par jeu ni de le corriger à la main ;
-- si la cadence tombe sous un **seuil réglable**, le BFI est doublé ou coupé pour éviter un scintillement lent et fatigant ;
 - la réactivité se règle avec l'**intervalle de détection** ;
+- si la cadence tombe sous un **seuil réglable**, le BFI est doublé ou coupé pour éviter un scintillement lent et fatigant ;
 - **Luminosité uniforme** (case au-dessus du seuil de FPS bas, BFI simple) : plus il y a de sous-images, plus le BFI est sombre, donc la luminosité varie avec la cadence du jeu. Cochée, l'image garde toujours la luminosité qu'a le BFI au seuil de FPS bas, quelle que soit la cadence (même quand le BFI est doublé ou coupé sous le seuil) : plus le seuil est bas, plus l'image est sombre.
 
 > **Attention** — pour un meilleur résultat, privilégiez toujours une cadence de jeu qui **divise exactement la fréquence de l'écran** (60, 80, 120 ou 240 images/s sur 480 Hz, par exemple). Sinon (73 images/s sur 480 Hz…), le nombre de sous-images ne tombe pas juste et le jeu paraîtra saccadé.
-
-Auto n'est pas disponible avec la 3D (les sous-images suivent alors l'émetteur).
-
-### Tampon d'image
-
-Le **tampon d'image** garde quelques images du jeu d'avance pour **lisser un jeu à cadence irrégulière**, au prix d'un peu de latence (uniquement avec la capture d'un programme). 0 = désactivé, 1 à 5 = nombre d'images d'avance. En **Auto**, Nbeam adapte lui-même la taille (0 à 5) : elle augmente tout de suite après un à-coup et redescend doucement ; le tampon ne repasse à 0 (sans latence ajoutée) qu'après 4 secondes de jeu stable.
-
-Avec les **sous-images sur une valeur fixe** (pas en Auto), le tampon gère aussi un jeu qui tourne à un **diviseur de la cadence du contenu** : pour un contenu à 120 fps et un jeu à 60, 40, 30 ou 15 fps, chaque image du jeu est affichée exactement 2, 3, 4 ou 8 fois, régulièrement, au lieu d'une alternance irrégulière.
-
-Avec la **2D vers 3D (IA)**, le tampon d'image fonctionne comme ailleurs. La synchronisation des cartes de profondeur est une option à part, le **Tampon de carte** (panneau 3D, sous « Afficher la carte de profondeur ») : le calcul de la profondeur prend du temps et la carte arrive en retard sur l'image ; coché, Nbeam mesure ce délai (affiché dans le panneau 3D) et retient chaque image jusqu'à ce que sa propre carte soit prête, pour que **la profondeur colle à l'image**. Il s'ajoute au tampon d'image (les deux délais se cumulent). Décoché, aucune synchronisation : pas de latence ajoutée, mais la profondeur peut être en retard sur les mouvements rapides.
 
 ## 3D active
 
@@ -110,7 +153,7 @@ Avec la **2D vers 3D (IA)**, le tampon d'image fonctionne comme ailleurs. La syn
 
 **Émetteur non reconnu** : si aucun émetteur n'est reconnu au démarrage (émetteur NVIDIA 3D Vision débranché ou sans pilote, et pas d'émetteur Arduino réglé), Nbeam affiche un avertissement avec un lien cliquable vers le [pilote NVIDIA 3D Vision USB](https://www.nvidia.com/en-us/drivers/nv3dvisionusb/390_41/nv3dvisionusb-dch-driver/) et un bouton OK ; tant que l'émetteur n'est pas connecté, « Émetteur 3D non connecté » s'affiche en rouge dans la barre du bas, entre FPS contenu et À propos.
 
-**2D vers 3D (IA)** : un modèle de profondeur estime la profondeur de chaque pixel pour créer les deux vues. Il faut placer à côté de l'exe `onnxruntime.dll`, `onnxruntime_providers_shared.dll` et un modèle `.onnx` (ex. `model_fp16.onnx`) ; ces fichiers ne sont exigés que pour cette source. Les bords gauche et droit sont masqués par des bandes noires droites (à la profondeur de l'écran) ; **Inverser les yeux** inverse aussi la profondeur ; l'**anti-halo** (de -300 à 300 % ; une valeur négative fait la même chose à l'envers, pour une profondeur inversée) limite le débordement de la profondeur d'un objet sur le fond ; le **Tampon de carte** cale la profondeur sur l'image (voir Tampon d'image).
+**2D vers 3D (IA)** : un modèle de profondeur estime la profondeur de chaque pixel pour créer les deux vues. Il faut placer à côté de l'exe `onnxruntime.dll`, `onnxruntime_providers_shared.dll` et un modèle `.onnx` (ex. `model_fp16.onnx`) ; ces fichiers ne sont exigés que pour cette source. Les bords gauche et droit sont masqués par des bandes noires droites (à la profondeur de l'écran) ; **Inverser les yeux** inverse aussi la profondeur ; l'**anti-halo** (de -300 à 300 % ; une valeur négative fait la même chose à l'envers, pour une profondeur inversée) limite le débordement de la profondeur d'un objet sur le fond ; le **Tampon de carte** cale la profondeur sur l'image (voir Synchronisation BFI, Tampon d'image).
 
 > **Ces fichiers ne sont pas fournis avec Nbeam** (pour des raisons de licence et de taille). `onnxruntime.dll` et `onnxruntime_providers_shared.dll` proviennent d'une version DirectML d'[ONNX Runtime](https://github.com/microsoft/onnxruntime/releases) (Microsoft, MIT) ; le modèle `.onnx` est un modèle d'estimation de profondeur à fournir vous-même, en respectant sa licence. Copiez ces trois fichiers à côté de `Nbeam3DVision.exe`. Sans eux, Nbeam fonctionne normalement : seule la source « 2D vers 3D (IA) » est indisponible.
 
@@ -173,7 +216,7 @@ Une **détection de profil** associe un programme (`.exe`) à un profil. Pour aj
 
 - Branchez un seul écran, ou faites tourner Nbeam sur le plus rapide.
 - Plafonnez le jeu à la valeur « FPS contenu » du HUD.
-- Si l'image saccade, augmentez la file d'images ou mettez le tampon d'image sur Auto.
+- Si l'image saccade, augmentez la file d'images ou choisissez Hybride ou Tampon d'image dans Synchro BFI.
 
 ## Crédits et remerciements
 

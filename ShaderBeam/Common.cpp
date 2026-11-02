@@ -1138,12 +1138,15 @@ void Options::Save(const ShaderManager& shaderManager) const
             SAVE_INT(s, maxQueuedFrames)
             SAVE_INT(s, tearingLine)
             SAVE_BOOL(s, beamRacing)
+            SAVE_BOOL(s, directPresent)
             SAVE_INT(s, beamLead)
             SAVE_INT(s, subFramesSetting)
             SAVE_INT(s, subFramesMode)
             s["lowFpsThreshold"] = std::to_string(lowFps.threshold);
             s["lowFpsMode"]      = std::to_string(lowFps.mode);
             SAVE_BOOL(s, uniformBrightness)
+            SAVE_INT(s, bfiSync)
+            s["phaseInterval"]   = std::to_string(phaseInterval);
             s["autoInterval"]    = std::to_string(autoSub.intervalSec);
 
             auto& shader = ini["shader"];
@@ -1205,6 +1208,8 @@ void Options::Load(ShaderManager& shaderManager)
                 LOAD_INT(s, monitorType)
                 LOAD_INT(s, frameBuffer)
                 frameBuffer = std::clamp(frameBuffer, -1, 5);
+                if(frameBuffer < 0)
+                    frameBuffer = 5; // (the former Auto: now the value is the most the adapted buffer may use)
                 LOAD_BOOL(s, useHdr)
                 LOAD_INT(s, maxQueuedFrames)
                 maxQueuedFrames = std::clamp(maxQueuedFrames, 0, QUEUE_TEARING);
@@ -1213,6 +1218,7 @@ void Options::Load(ShaderManager& shaderManager)
                 LOAD_INT(s, tearingLine)
                 tearingLine = std::clamp(tearingLine, 0, 100);
                 LOAD_BOOL(s, beamRacing)
+                LOAD_BOOL(s, directPresent)
                 LOAD_INT(s, beamLead)
                 beamLead = std::clamp(beamLead, 0, 20);
                 LOAD_INT(s, subFramesSetting)
@@ -1227,6 +1233,12 @@ void Options::Load(ShaderManager& shaderManager)
                     if(s.has("lowFpsMode"))
                         lowFps.mode = std::clamp(std::stoi(s.get("lowFpsMode")), 0, 1);
                     uniformBrightness = s.has("uniformBrightness") && s.get("uniformBrightness") == "1";
+                    if(s.has("bfiSync"))
+                        bfiSync = std::clamp(std::stoi(s.get("bfiSync")), 0, 3);
+                    else // (profiles of earlier builds: phase lock, or the frame buffer that was set)
+                        bfiSync = s.has("phaseLock") && s.get("phaseLock") == "1" ? 1 : frameBuffer != 0 ? 2 : 0;
+                    if(s.has("phaseInterval"))
+                        phaseInterval = std::clamp(std::stof(s.get("phaseInterval")), 0.5f, 3.0f);
                     // the captured program comes from the active profile link (captureProcess is not stored in profiles)
                     captureWindow = captureProcess.empty() ? NULL : FindCaptureWindow();
                     if(s.has("autoInterval"))

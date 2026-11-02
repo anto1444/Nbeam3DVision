@@ -52,6 +52,8 @@ void RenderThread::PollCapture()
     m_renderer.RollInput(true);
 #else
     bool newFrame = m_capture->Poll(m_renderer.GetNextInput());
+    if(newFrame)
+        m_renderer.PhaseSample(m_capture->LastFrameAgeMs()); // BFI phase lock: when the frame arrived in the cycle
     newFrame      = m_renderer.ConvertStereoInput(newFrame);
     m_renderer.RollInput(newFrame);
 #endif

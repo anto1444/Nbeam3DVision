@@ -120,7 +120,7 @@ static bool WindowsHdrOn(HWND hWnd)
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
-                               "              Version 2.1.0\n"
+                               "              Version 2.2.0\n"
                                "         Made by anto1444, 2026\n"
                                "\n"
                                "   Based on ShaderBeam (c) 2025-2026 mausimus\n"
@@ -131,7 +131,7 @@ const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
                                "        Timothy Lottes @NOTimothyLottes\n"
                                "          https://blurbusters.com/crt\n\n";
 const char* SHADERBEAM_ABOUT_FR = "             " SHADERBEAM_TITLE "\n"
-                                  "              Version 2.1.0\n"
+                                  "              Version 2.2.0\n"
                                   "         Fait par anto1444, 2026\n"
                                   "\n"
                                   "   Basé sur ShaderBeam (c) 2025-2026 mausimus\n"
@@ -359,6 +359,35 @@ bool UI::MouseRequired()
     return m_ready && m_options.ui && ImGui::GetIO().WantCaptureMouse;
 }
 
+// exact refresh rate of a monitor (59.940 / 239.757 Hz...), from the display configuration; 0 if unknown
+double UI::ExactRefreshRate(HMONITOR monitor)
+{
+    MONITORINFOEXW mi {};
+    mi.cbSize = sizeof(mi);
+    if(!monitor || !GetMonitorInfoW(monitor, &mi))
+        return 0.0;
+    UINT32 np = 0, nm = 0;
+    if(GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &np, &nm) != ERROR_SUCCESS || !np)
+        return 0.0;
+    std::vector<DISPLAYCONFIG_PATH_INFO> paths(np);
+    std::vector<DISPLAYCONFIG_MODE_INFO> modes(nm);
+    if(QueryDisplayConfig(QDC_ONLY_ACTIVE_PATHS, &np, paths.data(), &nm, modes.data(), nullptr) != ERROR_SUCCESS)
+        return 0.0;
+    for(UINT32 i = 0; i < np; i++)
+    {
+        DISPLAYCONFIG_SOURCE_DEVICE_NAME src {};
+        src.header.type      = DISPLAYCONFIG_DEVICE_INFO_GET_SOURCE_NAME;
+        src.header.size      = sizeof(src);
+        src.header.adapterId = paths[i].sourceInfo.adapterId;
+        src.header.id        = paths[i].sourceInfo.id;
+        if(DisplayConfigGetDeviceInfo(&src.header) != ERROR_SUCCESS || wcscmp(src.viewGdiDeviceName, mi.szDevice) != 0)
+            continue;
+        const auto& r = paths[i].targetInfo.refreshRate;
+        return r.Denominator ? (double)r.Numerator / (double)r.Denominator : 0.0;
+    }
+    return 0.0;
+}
+
 bool UI::Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     try
@@ -536,7 +565,7 @@ void UI::RenderHudHeader(float height)
     if(m_logo)
         dl->AddImage(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(logoX, p0.y + (height - logoSz) * 0.5f), ImVec2(logoX + logoSz, p0.y + (height + logoSz) * 0.5f));
     dl->AddText(font, titleSz, ImVec2(titleX, p0.y + height * 0.5f - titleSz * 0.95f), cOnAcc, title);
-    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v2.1.0");
+    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v2.2.0");
 
     // output mode (like "3440 x 1440 | 240Hz")
     char mode[64];
@@ -875,12 +904,12 @@ void UI::Render()
                 ImGui::EndCombo();
             }
 
-            // ---- SubFrames: one slider, "Auto" before 1 (only while a program is captured) ----
+            // ---- SubFrames (the value used without BFI auto; the "BFI auto" checkbox is in the BFI sync block, only while a program is captured) ----
             const int activeMode = m_options.EffectiveSubFramesMode();
             if(m_pending.subFramesMode != SF_MANUAL && activeMode == SF_MANUAL)
             {
                 ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextDisabled("%s", Tr("Auto needs a captured process: choose one in Capture Input. Manual is used until then."));
+                ImGui::TextDisabled("%s", Tr("BFI auto needs a captured program: the value below is used until then."));
                 ImGui::PopTextWrapPos();
             }
 
@@ -893,44 +922,27 @@ void UI::Render()
                 else
                     ShowHelpMarker(Tr("SubFrames follows the emitter rate while 3D is active: display Hz / emitter Hz (480 Hz and 120 Hz emitter = 4)."));
             }
+            else if(activeMode == SF_AUTO)
+            {
+                ImGui::Text(Tr("SubFrames: %d   (game %.1f fps, display %.0f Hz)"), m_options.subFrames, m_gameFps, m_options.vsyncRate);
+                if(m_options.subFrames == 1)
+                    ShowAlertMarker(Tr("The effects won't be visible with just one subframe!"));
+                else
+                    ShowHelpMarker(Tr("Number of display frames per content frame, determines Content FPS (display Hz / SubFrames).\nBFI auto (below, only while a program is captured, not with 3D): the game frame rate is measured regularly (Detection interval) and SubFrames = display Hz / game fps, e.g. 120 fps on 480 Hz = 4, 240 fps = 2."));
+            }
             else
             {
-                const bool haveProcess       = m_options.captureWindow != nullptr;
-                int        subFramesSetting = activeMode == SF_AUTO ? 0 : (m_options.subFramesSetting > 0 ? m_options.subFramesSetting : m_options.subFrames);
-                if(SliderIntStep(Tr("SubFrames"), &subFramesSetting, haveProcess ? 0 : MIN_SUBFRAMES, MAX_SUBFRAMES, 1, Tr("Auto")))
+                int subFramesSetting = m_options.subFramesSetting > 0 ? m_options.subFramesSetting : m_options.subFrames;
+                if(SliderIntStep(Tr("SubFrames"), &subFramesSetting, MIN_SUBFRAMES, MAX_SUBFRAMES, 1))
                 {
-                    const int i = subFramesSetting <= 0 ? SF_AUTO : SF_MANUAL;
-                    if(i == SF_MANUAL)
-                    {
-                        m_options.subFramesSetting = std::clamp(subFramesSetting, MIN_SUBFRAMES, MAX_SUBFRAMES);
-                        // applied live by the renderer, no restart (so no hitch while you step through the values)
-                        m_options.subFrames = m_options.ResolveSubFrames();
-                    }
-                    m_pending.subFramesMode = i;
-                    if(m_options.emitter.sourceFormat == StereoSource::Off)
-                        m_options.subFramesMode = i; // applied live by the renderer (nothing to rebuild without 3D)
-                    else
-                        SetApplyRequired();
+                    // applied live by the renderer, no restart (so no hitch while you step through the values)
+                    m_options.subFramesSetting = std::clamp(subFramesSetting, MIN_SUBFRAMES, MAX_SUBFRAMES);
+                    m_options.subFrames        = m_options.ResolveSubFrames();
                 }
-                if(activeMode == SF_AUTO)
-                {
-                    ImGui::Text(Tr("SubFrames: %d   (game %.1f fps, display %.0f Hz)"), m_options.subFrames, m_gameFps, m_options.vsyncRate);
-                    if(m_options.subFrames == 1)
-                        ShowAlertMarker(Tr("The effects won't be visible with just one subframe!"));
-                    else
-                        ShowHelpMarker(Tr("Number of display frames per content frame, determines Content FPS (display Hz / SubFrames).\nAuto (before 1, only while a program is captured, not with 3D): the game frame rate is measured regularly (Detection interval) and SubFrames = display Hz / game fps, e.g. 120 fps on 480 Hz = 4, 240 fps = 2."));
-                    ImGui::PushItemWidth(m_fontSize * 16);
-                    SliderFloatStep(Tr("Detection interval"), &m_options.autoSub.intervalSec, 0.0f, 5.0f, "%.2f s", 0.25f);
-                    ImGui::PopItemWidth();
-                    ShowHelpMarker(Tr("How often the game frame rate is measured to choose SubFrames, from 0 to 5 seconds. 0 = as fast as practical (every 0.25 s). Short = follows frame rate changes quickly, long = steadier."));
-                }
+                if(m_options.subFrames == 1)
+                    ShowAlertMarker(Tr("The effects won't be visible with just one subframe!"));
                 else
-                {
-                    if(m_options.subFrames == 1)
-                        ShowAlertMarker(Tr("The effects won't be visible with just one subframe!"));
-                    else
-                        ShowHelpMarker(Tr("Number of display frames per content frame, determines Content FPS (display Hz / SubFrames).\nAuto (before 1, only while a program is captured, not with 3D): the game frame rate is measured regularly (Detection interval) and SubFrames = display Hz / game fps, e.g. 120 fps on 480 Hz = 4, 240 fps = 2."));
-                }
+                    ShowHelpMarker(Tr("Number of display frames per content frame, determines Content FPS (display Hz / SubFrames).\nBFI auto (below, only while a program is captured, not with 3D): the game frame rate is measured regularly (Detection interval) and SubFrames = display Hz / game fps, e.g. 120 fps on 480 Hz = 4, 240 fps = 2."));
             }
 
             // "Clear Frames" (Simple BFI shader) sits right below SubFrames
@@ -945,33 +957,122 @@ void UI::Render()
                     ShowHelpMarker(Tr(p.hint.c_str()));
                 }
 
+            if(m_options.captureWindow != nullptr)
             {
-                // anti-stutter buffer, in game (content) frames: latency = frames x SubFrames / display Hz
-                const bool haveProcess = m_options.captureWindow != nullptr; // only works with a captured program
-                if(!haveProcess)
+                // BFI sync, only while a program is captured:
+                //  - None (not recommended): a game frame is taken at the start of each cycle;
+                //  - Phase lock (2D): the cycle is moved so the game frames arrive just before the visible subframe;
+                //  - Frame buffer: game frames kept in advance to smooth an irregular frame rate (also in 3D);
+                //  - Hybrid (2D): phase lock while the game is steady, a buffer of one frame only during its jolts (gone after 1 calm second).
+                // "BFI auto" (2D): the SubFrames follow the measured game frame rate; it works with every choice above.
+                const bool in3D = m_options.emitter.sourceFormat != StereoSource::Off;
+                int        mode = std::clamp(m_options.bfiSync, 0, 3);
+                static const char* modeNames[] = { "None (not recommended)", "Phase lock (best latency)", "Frame buffer (best stability)", "Hybrid" };
+                ImGui::PushItemWidth(m_fontSize * 16);
+                if(ImGui::BeginCombo(Tr("BFI sync"), Tr(modeNames[mode]), 0))
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
-                    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.50f, 0.08f, 0.08f, 0.70f));
+                    for(int i = 0; i < 4; i++)
+                    {
+                        const bool no3D = in3D && (i == 1 || i == 3); // the phase lock is 2D only
+                        if(no3D)
+                            ImGui::BeginDisabled();
+                        if(ImGui::Selectable(Tr(modeNames[i]), i == mode) && i != mode)
+                        {
+                            m_options.bfiSync = i;
+                            if(i == 2 && m_options.frameBuffer < 1)
+                                m_options.frameBuffer = 1; // (at least one frame)
+                            mode = i;
+                        }
+                        if(no3D)
+                        {
+                            ImGui::EndDisabled();
+                            if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                                ImGui::SetTooltip("%s", Tr("Not in 3D."));
+                        }
+                    }
+                    ImGui::EndCombo();
                 }
-                int fb = m_options.frameBuffer;
-                if(SliderIntStep(Tr("Frame buffer"), &fb, haveProcess ? -1 : 0, 5, 1, Tr("Auto"), -1))
-                    m_options.frameBuffer = std::clamp(fb, haveProcess ? -1 : 0, 5); // applied live by the renderer
-                if(!haveProcess)
-                    ImGui::PopStyleColor(2);
-                if(m_options.FrameBufferIsAuto() && haveProcess && m_options.EffectiveFrameBuffer() == 0)
+                ImGui::PopItemWidth();
+                ShowHelpMarker(Tr("How the BFI follows the game frames (only while a program is captured).\nNone (not recommended): a game frame is taken at the start of each BFI cycle, it can wait almost a whole cycle.\nPhase lock (2D): the cycle is moved so the game frames arrive just before the visible subframe: shorter and steady wait.\nFrame buffer: up to 1 to 5 game frames kept in advance (as many as the game needs) to smooth an irregular frame rate, at the cost of latency.\nHybrid (2D): phase lock while the game is steady; when it jolts, a buffer of one frame comes in at once, then goes away after 1 calm second and the phase lock takes over again.\nBFI auto (below) works with every choice."));
+                // the exact cap for the game (the content rate of the display, with its real refresh rate)
+                static ULONGLONG s_hzTick = 0;
+                static double    s_hzExact = 0.0;
+                if((mode == 1 || mode == 3) && GetTickCount64() - s_hzTick > 2000)
                 {
-                    ImGui::SameLine();
-                    ImGui::TextDisabled("(0)");
+                    s_hzTick  = GetTickCount64();
+                    s_hzExact = m_options.shaderDisplayNo < m_displays.size() ? ExactRefreshRate(m_displays[m_options.shaderDisplayNo].monitor) : 0.0;
                 }
-                if(m_options.EffectiveFrameBuffer() > 0 && (m_options.frameBuffer > 0 || haveProcess))
+                const double hz  = s_hzExact > 1.0 ? s_hzExact : (double)m_options.vsyncRate;
+                const double cap = hz / (std::max)(m_options.subFrames, 1);
+                if(mode == 2)
                 {
+                    // anti-stutter buffer, in game (content) frames: latency = frames x SubFrames / display Hz
+                    int fb = std::clamp(m_options.frameBuffer, 1, 5);
+                    ImGui::PushItemWidth(m_fontSize * 16);
+                    if(SliderIntStep(Tr("Frame buffer"), &fb, 1, 5, 1))
+                        m_options.frameBuffer = std::clamp(fb, 1, 5); // applied live by the renderer
+                    ImGui::PopItemWidth();
                     ImGui::SameLine();
-                    if(m_options.FrameBufferIsAuto())
-                        ImGui::TextDisabled("%d,", m_options.EffectiveFrameBuffer());
+                    ImGui::TextDisabled(Tr("in use: %d"), m_options.EffectiveFrameBuffer());
                     ImGui::SameLine();
                     ImGui::TextDisabled("(%.0f ms)", 1000.0 * m_options.EffectiveFrameBuffer() * (std::max)(1, m_options.frameBufferStep) * (std::max)(m_options.subFrames, 1) * ((m_options.StereoAllowed() && m_options.emitter.sourceFormat != StereoSource::Off) ? 2.0 : 1.0) / (std::max)(m_options.vsyncRate, 1.0f));
+                    ShowHelpMarker(Tr("Anti-stutter buffer: game frames kept in advance to smooth an irregular frame rate, at the cost of latency (frames x SubFrames / display Hz, halved rate with 3D). The value is the most it may use (1 to 5): the buffer uses 1 frame and only goes up to it when the game needs it (its worst gaps of the last 2 seconds), one frame at a time, at most one change every 2 seconds; it comes down after 2 calm seconds. The size in use is shown next to it. With SubFrames on a fixed value, a game running at a divisor of the content rate (for 120: 60, 40, 30, 15 fps...) has each of its frames shown for the same number of content frames, evenly. With 2D to 3D (AI) it works the same way; the synchronisation of the depth maps is a separate option (Map buffer, in the 3D panel) and adds up with it. Only works while a program (.exe) is captured, with the same GPU for capture and render."));
                 }
-                ShowHelpMarker(Tr("Anti-stutter buffer: Auto = the size (0 to 5) adjusts itself to the irregularity of the game frame rate (it grows at once after a stall, shrinks slowly, and drops from 1 to 0 only after 4 steady seconds). 0 = off. 1 to 5 = game frames kept in advance to smooth an irregular frame rate, at the cost of latency (frames x SubFrames / display Hz, halved rate with 3D). With SubFrames on a fixed value, a game running at a divisor of the content rate (for 120: 60, 40, 30, 15 fps...) has each of its frames shown for the same number of content frames, evenly. With 2D to 3D (AI) it works the same way; the synchronisation of the depth maps is a separate option (Map buffer, in the 3D panel) and adds up with it. Only works while a program (.exe) is captured, with the same GPU for capture and render."));
+                if((mode == 1 || mode == 3) && !in3D)
+                {
+                    ImGui::PushItemWidth(m_fontSize * 16);
+                    SliderFloatStep(Tr("Measure interval"), &m_options.phaseInterval, 0.5f, 3.0f, "%.1f s", 0.5f);
+                    ImGui::PopItemWidth();
+                    ShowHelpMarker(Tr("Phase lock: lower and steadier latency. A game frame is only taken at the start of a BFI cycle, so one that arrives just after it waits almost a whole cycle (up to 12 ms at 240 Hz with 4 SubFrames). Nbeam records when the frames arrive, with the small variations of the game, and computes the position of its cycle that gives the shortest wait while keeping a safety margin, so no frame is taken one cycle and missed the next; the cycle is then moved by whole refreshes, one refresh per cycle at most (cycles shortened in their dark part); with Simple BFI the light of a shortened cycle is lowered so the brightness stays even. This sets how often it is measured and corrected, 0.5 to 3 seconds (default 1). It follows the SubFrames of BFI auto when they change.\nCap the game close to the rate shown (RTSS, Reflex...): small variations are taken into account, a steady rate gives the best result."));
+                    const bool   buffering = mode == 3 && m_options.EffectiveFrameBuffer() > 0;
+                    const int    state     = m_options.phaseState;
+                    const char*  st        = buffering ? Tr("paused, buffer in use") : state == 2 ? Tr("locked") : state == 3 ? Tr("unsteady game frame rate") : state == 1 ? Tr("measuring...") : Tr("waiting for the game");
+                    const ImVec4 col       = buffering ? ImVec4(0.55f, 0.75f, 1.0f, 1.0f) : state == 2 ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : state == 3 ? ImVec4(1.0f, 0.65f, 0.25f, 1.0f) : ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+                    ImGui::TextColored(col, "%s %s", Tr("Phase:"), st);
+                    if(state >= 1 && !buffering)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextDisabled(Tr("(wait %.1f ms, %d corrections)"), m_options.phaseWaitMs, m_options.phaseCorrections);
+                    }
+                    if(mode == 3)
+                        ImGui::TextDisabled(Tr("Buffer: %d frame(s)"), m_options.EffectiveFrameBuffer());
+                    ImGui::TextDisabled(Tr("Cap the game at %.3f fps"), cap);
+                }
+                // BFI auto: the SubFrames follow the game frame rate (2D)
+                {
+                    bool autoOn = m_pending.subFramesMode == SF_AUTO;
+                    if(in3D)
+                        ImGui::BeginDisabled();
+                    if(ImGui::Checkbox(Tr("BFI auto"), &autoOn))
+                    {
+                        const int sf = autoOn ? SF_AUTO : SF_MANUAL;
+                        if(sf == SF_MANUAL)
+                        {
+                            if(m_options.subFramesSetting <= 0)
+                                m_options.subFramesSetting = (std::max)(m_options.subFrames, MIN_SUBFRAMES);
+                            m_options.subFrames = m_options.ResolveSubFrames();
+                        }
+                        m_pending.subFramesMode = sf;
+                        if(m_options.emitter.sourceFormat == StereoSource::Off)
+                            m_options.subFramesMode = sf; // applied live by the renderer (nothing to rebuild without 3D)
+                        else
+                            SetApplyRequired();
+                    }
+                    if(in3D)
+                    {
+                        ImGui::EndDisabled();
+                        if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("%s", Tr("Not in 3D."));
+                    }
+                    ShowHelpMarker(Tr("The SubFrames follow the game: its frame rate is measured regularly (Detection interval) and SubFrames = display Hz / game fps, e.g. 120 fps on 480 Hz = 4, 240 fps = 2. Works with every BFI sync choice (the phase lock follows the SubFrames chosen). 2D only, while a program is captured."));
+                    if(autoOn && !in3D)
+                    {
+                        ImGui::PushItemWidth(m_fontSize * 16);
+                        SliderFloatStep(Tr("Detection interval"), &m_options.autoSub.intervalSec, 0.0f, 5.0f, "%.2f s", 0.25f);
+                        ImGui::PopItemWidth();
+                        ShowHelpMarker(Tr("How often the game frame rate is measured to choose SubFrames, from 0 to 5 seconds. 0 = as fast as practical (every 0.25 s). Short = follows frame rate changes quickly, long = steadier."));
+                    }
+                }
             }
 
 
@@ -1288,6 +1389,17 @@ void UI::Render()
                 }
             }
             ShowHelpMarker(Tr("Queued presentation frames, increase if you're getting irregular flashing.\nTrade-off between input latency and stability.\nThese are output (Display Hz) frames. Driver default is usually 3.\nOption 0: no queue, tearing allowed for the lowest latency (strongly discouraged in 3D)."));
+
+            // "Direct presentation" (experimental): the overlay is no longer a layered window, so Windows can show it directly (renderer restart)
+            if(ImGui::Checkbox(Tr("Direct presentation (experimental)"), &m_options.directPresent))
+                PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
+            ShowHelpMarker(Tr("The overlay is no longer a see-through (layered) window, so Windows can show it directly on the screen (independent flip or hardware plane) instead of composing it: about one refresh less latency, and BFI frames that are never shown late by the composition. Experimental: there is no click-through any more. While the HUD is hidden the overlay takes no focus, ignores the clicks and hides the Windows pointer: games that read the mouse directly (most 3D games) keep working, games and menus played with the Windows pointer do not get the clicks. Windows only gives the direct mode when nothing else is shown over the overlay (notifications, Discord or Steam overlays...). Check the line below: Presentation and late frames."));
+            {
+                const int   pm = m_options.presentMode;
+                const char* t  = pm == 0 ? Tr("composed by Windows") : pm == 1 ? Tr("direct (hardware plane)") : pm == 3 ? Tr("composition failure") : Tr("unknown");
+                ImGui::TextDisabled(Tr("Presentation: %s, late frames: %.0f /min"), t, m_options.presentGlitches);
+                ShowHelpMarker(Tr("How Windows shows the overlay right now, and how many frames stayed on the screen for more or fewer refreshes than they should (a late frame = a BFI subframe shown twice, a blink), per minute, measured over 10 seconds. Compare with and without Direct presentation, in the same game. Not counted with tearing (Queued Frames 0)."));
+            }
 
             if(ImGui::Checkbox(Tr("Hardware sRGB"), &m_pending.hardwareSrgb))
             {

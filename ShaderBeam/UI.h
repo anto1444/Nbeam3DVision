@@ -26,6 +26,7 @@ public:
 
     void Start(HWND window, float scale, winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11DeviceContext> context);
     bool Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
+    static double ExactRefreshRate(HMONITOR monitor); // exact refresh rate of a monitor (59.940...), 0 if unknown
     bool MouseRequired();
     void Render();
     void Stop();

@@ -26,6 +26,8 @@ public:
 
     virtual bool IsSupported()           = 0;
     virtual bool SupportsWindowCapture() = 0;
+    // how long ago (ms) the frame returned by the last successful Poll was made (composed by Windows); -1 = unknown
+    double LastFrameAgeMs() const { return m_lastFrameAgeMs; }
 
     const char* m_name;
 
@@ -33,6 +35,7 @@ protected:
     Watcher&                    m_watcher;
     const Options&              m_options;
     volatile bool               m_stopping { false };
+    double                      m_lastFrameAgeMs { -1.0 };
     winrt::com_ptr<IDXGIDevice> m_captureDevice;
 
     virtual void InternalStart()                                                    = 0;

@@ -118,7 +118,7 @@ static FILE* OpenCrashLog(const char* what, unsigned code)
         return nullptr;
     SYSTEMTIME t;
     GetLocalTime(&t);
-    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.1.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
+    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.2.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
             GetCurrentThreadId(), GetCurrentThreadId() == s_mainThreadId ? "main" : "other (render / emitter / AI)");
     return f;
 }
@@ -355,13 +355,29 @@ static bool      s_appReady = false;
 static bool      s_focusFallback = false; // the captured program went to the background: display capture until it is in front again
 
 // Click-through: mouse input goes to the window below (the game). The window stays layered so only WS_EX_TRANSPARENT toggles.
+// "Direct presentation" (experimental): the window is never layered, so Windows can show it directly (independent flip / hardware
+// plane, one composition less); there is no click-through then, but while the HUD is hidden the overlay never takes the focus (the game
+// keeps the keyboard and its raw mouse input) and the clicks over it are ignored (see WndProc).
 static void SetClickThrough(HWND hWnd, bool through)
 {
-    LONG ex_style = GetWindowLong(hWnd, GWL_EXSTYLE) | WS_EX_LAYERED;
-    if(through)
-        ex_style |= WS_EX_TRANSPARENT;
+    LONG ex_style = GetWindowLong(hWnd, GWL_EXSTYLE);
+    if(s_shaderBeam.m_options.directPresent)
+    {
+        ex_style &= ~(WS_EX_LAYERED | WS_EX_TRANSPARENT);
+        if(through)
+            ex_style |= WS_EX_NOACTIVATE;
+        else
+            ex_style &= ~WS_EX_NOACTIVATE;
+    }
     else
-        ex_style &= ~WS_EX_TRANSPARENT;
+    {
+        ex_style |= WS_EX_LAYERED;
+        ex_style &= ~WS_EX_NOACTIVATE;
+        if(through)
+            ex_style |= WS_EX_TRANSPARENT;
+        else
+            ex_style &= ~WS_EX_TRANSPARENT;
+    }
     SetWindowLong(hWnd, GWL_EXSTYLE, ex_style);
 }
 
@@ -1910,6 +1926,22 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             ShowHud(hWnd);
         return 0;
     }
+    if(s_shaderBeam.m_options.directPresent && !s_shaderBeam.m_options.ui)
+    {
+        // "Direct presentation", HUD hidden: the overlay catches the mouse (no click-through) but stays out of the way: no focus taken,
+        // clicks ignored (the game gets its raw mouse input anyway), no Windows pointer drawn over the game
+        if(message == WM_MOUSEACTIVATE)
+            return MA_NOACTIVATE;
+        if(message == WM_SETCURSOR && LOWORD(lParam) == HTCLIENT)
+        {
+            SetCursor(NULL);
+            return TRUE;
+        }
+        if(message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_RBUTTONDOWN || message == WM_RBUTTONUP || message == WM_MBUTTONDOWN ||
+           message == WM_MBUTTONUP || message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDBLCLK || message == WM_MOUSEWHEEL || message == WM_XBUTTONDOWN ||
+           message == WM_XBUTTONUP)
+            return 0;
+    }
     if(message == WM_LBUTTONDOWN && !s_shaderBeam.m_ui.MouseRequired())
     {
         // clicking away of ImGui - hide UI
@@ -2020,6 +2052,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 so.captureDisplayNo = 0;
         }
         s_shaderBeam.SwitchProfile();
+        SetClickThrough(hWnd, !s_shaderBeam.m_options.ui); // (window style for "Direct presentation", set while nothing is presented)
         if(!s_standby || !s_shaderBeam.m_options.windowMode || s_effectsOn)
             PlaceWindow(hWnd);
         RunOrStandby(hWnd); // started, or the window of the window mode

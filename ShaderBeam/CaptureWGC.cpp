@@ -117,6 +117,14 @@ bool CaptureWGC::InternalPoll(const winrt::com_ptr<ID3D11Texture2D>& outputTextu
         auto size      = frame.ContentSize();
         auto timestamp = frame.SystemRelativeTime();
         m_watcher.FrameReceived(Helpers::QPCToTicks(timestamp.count()));
+        {
+            // age of this frame now (SystemRelativeTime: the performance counter, in 100 ns units), for the BFI phase lock
+            LARGE_INTEGER now, freq;
+            QueryPerformanceCounter(&now);
+            QueryPerformanceFrequency(&freq);
+            const double nowHns = (double)now.QuadPart * 1.0e7 / (double)freq.QuadPart;
+            m_lastFrameAgeMs    = (nowHns - (double)timestamp.count()) / 1.0e4;
+        }
         CopyToOutput(texture, size.Width, size.Height, outputTexture);
         return true;
     }

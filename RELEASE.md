@@ -1,31 +1,23 @@
-# Nbeam 3D Vision 2.1.0
+# Nbeam 3D Vision 2.2.0
 
-Mise à jour de la version 2.0.0. Surcouche Windows : BFI, CRT Beam Simulator et 3D active (lunettes NVIDIA 3D Vision ou émetteur Arduino), sur n'importe quel écran.
+Mise à jour de la version 2.1.0. Surcouche Windows : BFI, CRT Beam Simulator et 3D active (lunettes NVIDIA 3D Vision ou émetteur Arduino), sur n'importe quel écran.
 
-> **À savoir après la mise à jour** : les **profils ne s'appliquent plus que quand leur programme (.exe) est détecté**. Sans programme détecté, Nbeam utilise les **réglages du bureau** (`Profils\Bureau.cfg`), créés au premier lancement à partir de votre ancien profil par défaut (ou du profil qui était actif) : vous retrouvez vos réglages. La case « Profil par défaut » et la liste des profils du menu de l'icône de notification disparaissent. Le mode fenêtre est toujours actif.
+> **À savoir après la mise à jour** : le réglage **Sous-images : Auto** devient la case **BFI auto**, et le tampon d'image rejoint le nouveau menu **Synchro BFI** (visible quand un programme est capturé). Vos profils sont convertis tout seuls : un tampon réglé reste en Tampon d'image (l'ancien Auto devient un maximum de 5), un calage de phase reste en Calage de phase.
 
 ## Nouveautés
 
-### Profils
-- **Réglages du bureau** séparés des profils : un profil ne s'applique que pendant que son programme tourne, puis le bureau revient.
-- **Profil à régler** : choisissez un profil pour le régler sans lancer son jeu. Le test des voitures s'ouvre avec ce profil chargé et le HUD par-dessus ; en quittant le test (touche Windows ou Échap), le profil est enregistré et on revient au bureau.
-- **Créer un profil / Enregistrer sous** ne change plus les réglages actifs.
-- **Changement instantané** : changer le profil du programme en cours dans la détection l'applique tout de suite.
-- Tant qu'un programme détecté tourne, les réglages des profils sont masqués et un message indique le programme et le profil utilisé.
+### Synchro BFI (nouveau menu, programme capturé)
+- **Aucune (déconseillé)** : une image du jeu est prise au début de chaque cycle BFI, comme avant.
+- **Calage de phase (meilleure latence)** (2D) : Nbeam mesure l'arrivée des images du jeu, avec leurs micro-variations, et décale son cycle pour qu'elles arrivent juste avant la sous-image visible : attente plus courte et stable. **Intervalle de mesure** de 0,5 à 3 s (1 s par défaut). Les décalages sont **étalés** (jamais plus d'un rafraîchissement par cycle) et, en BFI simple, la **luminosité des cycles décalés est compensée** pour éviter les petits flashs. La valeur de plafond idéale du jeu est affichée.
+- **Tampon d'image (meilleure stabilité)** : la valeur choisie (1 à 5) est désormais un **maximum** ; le tampon utilise 1 image et ne monte que si le jeu en a besoin, une image à la fois, avec **2 secondes de transition** entre deux changements ; la taille utilisée est affichée.
+- **Hybride** (2D) : calage de phase tant que le jeu est stable ; à chaque à-coup, un tampon d'**une image** arrive aussitôt, puis repart après **1 seconde calme**.
+- **BFI auto** (case à cocher, 2D) : les sous-images suivent la cadence du jeu (ancien Sous-images : Auto), avec l'intervalle de détection, le seuil de FPS bas et la luminosité uniforme. Compatible avec chaque choix du menu : le calage de phase suit les sous-images choisies.
 
-### Test (nouvelle catégorie, icône de compteur de vitesse)
-- **Test de mouvement** : des voitures détaillées, de la couleur d'accent, défilent dans une **fenêtre DirectX à part** que Nbeam capture comme un jeu, à travers tous les effets (BFI, CRT, 3D) : on compare le flou de mouvement d'un réglage à l'autre.
-- **En 3D** (côte à côte, haut/bas, damier) : les voitures et leur grille sortent de l'écran et portent la lettre de leur œil (G / D) de chaque côté de « NBEAM » : si l'on voit l'autre lettre, les yeux sont inversés.
-- **Vitesse des voitures** (0 à 3840 px/s), **taille des voitures** (25 à 200 %) et **couleur du fond**.
-- **Écran partagé** déplacé dans Test, avec la case **Inverser** (l'effet sur l'autre moitié).
-- La catégorie Test est masquée tant qu'un programme détecté tourne.
+### Affichage
+- **Présentation directe (expérimental)**, sous « Images en file » : l'overlay n'est plus une fenêtre transparente aux clics, Windows peut l'afficher directement (flip indépendant ou plan matériel) : environ un rafraîchissement de latence en moins et pas d'image BFI retardée par la composition. Pas de clic à travers tant que le HUD est caché. La présentation obtenue et les images en retard par minute sont affichées pour comparer.
 
-### 3D
-- **Convergence pour tous les formats 3D** (côte à côte, haut/bas, damier, plus seulement la 2D vers 3D), réglée **de -100 à +100** : négatif = dans la profondeur de l'écran, positif = sort de l'écran, 0 = profondeur par défaut.
-- **Avertissement au démarrage** si aucun émetteur 3D n'est reconnu, avec le lien cliquable du pilote NVIDIA, et rappel en rouge en bas de la fenêtre tant qu'il n'est pas branché.
-
-### Application
-- **Réduire au lieu de fermer** remplace l'option Mode fenêtre (toujours actif) : la croix réduit Nbeam (dans la zone de notification si l'option est cochée) au lieu de le quitter.
+### Capture
+- L'âge de chaque image capturée est mesuré avec l'horodatage de Windows, pour la synchro BFI.
 
 ## Contenu de l'archive
 

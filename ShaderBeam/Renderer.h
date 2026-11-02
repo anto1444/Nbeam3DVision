@@ -37,13 +37,15 @@ public:
     const winrt::com_ptr<ID3D11Texture2D>& GetNextInput() const;
     bool                                   NewInputRequired() const;
     void                                   BufferReset() { if(m_ringPrimed || !m_ringQueue.empty()) DestroyRing(); } // buffer not in use: nothing stale is kept
-    void                                   AdaptFrameBuffer(); // Auto buffer size (Options::frameBuffer = -1), called every loop of the render thread
+    float                                  PhaseShortCycleGain() const; // brightness of a cycle one refresh shorter (Simple BFI)
+    void                                   AdaptFrameBuffer(); // adapted buffer size (Frame buffer and Hybrid), called every loop of the render thread
     int                                    FrameBufferLimit() const; // ring size: 5 frames, or more with the map buffer (as many frames as fit in about 512 MB, up to 30)
     bool                                   MapSync() const; // 2D to 3D (AI) with "Map buffer": each image waits for its own depth map
     bool                                   BufferActive() const; // anti-stutter buffer in use (Options::frameBuffer)
     void                                   BufferedStep(const std::shared_ptr<CaptureBase>& capture); // replaces PollCapture while the buffer is active
     void                                   RollInput(bool newFrame);
     bool                                   ConvertStereoInput(bool newFrame); // SBS/TB/Checkerboard -> one eye, call after capture Poll and before RollInput; returns newFrame
+    void                                   PhaseSample(double ageMs); // BFI phase lock: age of the new game frame when the cycle took it
 
 
     // SubFrames modes (see SubFrameModes.h). Auto: UpdateSubFramesMode() every vsync measures the game frame rate and changes
@@ -106,12 +108,13 @@ private:
     bool                                         m_ringPrimed { false };
     int                                          m_ringSkip { 0 };
     double                                       m_ringIntervalMs { 8.0 };
-    // adaptive buffer (frameBuffer = -1): worst gap between two game frames over the last seconds decides the size
-    std::chrono::steady_clock::time_point        m_fbSliceStart {};
+    // adapted buffer size (Frame buffer: 1 up to the value chosen, one step per 2 seconds; Hybrid: 0 or 1)
+    int                                          m_fbMode { 0 };
     double                                       m_fbSliceMax { 0.0 };
-    double                                       m_fbSlices[4] { 0.0, 0.0, 0.0, 0.0 };
-    std::chrono::steady_clock::time_point        m_fbLowSince {};
+    double                                       m_fbSlices[2] { 0.0, 0.0 };
     std::chrono::steady_clock::time_point        m_fbLastChange {};
+    std::chrono::steady_clock::time_point        m_fbSliceStart {};
+    std::chrono::steady_clock::time_point        m_fbLowSince {};
     bool                                         m_fbUnderrun { false };
     double                                       m_fbMeanMs { 8.0 };
     std::chrono::steady_clock::time_point        m_ringLastArrival {};
@@ -131,6 +134,20 @@ private:
 
     int  m_appliedSubFrames { 0 };
     void ApplySubFramesLive();
+    // BFI phase lock (BFI sync 1 / 3): ages of the game frames when the cycle took them, and the shift asked for the cycle
+    bool                PhaseLockActive() const;
+    void                PhaseReset(int state);
+    std::vector<double> m_phaseAges;
+    double              m_phaseWindowStart { 0.0 };
+    double              m_phaseIgnoreUntil { 0.0 };
+    double              m_phaseGuard { -1.0 };  // shortest wait seen for a frame that was still taken (ms): a frame needs about that much to be ready
+    bool                m_phaseFirst { true };   // first measure (1 s) not made yet
+    double              m_phaseP { 0.0 };       // refresh period and SubFrames the measures are for
+    int                 m_phaseN { 0 };
+    int                 m_phaseSkip { 0 };          // cycles still to shorten by one refresh (each one moves the cycle one refresh earlier)
+    bool                m_phaseShortCycle { false }; // the cycle being shown is one refresh shorter (its last subframe dropped)
+    float               m_phaseGain { 1.0f };        // light of that cycle (Simple BFI: lowered so the brightness stays even)
+    double              m_phaseLastSample { 0.0 }; // time of the last frame measured (a long gap = pause: the measure starts again)
     void Create();
     void StartEmitters();
     void ResetModeState();
@@ -142,6 +159,13 @@ private:
     int  GetNextSlot() const;
 
     winrt::com_ptr<IDXGISwapChain1>         m_swapChain { nullptr };
+    // presentation statistics (HUD: "Direct presentation"): how Windows shows the overlay, and the frames shown late or dropped
+    void                                    UpdatePresentStats();
+    winrt::com_ptr<IDXGISwapChainMedia>     m_swapMedia;
+    bool                                    m_psValid { false };
+    UINT                                    m_psPresentCount { 0 }, m_psRefreshCount { 0 };
+    long long                               m_psGlitches { 0 };
+    double                                  m_psStart { 0.0 };
     bool                                    m_tearing { false };      // swap chain created with tearing allowed (Options::Tearing)
     winrt::com_ptr<IDXGIOutput>             m_tearOutput;             // output waited on for the tearing line
     // beam racing (tearing + Options::beamRacing): scanout position read through D3DKMTGetScanLine
