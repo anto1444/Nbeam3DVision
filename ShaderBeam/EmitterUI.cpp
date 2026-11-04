@@ -173,7 +173,7 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
                 s.syncRateHz = (float)(std::round(syncHz * 100.0) / 100.0); // start from the rate in use
             restart = true;
         }
-        Help(Tr("Checked: the emitter rate is picked from the display rate (display Hz / n, between 80 and 165 Hz, closest to 120) and SubFrames follows. Out of that range nothing changes and the emitter is off.\nUnchecked: you type the emitter rate and SubFrames follows (display Hz / rate)."));
+        Help(Tr("Checked: the emitter rate is picked from the display rate (display Hz / n, the highest between 80 and 165 Hz: 480 Hz -> 160, 240 Hz -> 120, 100 Hz -> 100) and SubFrames follows. Out of that range nothing changes and the emitter is off.\nUnchecked: you type the emitter rate and SubFrames follows (display Hz / rate)."));
         if(s.rateBlocked)
         {
             ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.30f, 0.30f, 1.0f));

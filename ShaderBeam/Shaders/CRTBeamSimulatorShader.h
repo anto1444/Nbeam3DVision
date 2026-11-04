@@ -87,7 +87,7 @@ public:
         AddParameter("LCD Anti-retention",
                      "Prevents image retention from BFI interfering with LCD voltage polarity inversion algorithm\n"
                      "- It will cause occasional stutter as it desyncs CRT refresh rate from content refresh rate.\n"
-                     "- Auto-disabled on OLEDs and LCDs with odd subframe count.\n"
+                     "- For LCD screens only: leave it off on OLED. Auto-disabled with an odd subframe count.\n"
                      "- Adds one input frame of latency (!)",
                      &m_lcdAntiRetention,
                      0,
@@ -136,7 +136,7 @@ public:
 
     bool AntiRetentionRequired(const RenderContext& renderContext) const
     {
-        return m_lcdAntiRetention && renderContext.options.monitorType == MONITOR_LCD && floorf(m_framesPerHz) == m_framesPerHz && (((int)m_framesPerHz) % 2) == 0;
+        return m_lcdAntiRetention && floorf(m_framesPerHz) == m_framesPerHz && (((int)m_framesPerHz) % 2) == 0;
     }
 
     bool SupportsResync(const RenderContext& renderContext) const

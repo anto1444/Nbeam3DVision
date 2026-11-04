@@ -51,9 +51,12 @@ void RenderThread::PollCapture()
 #ifdef RGB_TEST
     m_renderer.RollInput(true);
 #else
-    bool newFrame = m_capture->Poll(m_renderer.GetNextInput());
+    const auto capture = m_capture; // (its own reference for the whole poll)
+    if(!capture || !m_renderer.InputsReady())
+        return;
+    bool newFrame = capture->Poll(m_renderer.GetNextInput());
     if(newFrame)
-        m_renderer.PhaseSample(m_capture->LastFrameAgeMs()); // BFI phase lock: when the frame arrived in the cycle
+        m_renderer.PhaseSample(capture->LastFrameAgeMs()); // BFI phase lock: when the frame arrived in the cycle
     newFrame      = m_renderer.ConvertStereoInput(newFrame);
     m_renderer.RollInput(newFrame);
 #endif
@@ -82,6 +85,12 @@ void RenderThread::Run()
                 m_renderer.Benchmark(m_capture);
             }
             m_renderer.ApplyLiveChanges();
+            if(!m_renderer.InputsReady())
+            {
+                // the inputs are being rebuilt, or a live rebuild failed (a full restart was asked): nothing to capture or draw
+                Sleep(5);
+                continue;
+            }
             m_renderer.UpdateSubFramesMode();
             m_renderer.AdaptFrameBuffer();
             if(!m_renderer.BufferActive())

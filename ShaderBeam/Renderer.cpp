@@ -41,6 +41,7 @@ void Renderer::Start(winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11D
     m_charts.Create(m_renderContext.device, m_renderContext.deviceContext);
     m_shaderManager.Create(m_renderContext, m_options.shaderProfileNo);
     CreateInputs();
+    m_inputsOk         = true;
     m_appliedSubFrames = m_options.subFrames;
 
     ResetModeState();
@@ -65,10 +66,12 @@ void Renderer::ReloadLive()
 {
     m_emitters.Stop();
     WaitTillIdle();
+    m_inputsOk = false; // (until the new inputs exist: the render thread waits instead of reading destroyed textures)
     m_shaderManager.Destroy();
     DestroyInputs();
     m_shaderManager.Create(m_renderContext, m_options.shaderProfileNo);
     CreateInputs();
+    m_inputsOk = true;
     if(m_options.EffectiveSubFramesMode() == SF_MANUAL)
         m_options.subFrames = m_options.ManualSubFrames();
     m_appliedSubFrames         = m_options.subFrames;
@@ -88,7 +91,7 @@ void Renderer::ApplyLiveChanges()
         m_options.liveLatency = false;
         try
         {
-            m_renderContext.device.as<IDXGIDevice1>()->SetMaximumFrameLatency(m_options.Tearing() ? 1 : m_options.maxQueuedFrames);
+            m_renderContext.device.as<IDXGIDevice1>()->SetMaximumFrameLatency(m_options.Tearing() ? 1 : m_options.QueueSetting());
         }
         catch(...)
         { }
@@ -112,6 +115,10 @@ void Renderer::ApplyLiveChanges()
         {
             m_ui.SetError(ex.what());
         }
+        catch(...)
+        { }
+        if(!m_inputsOk)
+            PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0); // the live rebuild failed: a full restart builds everything again
     }
 }
 
@@ -131,7 +138,7 @@ void Renderer::StartEmitters()
     env.vsyncRateHz  = m_options.vsyncRate;
     env.subFrames    = m_options.subFrames;
     env.swapChain    = m_swapChain.get();
-    env.queuedFrames = m_options.Tearing() ? 0 : (m_options.maxQueuedFrames > 0 ? m_options.maxQueuedFrames : 3); // 0 = driver default (3)
+    env.queuedFrames = m_options.Tearing() ? 0 : (m_options.QueueSetting() > 0 ? m_options.QueueSetting() : 3); // 0 = driver default (3)
     try
     {
         winrt::com_ptr<IDXGIAdapter> adapter;
@@ -849,14 +856,18 @@ int Renderer::GetNextSlot() const
         if(!inputUsed[t])
             return t;
     }
-    return m_renderContext.inputSlots.back();
+    return m_renderContext.inputSlots.empty() ? 0 : m_renderContext.inputSlots.back();
 }
 
 const winrt::com_ptr<ID3D11Texture2D>& Renderer::GetNextInput() const
 {
     if(m_stereoActive)
         return m_stereoRaw; // the capture writes the full 3D frame here; ConvertStereoInput() then extracts one eye
-    return m_renderContext.inputTextures[GetNextSlot()];
+    static const winrt::com_ptr<ID3D11Texture2D> none;
+    const int                                    slot = GetNextSlot();
+    if(slot < 0 || slot >= (int)m_renderContext.inputTextures.size())
+        return none; // no inputs (being rebuilt): the capture is skipped
+    return m_renderContext.inputTextures[slot];
 }
 
 Eye Renderer::StereoImageEye()
@@ -963,7 +974,7 @@ void Renderer::PhaseSample(double ageMs)
     m_phaseAges.push_back(ageMs);
     if(!m_phaseFirst && m_options.phaseState == 2 && ageMs > C - P * 0.5) // (only while locked on a steady rate)
     {
-        if(m_options.bfiSync == 3 && ageMs > C + P)
+        if(m_options.BfiSyncMode() == 3 && ageMs > C + P)
             m_fbUnderrun = true; // hybrid: a real jolt (the frame came more than a refresh late), the buffer comes in
         // a frame just missed its cycle (the game drifted to the edge, slower than the cycle): one refresh later at once, without
         // waiting for the end of the measure (otherwise the frames would go on alternating taken / missed: doubled and skipped frames)
@@ -1037,7 +1048,7 @@ void Renderer::PhaseSample(double ageMs)
         shift = best;
     // locked; "unsteady" when even the best position leaves many frames at the edge (game far from a steady rate)
     m_options.phaseState = (shift ? bestRisky : risky0) > 0.10 ? 3 : 2;
-    if(m_options.phaseState == 3 && m_options.bfiSync == 3)
+    if(m_options.phaseState == 3 && m_options.BfiSyncMode() == 3)
     {
         m_fbUnderrun = true; // hybrid: the game jolts, the buffer comes in (it goes away after 1 calm second)
         return;
@@ -1288,7 +1299,7 @@ int Renderer::FrameBufferLimit() const
 
 void Renderer::EnsureRing()
 {
-    const int n    = MapSync() ? FrameBufferLimit() : (m_options.bfiSync == 3 ? 1 : 5); // room for the largest size: no re-creation when the size or the value chosen changes
+    const int n    = MapSync() ? FrameBufferLimit() : (m_options.BfiSyncMode() == 3 ? 1 : 5); // room for the largest size: no re-creation when the size or the value chosen changes
     const int want = n + 3;
     if((int)m_ring.size() == want)
         return;
@@ -1320,7 +1331,7 @@ void Renderer::EnsureRing()
 //    back to 0 and the phase lock takes over again.
 void Renderer::AdaptFrameBuffer()
 {
-    const int mode = m_options.bfiSync;
+    const int mode = m_options.BfiSyncMode();
     if(!m_options.FrameBufferIsAuto() || !m_options.captureWindow || m_options.crossAdapter)
     {
         m_fbSliceStart = {}; // start from scratch when it is chosen
@@ -1381,7 +1392,7 @@ void Renderer::AdaptFrameBuffer()
     }
     const int    cap    = m_options.BufferSetting();
     const double worst  = (std::max)({ m_fbSlices[0], m_fbSlices[1], m_fbSliceMax }); // the last 2 seconds
-    int          target = std::clamp((int)std::ceil(worst / (std::max)(content, 1.0) - 0.3), 1, cap); // a jitter under 30 % of a content frame needs no more
+    int          target = std::clamp((int)std::ceil(worst / (std::max)(content, 1.0) - 0.3), (std::min)(1, cap), cap); // a jitter under 30 % of a content frame needs no more
     const int    cur    = (std::max)(m_options.frameBufferAuto, 1);
     if(late)
         target = (std::min)((std::max)(target, cur + 1), cap);
@@ -1596,7 +1607,7 @@ void Renderer::Benchmark(const std::shared_ptr<CaptureBase>& capture)
 void Renderer::Create()
 {
     auto dxgiDevice = m_renderContext.device.as<IDXGIDevice1>();
-    dxgiDevice->SetMaximumFrameLatency(m_options.Tearing() ? 1 : m_options.maxQueuedFrames);
+    dxgiDevice->SetMaximumFrameLatency(m_options.Tearing() ? 1 : m_options.QueueSetting());
     if(m_options.gpuThreadPriority)
         dxgiDevice->SetGPUThreadPriority(m_options.gpuThreadPriority | 0x40000000);
 
@@ -1841,6 +1852,7 @@ void Renderer::Destroy()
 
 void Renderer::DestroyInputs()
 {
+    m_inputsOk = false;
     DestroyRing();
     DestroyDepthResources();
     m_stereoTargets.clear();

@@ -131,8 +131,6 @@ struct BenchmarkResult
     float presentFPS { 0 };
 };
 
-constexpr int MONITOR_LCD  = 0;
-
 class ShaderManager;
 
 struct Options
@@ -185,17 +183,20 @@ struct Options
     int  splitScreen { 0 };
     bool splitInvert { false }; // split-screen: the effect on the other half (right / bottom)
     bool hardwareSrgb { false };
-    int  monitorType { MONITOR_LCD };
     // BFI sync (profile, the menu shown while a program is captured): 0 = none, 1 = phase lock, 2 = frame buffer (frameBuffer), 3 = hybrid
     // (phase lock while the game is steady, a buffer of one frame during its jolts, gone after 1 calm second)
     int  bfiSync { 0 };
     int  frameBuffer { 0 };    // "Frame buffer": the most game frames kept in advance (1..5, at least 1; the renderer uses 1 up to it); profile setting
     mutable int frameBufferStep { 1 }; // buffer: content frames (eye pairs in 3D) each game frame is shown for (game fps = a divisor of the content rate, SubFrames Manual)
     mutable int frameBufferAuto { 0 }; // the buffer the renderer currently uses (Frame buffer: 1 up to the value chosen; hybrid: 0 or 1)
-    int  BufferSetting() const { return bfiSync == 2 ? (std::min)((std::max)(frameBuffer, 1), 5) : bfiSync == 3 ? 1 : 0; } // the most the buffer may use (0 = none)
+    // the BFI sync really used: the phase lock and the hybrid are 2D only, in 3D they are hidden and work as None
+    // queued presentation frames: in 3D at least 3 (1, 2 and tearing are for 2D only; the value kept is the one chosen in 2D)
+    int  QueueSetting() const { return (emitter.sourceFormat != StereoSource::Off && (maxQueuedFrames == QUEUE_TEARING || (maxQueuedFrames >= 1 && maxQueuedFrames < 3))) ? 0 : maxQueuedFrames; }
+    int  BfiSyncMode() const { return emitter.sourceFormat != StereoSource::Off ? 2 : bfiSync; } // in 3D the frame buffer is always used
+    int  BufferSetting() const { return BfiSyncMode() == 2 ? (std::min)((std::max)(frameBuffer, 1), 5) : BfiSyncMode() == 3 ? 1 : 0; } // the most the buffer may use (0 = none)
     bool FrameBufferIsAuto() const { return BufferSetting() > 0; } // the size is adapted by the renderer (Frame buffer and Hybrid)
-    int  EffectiveFrameBuffer() const { return FrameBufferIsAuto() ? (std::max)(frameBufferAuto, 0) : 0; }
-    bool PhaseLockWanted() const { return bfiSync == 1 || bfiSync == 3; }
+    int  EffectiveFrameBuffer() const { return FrameBufferIsAuto() ? (std::max)(frameBufferAuto, BfiSyncMode() == 2 ? 1 : 0) : 0; }
+    bool PhaseLockWanted() const { return BfiSyncMode() == 1 || BfiSyncMode() == 3; }
     mutable float captureBlack { 0.0f };  // black level of the captured image in scRGB units (nits / 80)
     mutable float captureGain { 1.0f };   // brightness gain of the captured image (1 = unchanged)
     mutable float captureGrey { 1.0f };   // grey level (gamma) of the captured image
@@ -203,7 +204,7 @@ struct Options
     int  maxQueuedFrames { 0 }; // queued presentation frames: 0 = driver default, 1..14, QUEUE_TEARING = 0 frames, tearing allowed
     static constexpr int QUEUE_TEARING = 15;
     int  tearingLine { 0 };     // tearing control: where the flip happens in the refresh (0 = right after vblank, hidden at the top; 100 = bottom), profile setting
-    bool Tearing() const { return maxQueuedFrames == QUEUE_TEARING; }
+    bool Tearing() const { return QueueSetting() == QUEUE_TEARING; }
     bool beamRacing { false }; // tearing: the flip is timed on the real scanout position so the tear lands where the effect hides it; profile setting
     bool directPresent { false }; // "Direct presentation" (experimental, profile): the overlay is never a layered window, so Windows can show it
                                   // directly (independent flip / hardware plane) instead of composing it; no click-through (see SetClickThrough)
@@ -323,6 +324,8 @@ struct Options
     static bool              IsExeOnTaskbar(const std::string& pathOrName); // the program has a window shown on the taskbar (otherwise it counts as closed)
     std::string               ScreenIdOfExeWindow(const std::string& pathOrName) const; // screen where the program's taskbar window is ("" if unknown)
     static void              PeekProfile(const std::string& file, bool& stereo); // 3D of a profile, without loading it
+    int                      setWinRect[4] { 0, 0, 0, 0 }; // window mode: position and size of the window (left, top, right, bottom; 0 = never saved)
+    bool                     setWinMax { false };          // window mode: the window was maximized
     double                   hzSwitchMs { 1500.0 }; // average duration of a refresh rate change (black screen), learned
     int                      hzSwitchCount { 0 };
 
@@ -361,8 +364,15 @@ struct Options
     volatile bool      processOutput { false };                    // running: the output window currently covers the captured process
     HWND               FindCaptureWindow() const; // window of captureProcess (best title match), NULL when it is not running
     static void        BringToForeground(HWND hWnd);
+    // Lossless Scaling: what is captured is its scaling layer (the full-screen window it draws the scaled game on), not its settings window
+    static bool        IsScalerExe(const std::string& pathOrName); // losslessscaling.exe
+    static bool        IsScalerLayer(HWND hWnd);                  // a topmost window covering (almost) a whole screen
 
     void Save(const ShaderManager& shaderManager) const;
     void Load(ShaderManager& shaderManager);
 };
+
+// Small trace of what happens around Lossless Scaling's layer (detections, restarts, raises of the overlay): Nbeam_ls.log next to the
+// exe, 256 KB at most. Only used to find out why a capture would start and stop in a loop.
+void LsLog(const char* fmt, ...);
 } // namespace ShaderBeam

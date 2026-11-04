@@ -118,7 +118,7 @@ static FILE* OpenCrashLog(const char* what, unsigned code)
         return nullptr;
     SYSTEMTIME t;
     GetLocalTime(&t);
-    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.2.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
+    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.3.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
             GetCurrentThreadId(), GetCurrentThreadId() == s_mainThreadId ? "main" : "other (render / emitter / AI)");
     return f;
 }
@@ -189,7 +189,8 @@ static HRESULT CALLBACK EmitterWarningCallback(HWND, UINT msg, WPARAM, LPARAM lP
     return S_OK;
 }
 
-static void ShowEmitterWarning()
+// No 3D emitter recognized, shown before Nbeam starts: OK starts Nbeam, the red cross (or Escape) closes it. Returns true for OK.
+static bool ShowEmitterWarning()
 {
     const bool   fr    = ::ShaderBeam::GetLanguage() == LANG_FR;
     const wchar_t* title = fr ? L"Attention : \u00e9metteur non reconnu" : L"Warning: emitter not recognized";
@@ -203,23 +204,24 @@ static void ShowEmitterWarning()
         const std::wstring content = text + L"<a href=\"" + EMITTER_DRIVER_URL + L"\">" + (fr ? L"Pilote NVIDIA 3D Vision USB (390.41)" : L"NVIDIA 3D Vision USB driver (390.41)") + L"</a>";
         TASKDIALOGCONFIG cfg {};
         cfg.cbSize             = sizeof(cfg);
-        cfg.dwFlags            = TDF_ENABLE_HYPERLINKS | TDF_POSITION_RELATIVE_TO_WINDOW;
+        cfg.dwFlags            = TDF_ENABLE_HYPERLINKS | TDF_ALLOW_DIALOG_CANCELLATION; // the red cross / Escape: IDCANCEL (Nbeam closes)
         cfg.dwCommonButtons    = TDCBF_OK_BUTTON;
         cfg.pszWindowTitle     = L"Nbeam 3D Vision";
         cfg.pszMainIcon        = TD_WARNING_ICON;
         cfg.pszMainInstruction = title;
         cfg.pszContent         = content.c_str();
         cfg.pfCallback         = EmitterWarningCallback;
-        if(SUCCEEDED(td(&cfg, nullptr, nullptr, nullptr)))
+        int button = 0;
+        if(SUCCEEDED(td(&cfg, &button, nullptr, nullptr)))
         {
             FreeLibrary(cc);
-            return;
+            return button == IDOK;
         }
     }
     if(cc)
         FreeLibrary(cc);
     text = std::wstring(title) + L"\n\n" + text + EMITTER_DRIVER_URL;
-    MessageBoxW(nullptr, text.c_str(), L"Nbeam 3D Vision", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST);
+    return MessageBoxW(nullptr, text.c_str(), L"Nbeam 3D Vision", MB_OKCANCEL | MB_ICONWARNING | MB_SETFOREGROUND | MB_TOPMOST) == IDOK;
 }
 
 int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance, _In_ LPWSTR lpCmdLine, _In_ int nCmdShow)
@@ -279,8 +281,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     }
 
     // no 3D emitter recognized: warning with the link of the driver (highlighted, clickable) and an OK button
-    if(!s_shaderBeam.m_options.emitterPresent)
-        ShowEmitterWarning();
 
     MSG msg;
 
@@ -339,6 +339,8 @@ static void ForceForeground(HWND h)
 {
     if(!h || !IsWindow(h))
         return;
+    if(::ShaderBeam::Options::IsScalerExe(::ShaderBeam::Options::ProcessNameOfWindow(h)))
+        return; // Lossless Scaling's layer never takes the focus from the game
     HWND fg = GetForegroundWindow();
     if(fg == h)
         return;
@@ -349,6 +351,14 @@ static void ForceForeground(HWND h)
     SetForegroundWindow(h);
     if(att)
         AttachThreadInput(me, ft, FALSE);
+}
+
+// Lossless Scaling's layer is captured: it ends its scaling (and closes its layer) as soon as the game loses the focus, so while it is
+// captured Nbeam never takes the focus, not even for the HUD (the HUD is used with the mouse; the game keeps the keyboard)
+static bool ScalerCaptured()
+{
+    const auto& o = s_shaderBeam.m_options;
+    return o.captureWindow && ::ShaderBeam::Options::IsScalerExe(o.captureProcess);
 }
 
 static bool      s_appReady = false;
@@ -364,7 +374,7 @@ static void SetClickThrough(HWND hWnd, bool through)
     if(s_shaderBeam.m_options.directPresent)
     {
         ex_style &= ~(WS_EX_LAYERED | WS_EX_TRANSPARENT);
-        if(through)
+        if(through || ScalerCaptured())
             ex_style |= WS_EX_NOACTIVATE;
         else
             ex_style &= ~WS_EX_NOACTIVATE;
@@ -373,12 +383,80 @@ static void SetClickThrough(HWND hWnd, bool through)
     {
         ex_style |= WS_EX_LAYERED;
         ex_style &= ~WS_EX_NOACTIVATE;
+        if(!through && ScalerCaptured())
+            ex_style |= WS_EX_NOACTIVATE; // HUD over Lossless Scaling: clickable, but the game keeps the focus
         if(through)
             ex_style |= WS_EX_TRANSPARENT;
         else
             ex_style &= ~WS_EX_TRANSPARENT;
     }
     SetWindowLong(hWnd, GWL_EXSTYLE, ex_style);
+}
+
+static bool s_menuOpen = false; // the notification area menu is shown: the overlay must not be raised above it
+
+// Stays in front of a full-screen "always on top" window of another program (Lossless Scaling's output window, for example): both
+// windows are topmost, so the one raised last wins. Checked every ~100 ms; only when such a window is really above the overlay
+// is Nbeam raised again (no needless z-order changes). If the other program fights back (more than 20 raises in 2 s) it pauses 5 s.
+static void KeepAboveScalerWindow(HWND hWnd)
+{
+    static ULONGLONG s_lastCheck = 0, s_pauseUntil = 0, s_windowStart = 0;
+    static int       s_raises = 0;
+    auto&            o        = s_shaderBeam.m_options;
+    if(!s_appReady || s_standby || !s_shaderBeam.m_active || o.processUnfocused || s_menuOpen)
+        return;
+    const ULONGLONG now = GetTickCount64();
+    if(now - s_lastCheck < 100 || now < s_pauseUntil)
+        return;
+    s_lastCheck = now;
+
+    RECT mine;
+    if(!IsWindowVisible(hWnd) || IsIconic(hWnd) || !GetWindowRect(hWnd, &mine))
+        return;
+    const long myArea = (long)(mine.right - mine.left) * (long)(mine.bottom - mine.top);
+    if(myArea <= 0)
+        return;
+    const DWORD ownPid = GetCurrentProcessId();
+
+    bool coveredByScaler = false;
+    int  guard           = 0;
+    for(HWND w = GetWindow(hWnd, GW_HWNDPREV); w && guard < 200; w = GetWindow(w, GW_HWNDPREV), guard++)
+    {
+        if(!IsWindowVisible(w) || IsIconic(w))
+            continue;
+        if(!(GetWindowLong(w, GWL_EXSTYLE) & WS_EX_TOPMOST))
+            continue;
+        DWORD pid = 0;
+        GetWindowThreadProcessId(w, &pid);
+        if(pid == ownPid)
+            continue;
+        RECT r, inter;
+        if(!GetWindowRect(w, &r) || !IntersectRect(&inter, &r, &mine))
+            continue;
+        const long area = (long)(inter.right - inter.left) * (long)(inter.bottom - inter.top);
+        if(area * 10 >= myArea * 9) // covers at least 90% of the overlay: a full-screen window, not a tooltip or the taskbar
+        {
+            coveredByScaler = true;
+            break;
+        }
+    }
+    if(!coveredByScaler)
+        return;
+
+    if(now - s_windowStart > 2000)
+    {
+        s_windowStart = now;
+        s_raises      = 0;
+    }
+    if(++s_raises > 20)
+    {
+        s_pauseUntil = now + 5000;
+        s_raises     = 0;
+        ::ShaderBeam::LsLog("overlay raised more than 20 times in 2 s: pause 5 s (something keeps going above it)");
+        return;
+    }
+    ::ShaderBeam::LsLog("overlay raised above a full-screen always-on-top window (%d)", s_raises);
+    BringToFront(hWnd, false);
 }
 
 // Captured process: while it is not the foreground window (another window in front, or minimised) the effects and the 3D
@@ -397,6 +475,18 @@ static void ProcessFocusPoll(HWND hWnd)
             BringToFront(hWnd, false);
         }
         lostSince = 0;
+        return;
+    }
+    if(::ShaderBeam::Options::IsScalerExe(o.captureProcess))
+    {
+        // Lossless Scaling: the captured window is its scaling layer, which never has the focus (the game does): it counts as in
+        // front as long as it is there and shown
+        lostSince = 0;
+        if(o.processUnfocused && !IsIconic(o.captureWindow))
+        {
+            o.processUnfocused = false;
+            BringToFront(hWnd, false);
+        }
         return;
     }
     HWND fg = GetForegroundWindow();
@@ -534,6 +624,11 @@ static void ShowHud(HWND hWnd)
         return;
     s_shaderBeam.m_options.ui               = true;
     SetClickThrough(hWnd, false);
+    if(ScalerCaptured())
+    {
+        BringToFront(hWnd, false); // Lossless Scaling would stop if the game lost the focus
+        return;
+    }
     BringToFront(hWnd, true);
     SetForegroundWindow(hWnd);
 }
@@ -685,6 +780,11 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
 
     s_shaderBeam.Create(hWnd);
     s_shaderBeam.m_options.emitterPresent = EmitterRecognized(); // the 3D menu is hidden until an emitter is recognized
+    // no 3D emitter recognized: the warning (with the clickable driver link) comes first; Nbeam starts after OK, the red cross closes it
+    if(!s_shaderBeam.m_options.emitterPresent && !ShowEmitterWarning())
+    {
+        ExitProcess(0); // (nothing started yet: Nbeam just leaves, the settings are not touched)
+    }
     PlaceWindow(hWnd);
     CreateSettingsWindow(hInstance);
 
@@ -1151,12 +1251,23 @@ static void RenderSettings()
 }
 
 // shows the window (taskbar, notification area, second launch, HUD hotkey)
+static bool s_setMaxPending = false; // window mode: shown maximized the first time (as it was when Nbeam was last closed)
+
 static void ShowSettings(bool activate)
 {
     if(!s_setWnd)
         return;
     s_setShow = true;
     s_inTray  = false;
+    if(s_setMaxPending)
+    {
+        // first time shown: maximized as it was when Nbeam was closed
+        s_setMaxPending = false;
+        ShowWindow(s_setWnd, SW_SHOWMAXIMIZED);
+        if(activate)
+            ForceForeground(s_setWnd);
+        return;
+    }
     if(IsIconic(s_setWnd))
         ShowWindow(s_setWnd, activate ? SW_RESTORE : SW_SHOWNOACTIVATE);
     else
@@ -1514,6 +1625,43 @@ static void CreateSettingsWindow(HINSTANCE hInstance)
     const int x = work.left + (std::max)(0, (int)(work.right - work.left - ww) / 2);
     const int y = work.top + (std::max)(0, (int)(work.bottom - work.top - wh) / 2);
     s_setWnd = CreateWindowExW(0, SETTINGS_CLASS, L"Nbeam 3D Vision", WS_OVERLAPPEDWINDOW, x, y, ww, wh, nullptr, nullptr, hInstance, nullptr);
+    // the place and size it had when Nbeam was last closed (kept in Nbeam.app.cfg), if that place is still on a connected screen
+    const auto& o = s_shaderBeam.m_options;
+    if(s_setWnd && o.setWinRect[2] - o.setWinRect[0] > 100)
+    {
+        RECT saved { o.setWinRect[0], o.setWinRect[1], o.setWinRect[2], o.setWinRect[3] };
+        if(MonitorFromRect(&saved, MONITOR_DEFAULTTONULL))
+        {
+            WINDOWPLACEMENT wp {};
+            wp.length           = sizeof(wp);
+            GetWindowPlacement(s_setWnd, &wp);
+            wp.showCmd          = SW_HIDE; // (shown later, by ShowSettings)
+            wp.rcNormalPosition = saved;
+            SetWindowPlacement(s_setWnd, &wp);
+            s_setMaxPending = o.setWinMax;
+        }
+    }
+}
+
+// window mode: the place, size and maximized state of the window are kept when Nbeam closes
+static void SaveSettingsPlacement()
+{
+    if(!s_setWnd || !IsWindow(s_setWnd))
+        return;
+    WINDOWPLACEMENT wp {};
+    wp.length = sizeof(wp);
+    if(!GetWindowPlacement(s_setWnd, &wp))
+        return;
+    const RECT& r = wp.rcNormalPosition;
+    if(r.right - r.left <= 100 || r.bottom - r.top <= 100)
+        return;
+    auto& o         = s_shaderBeam.m_options;
+    o.setWinRect[0] = r.left;
+    o.setWinRect[1] = r.top;
+    o.setWinRect[2] = r.right;
+    o.setWinRect[3] = r.bottom;
+    o.setWinMax     = wp.showCmd == SW_SHOWMAXIMIZED || (IsZoomed(s_setWnd) != FALSE) || (s_setMaxPending && !IsWindowVisible(s_setWnd));
+    o.SaveApp();
 }
 
 // the HUD goes back to the notification area (taskbar button removed) when a linked program starts or stops
@@ -1806,6 +1954,8 @@ static void ProfileLinkPoll(HWND hWnd)
         o.captureTitle.clear();
         s_focusFallback = false;
         o.captureWindow = o.captureProcess.empty() ? NULL : o.FindCaptureWindow();
+        if(::ShaderBeam::Options::IsScalerExe(o.captureProcess))
+            ::ShaderBeam::LsLog("detection ON: capture of the layer hwnd=%p", (void*)o.captureWindow);
         ReduceHud(hWnd);
         if(o.captureWindow)
             ::ShaderBeam::Options::BringToForeground(o.captureWindow); // the detected program comes to the front
@@ -1851,6 +2001,8 @@ static void ProfileLinkPoll(HWND hWnd)
             o.linkShaderDisplayNo  = prevShaderNo; // back to the screen used before the detection
             o.linkCaptureDisplayNo = prevCaptureNo;
             s_quietUntil = GetTickCount64() + 3000;
+            if(::ShaderBeam::Options::IsScalerExe(o.captureProcess))
+                ::ShaderBeam::LsLog("detection OFF: back to the desktop settings");
             o.captureProcess.clear();
             o.captureTitle.clear();
             o.captureWindow = NULL;
@@ -1873,6 +2025,16 @@ static void ProfileLinkPoll(HWND hWnd)
     }
 }
 
+#define TIMER_MENU_TOP 4 // window timer: while the notification area menu is open, it is raised above the taskbar
+
+static BOOL CALLBACK RaiseMenuProc(HWND w, LPARAM)
+{
+    wchar_t cls[16] = {};
+    if(GetClassNameW(w, cls, 16) && wcscmp(cls, L"#32768") == 0 && IsWindowVisible(w))
+        SetWindowPos(w, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+    return TRUE;
+}
+
 LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     if(message == WM_TRAYICON)
@@ -1893,7 +2055,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             GetCursorPos(&pt);
             s_quietUntil = GetTickCount64() + 600000; // activating the window for the menu must not open the HUD
             SetForegroundWindow(hWnd); // required for the menu to close when clicking elsewhere
-            const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hWnd, nullptr);
+            // the menu is kept above everything, the Windows taskbar included (both are "always on top" windows: the last one raised wins)
+            s_menuOpen = true;
+            SetTimer(hWnd, TIMER_MENU_TOP, 20, nullptr);
+            const int cmd = TrackPopupMenu(menu, TPM_RETURNCMD | TPM_RIGHTBUTTON | TPM_NOANIMATION, pt.x, pt.y, 0, hWnd, nullptr);
+            KillTimer(hWnd, TIMER_MENU_TOP);
+            s_menuOpen = false;
             s_quietUntil = GetTickCount64() + 1000;
             PostMessage(hWnd, WM_NULL, 0, 0);
             DestroyMenu(menu);
@@ -1926,6 +2093,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             ShowHud(hWnd);
         return 0;
     }
+    if(message == WM_MOUSEACTIVATE && s_shaderBeam.m_options.ui && ScalerCaptured())
+        return MA_NOACTIVATE; // HUD over Lossless Scaling: the click reaches the HUD, the game keeps the focus
     if(s_shaderBeam.m_options.directPresent && !s_shaderBeam.m_options.ui)
     {
         // "Direct presentation", HUD hidden: the overlay catches the mouse (no click-through) but stays out of the way: no focus taken,
@@ -1977,6 +2146,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         }
         return DefWindowProc(hWnd, message, wParam, lParam);
     case WM_TIMER: {
+        if(wParam == TIMER_MENU_TOP)
+        {
+            EnumThreadWindows(GetCurrentThreadId(), RaiseMenuProc, 0);
+            break;
+        }
         if(wParam == TIMER_RETRY_START)
         {
             // the start failed (no display, graphics card or Windows error): try again
@@ -1996,6 +2170,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             AdjustPoll();
             PadPoll(hWnd);
             TestPoll(hWnd);
+            KeepAboveScalerWindow(hWnd);
             ProcessFocusPoll(hWnd);
             ProcessFollowPoll(hWnd);
             {
@@ -2036,6 +2211,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_USER_RESTART: {
         if(s_quitting)
             break; // a restart still queued while Nbeam closes: ignored
+        ::ShaderBeam::LsLog("restart (process='%s' window=%p standby=%d)", s_shaderBeam.m_options.captureProcess.c_str(), (void*)s_shaderBeam.m_options.captureWindow, (int)s_standby);
         KillTimer(hWnd, TIMER_RETRY_START);
         s_shaderBeam.Stop();
         if(s_refreshDisplays)
@@ -2100,6 +2276,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         HookKey(hWnd, (unsigned)wParam, (unsigned)lParam);
         break;
     case WM_USER_NOWINDOW: {
+        if(::ShaderBeam::Options::IsScalerExe(s_shaderBeam.m_options.captureProcess))
+            ::ShaderBeam::LsLog("captured layer window closed");
         s_shaderBeam.m_options.captureWindow = s_shaderBeam.m_options.captureProcess.empty() ? NULL : s_shaderBeam.m_options.FindCaptureWindow(); // another window of the same program, or the display
         PostMessage(hWnd, WM_USER_RESTART, 0, 0);
         break;
@@ -2219,8 +2397,13 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 // UI visible: the effects keep their state (HUD button Show / Hide)
                 LeaveTray(hWnd);
                 SetClickThrough(hWnd, false);
-                BringToFront(hWnd, true);
-                ForceForeground(hWnd); // the HUD gets the focus, as if it had been clicked
+                if(ScalerCaptured())
+                    BringToFront(hWnd, false); // over Lossless Scaling the game keeps the focus (LS stops scaling otherwise)
+                else
+                {
+                    BringToFront(hWnd, true);
+                    ForceForeground(hWnd); // the HUD gets the focus, as if it had been clicked
+                }
             }
             else
             {
@@ -2253,6 +2436,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         KillTimer(hWnd, TIMER_RETRY_START);
         RestoreRefreshRateNow();
         RemoveTrayIcon(hWnd);
+        SaveSettingsPlacement(); // (before the window is closed)
         StopSettingsUI();
         s_standby = false;
         s_shaderBeam.Stop();

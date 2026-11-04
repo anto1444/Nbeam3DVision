@@ -1,6 +1,6 @@
 # Nbeam 3D Vision
 
-**Version 2.2.0 — par anto1444, 2026**
+**Version 2.3.0 — par anto1444, 2026**
 
 <p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision - NVIDIA 3D Vision glasses, BFI and CRT beam simulator overlay for Windows" width="420"></p>
 
@@ -8,6 +8,7 @@
 >
 > - **Stereoscopic 3D** from side-by-side (SBS), top-bottom (TB) or checkerboard content, or from any **2D game or video converted to 3D in real time by AI** (a depth-estimation model such as Depth Anything V2, run on the GPU with DirectML; ONNX Runtime and the model are not included, see below), with convergence and depth controls.
 > - **Motion blur reduction** on fast LCD and OLED screens (120 to 480 Hz): **BFI (black frame insertion)** and the **CRT beam simulator** from Blur Busters, alone or together with 3D, with **BFI sync** for captured games (phase lock for lower latency, adaptive frame buffer for stability, or both) and **BFI auto** (SubFrames following the game frame rate).
+> - **Can capture another capture overlay** similar to its own, such as **Lossless Scaling**: BFI, CRT or 3D are added on top of the picture that software has already scaled or generated.
 > - **Per-game profiles** loaded automatically when the game's .exe is detected, separate desktop settings, live adjustment of the glasses (sync offset, open duration), a **motion test** with scrolling cars to compare settings and check eye inversion, hotkeys and gamepad support.
 > - Requirements: Windows 10 (1903) or 11 64-bit, DirectX 11 GPU, a 100 Hz+ display for 3D or BFI (240 Hz+ for both). Download the latest version from the [Releases](https://github.com/anto1444/Nbeam3DVision/releases) page. The interface and the full guide below are in French (switch the interface to English in Application → Language / Langue).
 >
@@ -21,7 +22,8 @@ Nbeam 3D Vision est une surcouche (overlay) Windows qui s'affiche par-dessus un 
 - le **BFI** et le **CRT Beam Simulator** pour supprimer le flou de mouvement d'un écran LCD/OLED rapide ;
 - la **3D active** (lunettes NVIDIA 3D Vision ou émetteur Arduino) à partir d'un contenu 3D en côte à côte, haut/bas ou damier, avec ou sans les effets ci-dessus, ou depuis une image 2D grâce à l'IA ;
 - des **profils** par jeu, chargés automatiquement quand le jeu est détecté (le bureau a ses propres réglages) ;
-- un **mode fenêtre** : on règle tout dans une fenêtre normale, et les effets ne démarrent que quand un jeu détecté se lance ou quand on clique sur « Activer les effets ».
+- un **mode fenêtre** : on règle tout dans une fenêtre normale (sa place et sa taille sont retenues), et les effets ne démarrent que quand un jeu détecté se lance ou quand on clique sur « Activer les effets » ;
+- la capture **d'une autre surcouche de capture** semblable à la sienne, par exemple **Lossless Scaling** : Nbeam ajoute alors son BFI, son CRT ou sa 3D à l'image déjà mise à l'échelle ou générée par cet autre logiciel.
 
 > **Attention** — ce logiciel produit des images qui clignotent très vite. Prudence si vous êtes photosensible.
 
@@ -43,7 +45,7 @@ Au tout premier lancement (quand le dossier `Profils` est créé), Nbeam affiche
 1. Placez `Nbeam3DVision.exe` dans un dossier où il peut écrire.
 2. Lancez-le : le dossier `Profils\` est créé, avec le profil d'exemple `Defaut.ini` et les réglages du bureau `Bureau.cfg`.
 3. Dans la fenêtre de Nbeam, choisissez l'**écran de sortie** (votre écran rapide) et le nombre de **sous-images**.
-4. Cliquez sur **Activer les effets**, ou ajoutez votre jeu dans la détection de profil : les effets démarreront tout seuls à son lancement.
+4. Cliquez sur **Activer les effets**, ou ajoutez votre jeu dans la configuration du profil : les effets démarreront tout seuls à son lancement.
 
 Principe : Nbeam **capture** l'écran ou la fenêtre d'un programme, applique l'effet puis **réaffiche** l'image en plein écran au rythme de l'écran de sortie. Les **sous-images** sont le nombre d'images affichées pour chaque image du contenu : sur 240 Hz, 4 sous-images = un contenu à 60 images/s.
 
@@ -54,6 +56,7 @@ Nbeam s'ouvre toujours dans une **fenêtre Windows normale** (déplaçable, redi
 - **Les effets démarrent** avec le bouton **Activer les effets** (en bas), le raccourci **Afficher / masquer les effets**, le menu de l'icône de notification, ou tout seuls quand un **programme détecté** se lance. La fenêtre disparaît et l'overlay s'affiche par-dessus l'écran.
 - **Pendant que les effets tournent**, le HUD par-dessus l'écran fonctionne comme avant (son raccourci) ; son bouton du bas devient **Désactiver les effets**.
 - **Les effets s'arrêtent** à la fermeture du programme détecté, avec **Désactiver les effets** ou avec le même raccourci ; la fenêtre revient (sans prendre le focus du jeu quand c'est le raccourci).
+- **Place et taille** : quand on quitte Nbeam, la fenêtre retient sa position exacte, sa taille et si elle était agrandie ; elle revient pareille au prochain lancement (au centre si cet écran n'est plus branché).
 - **La croix** de la fenêtre la réduit si **Réduire au lieu de fermer** est coché (Application) : dans la zone de notification si cette option est cochée, les détections continuent. Décochée, la croix quitte Nbeam.
 - La **taille de l'interface** se règle séparément pour la fenêtre et pour le HUD par-dessus l'écran (Apparence → Taille du HUD, dans le mode concerné).
 
@@ -76,78 +79,67 @@ Reproduit le balayage d'un tube cathodique : l'image est « dessinée » ligne p
 
 ### Présentation directe (expérimental)
 
-Case sous « Images en file ». Normalement, l'overlay de Nbeam est une fenêtre transparente aux clics (« layered ») que Windows **recompose** avant l'écran. Cochée, l'overlay n'est plus « layered » : Windows peut l'afficher **directement** (flip indépendant ou plan matériel), soit environ **un rafraîchissement de latence en moins** et des images BFI qui ne sont **jamais affichées en retard par la composition** (pas de « blink »). Le rendu redémarre quand on la change ; c'est un réglage de profil.
+Case sous « Images en file ». Cochée, Windows affiche Nbeam **directement à l'écran** au lieu de le mélanger d'abord avec le bureau : un peu **moins de latence** et un BFI **plus régulier**. Le rendu redémarre quand on la change ; c'est un réglage de profil.
 
-- **Plus de clic à travers** : tant que le HUD est caché, l'overlay ne prend pas le focus, ignore les clics et masque le pointeur Windows. Les jeux qui lisent la souris directement (la plupart des jeux 3D) continuent de marcher ; les jeux et menus utilisés avec le pointeur Windows ne reçoivent plus les clics.
-- Windows n'accorde le mode direct que si **rien ne s'affiche par-dessus** l'overlay (notifications, volume, overlays Discord ou Steam...).
-- **Mesure** affichée en dessous :
-  - la **Présentation** : *composée par Windows*, *directe (plan matériel)* ou *inconnue* ;
-  - les **images en retard** par minute : des images restées à l'écran plus ou moins de rafraîchissements que prévu, mesurées sur 10 secondes et non comptées avec le tearing.
-
-  Comparez avec et sans l'option dans le même jeu.
+- **Plus de clic à travers** : tant que le HUD est caché, Nbeam ne prend pas le focus, ignore les clics et cache le pointeur. La plupart des jeux 3D continuent de marcher normalement ; les jeux et menus qu'on utilise avec le pointeur Windows ne reçoivent plus les clics.
+- Ça ne marche que si **rien ne s'affiche par-dessus** Nbeam (notifications, volume, overlays Discord ou Steam...).
+- La ligne en dessous indique si Windows a accepté (*directe*) ou non (*composée par Windows*), et combien d'images sont arrivées en retard par minute. Comparez avec et sans l'option dans le même jeu.
 
 ### Synchronisation BFI
 
-Le menu **Synchro BFI** n'apparaît que lorsqu'un **programme est capturé**. Il choisit comment le BFI suit les images du jeu :
+Le BFI fait clignoter l'image à un rythme fixe ; le jeu, lui, envoie ses images quand il peut. Le menu **Synchro BFI** choisit comment accorder les deux. Il n'apparaît que lorsqu'un **programme est capturé**, et il est **masqué en 3D** : le tampon d'image est alors toujours utilisé.
 
-- **Aucune (déconseillé)** : une image du jeu est prise au début de chaque cycle BFI (une image qui arrive juste après attend presque un cycle entier : jusqu'à 12 ms à 240 Hz avec 4 sous-images).
-- **Calage de phase (meilleure latence)** (2D) : le cycle reste parfaitement régulier, mais il est décalé pour que les images arrivent juste avant la sous-image visible. Latence plus faible et stable.
-- **Tampon d'image (meilleure stabilité)** : jusqu'à 1 à 5 images du jeu (autant que le jeu en a besoin) sont gardées d'avance pour lisser une cadence irrégulière, au prix d'un peu de latence (fonctionne aussi en 3D).
-- **Hybride** (2D, recommandé) : le calage de phase tant que le jeu est stable ; dès que le jeu a des à-coups, un tampon d'**une seule image** prend le relais, puis s'en va après **1 seconde calme** et le calage reprend la main.
-
-La case **BFI auto** (sous le menu) fonctionne avec chacun de ces choix.
+| Choix | En bref | Pour qui |
+|---|---|---|
+| **Aucune (déconseillé)** | Nbeam prend l'image du jeu quand son cycle commence. Simple, mais une image peut attendre presque un cycle entier. | Pour comparer. |
+| **Calage de phase (meilleure latence)** | Nbeam observe quand les images du jeu arrivent et se cale dessus : chaque image est montrée presque aussitôt. | Jeux à cadence stable (plafonnée). |
+| **Tampon d'image (meilleure stabilité)** | Nbeam garde une ou quelques images d'avance, pour qu'un jeu irrégulier reste fluide. Un peu plus de latence. | Jeux qui saccadent. |
+| **Hybride (recommandé)** | Le calage de phase tant que tout va bien ; un tampon d'une image seulement quand le jeu a un à-coup, retiré une seconde après. | La plupart des jeux. |
 
 #### Calage de phase
 
-Nbeam enregistre le moment où chaque image arrive dans le cycle, **avec les micro-variations du jeu**, et calcule la position de son cycle qui donne **l'attente la plus courte tout en gardant une marge de sécurité** : aucune image ne doit être prise un cycle et ratée le suivant (ce qui ferait une image doublée puis une sautée). Le cycle est alors **décalé par rafraîchissements entiers**, en raccourcissant des cycles dans leur partie noire :
+Imaginez un métro qui passe à heure fixe : si vous arrivez juste après son départ, vous attendez le suivant. Le calage de phase **décale doucement les passages du métro** pour qu'ils partent juste après votre arrivée. Concrètement :
 
-- **jamais plus d'un rafraîchissement par cycle** : un décalage de 2 se fait sur deux cycles (`F B B │ F B B │ F B B B` avec 4 sous-images) au lieu d'un cycle très court (`F B │ F B B B`) ; un décalage d'un rafraîchissement plus tard se fait avec 3 cycles raccourcis (4 sous-images), aucun cycle n'est allongé ;
-- **luminosité compensée** (BFI simple) : un cycle raccourci donnerait un petit flash (un éclair sur 3 rafraîchissements au lieu de 4 = +33 % de lumière à cet instant) ; sa lumière est baissée d'autant (×3/4 avec 4 sous-images, en tenant compte des images claires et du Gain vs Blur), la luminosité reste régulière. Avec le CRT Beam Simulator, les décalages sont étalés de la même façon mais sans compensation.
-
-- **Intervalle de mesure** de **0,5 à 3 secondes** (1 seconde par défaut) : la fréquence de mesure et de correction, pour suivre la dérive entre le jeu et l'écran. Court = suit plus vite, long = plus posé. Un seul décalage par mesure, seulement s'il fait gagner au moins un demi-rafraîchissement. Si une image rate tout de même son cycle (jeu un peu plus lent que le cycle), le cycle recule d'un rafraîchissement aussitôt.
-- **Compatible avec BFI auto** : le calage se cale sur le nombre de sous-images choisi par BFI auto ; quand il change, la mesure repart de zéro sur le nouveau cycle.
-- Une pause du jeu (menu, chargement, fenêtre en arrière-plan) est détectée : la mesure reprend proprement ensuite.
-- **État** : *mesure*, *calée* (avec l'attente actuelle et le nombre de décalages), *cadence du jeu irrégulière* ou, en Hybride, *en pause, tampon en cours*.
-- **Plafonnez le jeu** près de la valeur affichée (fréquence réelle de l'écran ÷ sous-images, par exemple 59,940 i/s), avec RTSS ou Reflex. Un plafond parfait n'est pas nécessaire, mais plus la cadence est stable, plus le gain est grand.
+- Nbeam mesure régulièrement l'arrivée des images (réglage **Intervalle de mesure**, de 0,5 à 3 secondes, 1 par défaut) et ajuste son rythme par petits pas, sans à-coup ni flash visible.
+- Il garde une petite marge de sécurité, pour qu'une image ne soit jamais montrée deux fois puis sautée.
+- Il suit les sous-images choisies par **BFI auto** quand elles changent, et reprend tout seul après une pause du jeu.
+- Une ligne d'état indique ce qu'il fait : *mesure*, *calée* (avec l'attente actuelle), *cadence du jeu irrégulière*...
+- **Conseil** : plafonnez le jeu à la valeur affichée (avec RTSS ou Reflex). Pas besoin d'être parfait, mais plus le jeu est régulier, plus le gain est grand.
 
 #### Tampon d'image
 
-Le **tampon d'image** garde quelques images du jeu d'avance pour **lisser un jeu à cadence irrégulière**, au prix d'un peu de latence. La valeur choisie (**1 à 5**) est le **maximum autorisé**, pas une taille fixe :
+Le tampon garde **quelques images du jeu d'avance**, comme une petite réserve : si le jeu a un raté, Nbeam pioche dans la réserve et l'image reste fluide. En échange, l'image arrive un peu plus tard.
 
-- le tampon utilise **1 image** et ne monte jusqu'au maximum que si le jeu en a besoin (ses pires écarts entre deux images sur les 2 dernières secondes, ou une image qui n'arrive pas à temps) ;
-- il change **d'une image à la fois, au plus une fois toutes les 2 secondes** (chaque changement montre une image deux fois ou en saute une : jamais plusieurs d'un coup) ;
-- il redescend après **2 secondes calmes** ; si l'on baisse la valeur, il y redescend de la même façon ;
-- la taille utilisée est affichée à côté du curseur (*utilisé : n*, avec la latence en ms).
-
-Avec les **sous-images sur une valeur fixe** (BFI auto décoché), le tampon gère aussi un jeu qui tourne à un **diviseur de la cadence du contenu** : pour un contenu à 120 fps et un jeu à 60, 40, 30 ou 15 fps, chaque image du jeu est affichée exactement 2, 3, 4 ou 8 fois, régulièrement, au lieu d'une alternance irrégulière.
+- La valeur choisie (**1 à 5**) est un **maximum** : Nbeam commence avec 1 image et n'en ajoute que si le jeu en a vraiment besoin. Il change d'une image à la fois, au plus toutes les 2 secondes, et redescend quand le jeu se calme.
+- La taille utilisée et la latence ajoutée sont affichées à côté du curseur.
+- Bonus : si le jeu tourne à la moitié, au tiers ou au quart de la cadence du BFI (par exemple 60 i/s pour 120), chaque image est montrée le même nombre de fois, bien régulièrement.
 
 Avec la **2D vers 3D (IA)**, le tampon d'image fonctionne comme ailleurs. La synchronisation des cartes de profondeur est une option à part, le **Tampon de carte** (panneau 3D, sous « Afficher la carte de profondeur ») : le calcul de la profondeur prend du temps et la carte arrive en retard sur l'image ; coché, Nbeam mesure ce délai (affiché dans le panneau 3D) et retient chaque image jusqu'à ce que sa propre carte soit prête, pour que **la profondeur colle à l'image**. Il s'ajoute au tampon d'image (les deux délais se cumulent). Décoché, aucune synchronisation : pas de latence ajoutée, mais la profondeur peut être en retard sur les mouvements rapides.
 
 #### Hybride
 
-Le meilleur des deux : tant que le jeu est stable, le **calage de phase** donne la latence la plus faible (pas de tampon) ; quand Nbeam voit une image arriver en retard ou rater son cycle, il **active aussitôt un tampon d'une image** (jamais plus) pour absorber l'à-coup, puis le **retire après 1 seconde calme** (sans nouvel à-coup) et le calage reprend. La ligne *Tampon : n image(s)* indique la taille utilisée. En 3D, choisissez Aucune ou Tampon d'image.
+Le meilleur des deux : la latence du calage de phase quand le jeu est stable, et la sécurité du tampon (une seule image) le temps d'un à-coup. Nbeam passe de l'un à l'autre tout seul ; la ligne *Tampon* indique quand la réserve est utilisée.
 
 #### BFI auto
 
-Case à cocher sous le menu (2D, programme capturé) : Nbeam mesure en continu la cadence réelle du jeu et ajuste tout seul le nombre de sous-images (120 images/s sur 480 Hz → 4, 240 images/s → 2) ; le curseur Sous-images est alors remplacé par la valeur choisie. Ses atouts :
+Case à cocher sous le menu (2D, programme capturé ; masquée en 3D). Nbeam **mesure la cadence du jeu et choisit tout seul le nombre de sous-images** (par exemple 120 images/s sur un écran 480 Hz → 4). L'effet reste net même quand le jeu change de cadence (cinématique, menu, chute d'images).
 
-- l'effet **reste net et régulier** même quand le jeu change de cadence (cinématique en 30 images/s, menu, chute d'images) : plus besoin de choisir un réglage par jeu ni de le corriger à la main ;
-- la réactivité se règle avec l'**intervalle de détection** ;
-- si la cadence tombe sous un **seuil réglable**, le BFI est doublé ou coupé pour éviter un scintillement lent et fatigant ;
-- **Luminosité uniforme** (case au-dessus du seuil de FPS bas, BFI simple) : plus il y a de sous-images, plus le BFI est sombre, donc la luminosité varie avec la cadence du jeu. Cochée, l'image garde toujours la luminosité qu'a le BFI au seuil de FPS bas, quelle que soit la cadence (même quand le BFI est doublé ou coupé sous le seuil) : plus le seuil est bas, plus l'image est sombre.
+- **Intervalle de détection** : à quelle fréquence la cadence est mesurée.
+- **Seuil de FPS bas** : en dessous, le BFI clignoterait trop lentement ; il est alors doublé ou coupé (au choix).
+- **Luminosité uniforme** (BFI simple) : plus il y a de sous-images, plus l'image est sombre ; cochée, la luminosité reste la même quelle que soit la cadence.
 
-> **Attention** — pour un meilleur résultat, privilégiez toujours une cadence de jeu qui **divise exactement la fréquence de l'écran** (60, 80, 120 ou 240 images/s sur 480 Hz, par exemple). Sinon (73 images/s sur 480 Hz…), le nombre de sous-images ne tombe pas juste et le jeu paraîtra saccadé.
+> **Conseil** — choisissez de préférence une cadence de jeu qui **divise exactement la fréquence de l'écran** (60, 80, 120 ou 240 images/s sur 480 Hz, par exemple). Sinon le jeu peut paraître légèrement saccadé.
 
 ## 3D active
 
 - **Formats** : côte à côte (SBS), haut/bas (TB), damier, ou **2D vers 3D (IA)**.
-- La bascule des yeux se fait à Hz de l'écran ÷ sous-images ; chaque œil reçoit la moitié. En 3D, les sous-images sont **liées à la fréquence de l'émetteur** (480 Hz et émetteur à 120 Hz → 4). La case **Auto** de la synchronisation détecte la fréquence de l'émetteur entre 80 et 165 Hz (hors de cette plage, rien ne se passe et l'émetteur reste éteint).
+- La bascule des yeux se fait à Hz de l'écran ÷ sous-images ; chaque œil reçoit la moitié. En 3D, les sous-images sont **liées à la fréquence de l'émetteur** (480 Hz et émetteur à 120 Hz → 4). La case **Auto** de la synchronisation choisit la fréquence de l'émetteur **la plus haute entre 80 et 165 Hz** (Hz de l'écran ÷ n : 480 Hz → 160 Hz, 360 Hz → 120 Hz, 240 Hz → 120 Hz, 100 Hz → 100 Hz), d'après la fréquence d'écran utilisée, y compris celle réglée dans la configuration du profil (hors de cette plage, rien ne se passe et l'émetteur reste éteint).
 - **Synchro des lunettes automatique** : les lunettes suivent les vrais rafraîchissements de l'écran (statistiques DXGI) dès que Windows les fournit, sinon la synchronisation classique prend le relais ; une ligne sous « Inverser les yeux » indique le mode utilisé. Le **Sync Offset** est toujours compté depuis l'affichage réel de l'image : changer les images en file ou de mode de synchro ne le dérègle pas. Une image envoyée en retard (surcharge, chargement du jeu) est remise sur le rythme régulier de l'écran, les lunettes ne se décalent plus.
 - Réglez d'abord **Sync Offset** (valeurs négatives uniquement, de 0 à moins une période d'œil), puis **Open Duration**, en regardant l'image à travers les lunettes, **avec les raccourcis clavier** (le HUD affiché fausse le rythme).
 - Le **tearing** (option des images en file, 0 = tearing autorisé) donne la latence la plus basse en 2D ; le **contrôle du tearing** place la ligne de déchirure (0 = tout en haut, masquée).
 - **Beam racing** (avec les images en file à 0) : Nbeam lit la position réelle du balayage de l'écran et n'envoie l'image que là où la déchirure ne se voit pas. BFI et image simple : juste avant le retour vertical (aucune déchirure visible). CRT Beam Simulator (balayage haut-bas ou bas-haut) : aussi au-dessus des bandes allumées, pour une latence plus basse. L'**avance du tearing** compense le délai d'envoi (augmentez-la si une déchirure apparaît en haut de l'image). Occupe un cœur du processeur ; nécessite un écran dont la position de balayage est lisible et rien par-dessus la fenêtre de Nbeam. Fonction expérimentale. **Inactif en 3D** : les lunettes gardent la synchronisation classique.
 
-> **Images en file à 0 (tearing) : fortement déconseillé en 3D.** Le tearing perturbe l'alternance gauche/droite et provoque des images fantômes et du scintillement dans les lunettes. Nbeam affiche un avertissement en rouge si vous le choisissez avec la 3D active. Gardez une valeur de file de 1 ou plus.
+> **Images en file en 3D : 3 au minimum.** Les choix 0 (tearing), 1 et 2 sont masqués quand la 3D est active, car ils perturbent l'alternance gauche/droite des lunettes (images fantômes, scintillement). Désactivez la 3D pour descendre plus bas.
 
 **Convergence** (tous les formats 3D), de **-100 à +100** : négatif = l'image part dans la profondeur de l'écran, positif = elle sort de l'écran, 0 = la profondeur par défaut (la 2D vers 3D répartit la profondeur autour de l'écran, les formats SBS / TB / damier restent comme capturés ; aux extrêmes, toute l'image est décalée de 1,5 % de la largeur).
 
@@ -163,7 +155,7 @@ Tous les raccourcis sont **entièrement personnalisables**, au clavier comme à 
 
 - **Clavier** : cliquez sur un raccourci, puis appuyez sur la nouvelle combinaison (au moins Ctrl, Alt, Maj ou Windows ; Échap annule). Ils fonctionnent partout, même dans un jeu en plein écran, y compris les jeux qui s'approprient le clavier (Nbeam reçoit les touches directement de Windows, sans les bloquer). Si un jeu tourne **en administrateur**, lancez aussi Nbeam en administrateur, sinon Windows lui cache les touches.
 - **Manette (XInput)** : cliquez sur le bouton « Pad » d'une action, maintenez ensemble les boutons voulus (gâchettes comprises) puis relâchez ; Retour arrière efface. La manette sert aussi à **naviguer dans le HUD** quand il est ouvert (croix directionnelle ou stick, A pour valider, B pour revenir).
-- Les actions couvrent l'affichage du HUD, le redémarrage, la sortie, l'inversion des yeux en 3D, les sous-images, les images claires, le Sync Offset et l'Open Duration, l'**affichage / masquage des effets** (Ctrl+Maj+D par défaut), la détection de profil et l'**ajout du programme aux profils** (voir Profils). Les raccourcis du HUD et des effets ne peuvent pas être vides.
+- Les actions couvrent l'affichage du HUD, le redémarrage, la sortie, l'inversion des yeux en 3D, les sous-images, les images claires, le Sync Offset et l'Open Duration, l'**affichage / masquage des effets** (Ctrl+Maj+D par défaut), la configuration du profil et l'**ajout du programme aux profils** (voir Profils). Les raccourcis du HUD et des effets ne peuvent pas être vides.
 
 Les raccourcis sont les mêmes pour tous les profils : changer de profil ne les modifie jamais.
 
@@ -173,34 +165,36 @@ Les raccourcis sont les mêmes pour tous les profils : changer de profil ne les 
 
 La catégorie **Test** (juste au-dessus de Profils, icône de compteur de vitesse) sert à comparer les réglages. Elle disparaît tant qu'un programme détecté ou capturé tourne, et revient à sa fermeture :
 
-- **Test de mouvement** : des voitures détaillées, de la couleur d'accent, défilent sur tout l'écran dans une **fenêtre DirectX à part** (un processus dédié), que Nbeam capture exactement comme un jeu : une nouvelle position à chaque rafraîchissement de l'écran, et la fenêtre se ferme avec Nbeam. Elle reste noire jusqu'à ce que les effets tournent avec les bons réglages (le profil à régler est chargé d'abord). Chaque voiture a sa case, avec « NBEAM » en dessous et le logo de Nbeam en bas à gauche. Le pointeur de la souris est masqué sur les voitures et les clics restent dans le test. L'image passe par tous les effets utilisés (BFI, CRT, 3D...) : on compare le flou de mouvement d'un réglage à l'autre.
+- **Test de mouvement** : le bouton **Test de mouvement** de la barre du bas (entre « Benchmark » et le bouton des effets) fait défiler des voitures détaillées sur tout l'écran ; il devient **Arrêter le test** pendant le test. Les voitures passent par tous vos effets (BFI, CRT, 3D...), comme un vrai jeu : on compare facilement le flou de mouvement d'un réglage à l'autre.
 - **En 3D** : avec une source côte à côte, haut / bas ou damier, les voitures sont dessinées dans ce format. Elles et leur grille sortent de l'écran (la **Convergence** du menu 3D déplace toute l'image ; le logo reste au niveau de l'écran) et portent la lettre de leur œil de chaque côté de « NBEAM » (G / D) : si l'on voit l'autre lettre, les yeux sont inversés. En 2D vers 3D par IA, les voitures sont en 2D et l'IA crée la profondeur.
-- La case est grisée pendant qu'un programme détecté tourne.
+- Le bouton n'existe qu'avec les réglages du bureau : il disparaît pendant qu'un programme détecté tourne.
 - **Vitesse des voitures** (0 à 3840 pixels/s), **taille des voitures** (25 à 200 % : plus petites = plus de voitures affichées) et **couleur du fond** des cases.
-- Décochez la case, ou appuyez sur la **touche Windows** ou **Échap**, pour arrêter : on revient en mode bureau. Le raccourci du HUD affiche le HUD par-dessus le test pour changer les réglages en direct.
+- **Arrêter le test**, la **touche Windows** ou **Échap** arrêtent le test : on revient en mode bureau. Le raccourci du HUD affiche le HUD par-dessus le test pour changer les réglages en direct.
 - **Écran partagé** : la moitié de l'écran avec l'effet, l'autre sans, pour comparer avant / après ; **Inverser** met l'effet sur l'autre moitié.
 
 ## Profils
 
 Un **profil** est un fichier `.ini` du dossier `Profils\` qui mémorise tous les réglages de rendu, d'affichage et de 3D. **Un profil ne s'applique que lorsqu'un programme (.exe) lié est détecté.** Sans programme détecté, Nbeam utilise les **réglages du bureau** (fichier `Bureau.cfg` du même dossier, créé à la mise à jour à partir de l'ancien profil par défaut ou du profil actif).
 
+Tout ce qui concerne les profils se trouve dans la section **Configuration du profil** (catégorie Profils) : les réglages actifs, le profil à régler, la création d'un profil, puis la liste des programmes et de leurs profils.
+
 - **Profil à régler** : choisissez un profil dans cette liste pour le régler sans lancer son jeu. Le test de mouvement s'ouvre avec ce profil chargé et le HUD par-dessus les voitures ; changez les réglages en regardant le résultat. Quand on quitte le test (touche Windows ou Échap), le profil est enregistré et les réglages du bureau reviennent.
 - **Créer un profil / Enregistrer sous** : enregistre les réglages actuels sous un nouveau nom, sans changer les réglages actifs.
 
-Une **détection de profil** associe un programme (`.exe`) à un profil. Pour ajouter un programme, saisissez son nom d'exe, choisissez-le avec **Ajouter depuis la barre des tâches** (liste des programmes ouverts, sans ceux déjà ajoutés), ou, depuis le programme lui-même, appuyez sur le raccourci **Ajouter le programme aux profils** (Ctrl+Maj+P par défaut) : son exe est ajouté à la liste. Ensuite :
+Plus bas dans la même section, chaque programme (`.exe`) est associé à un profil. Choisissez le programme dans **Processus à régler** (la flèche ouvre la liste, par ordre alphabétique), ou ajoutez-en un avec **Écrire un nouveau processus** (on tape son nom), **Ajouter un nouveau processus** (liste des programmes ouverts) ou, depuis le programme lui-même, le raccourci **Ajouter le programme aux profils** (Ctrl+Maj+P par défaut). Cochez **Activé**, puis choisissez le profil de chaque écran. Ensuite :
 
 - quand le programme est détecté (fenêtre visible dans la barre des tâches, après un délai réglable), son profil est chargé, il est capturé et le HUD se réduit ;
 - à sa fermeture, les **réglages du bureau** reviennent ; un profil réaffiche les effets s'ils avaient été masqués sur le bureau ;
-- pendant qu'il tourne, changer son profil dans la détection **l'applique tout de suite** (les réglages en cours sont d'abord enregistrés dans l'ancien profil) ;
+- pendant qu'il tourne, changer son profil dans la configuration **l'applique tout de suite** (les réglages en cours sont d'abord enregistrés dans l'ancien profil) ;
 - tant qu'un programme détecté tourne, les réglages des profils (Profil à régler, Créer un profil) sont **masqués** et un message indique le programme et le profil utilisé ; ils reviennent à sa fermeture ;
 - un même programme peut avoir jusqu'à 3 profils, un par écran ; celui de l'écran où se trouve sa fenêtre est choisi ;
 - chaque écran peut avoir son propre **taux de rafraîchissement**, appliqué pendant la capture puis rétabli ;
-- une détection peut être désactivée sans être supprimée ;
+- un programme peut être désactivé (case **Activé**) sans être supprimé ;
 - la ligne **Paramètres globaux** règle une valeur pour tous les programmes d'un coup (case, profil, fréquence, délai) ; chaque programme reste modifiable sur sa ligne ensuite.
 
 ## Tutos d'usage
 
-**Un jeu 60 images/s sur un écran 240 Hz, sans flou** : créez un profil, choisissez-le dans « Profil à régler » et réglez-le sur le test des voitures (CRT Beam Simulator ou BFI simple, 4 sous-images), plafonnez le jeu à 60 images/s, puis liez le `.exe` du jeu à ce profil dans « Détection de profil ».
+**Un jeu 60 images/s sur un écran 240 Hz, sans flou** : créez un profil, choisissez-le dans « Profil à régler » et réglez-le sur le test des voitures (CRT Beam Simulator ou BFI simple, 4 sous-images), plafonnez le jeu à 60 images/s, puis liez le `.exe` du jeu à ce profil dans « Configuration du profil ».
 
 **Un jeu en 3D (côte à côte)** : choisissez le format source SBS, l'émetteur de vos lunettes, puis réglez Sync Offset et Open Duration. En 3D, chaque œil reçoit la moitié des sous-images : visez 240 Hz ou plus pour garder du BFI/CRT en plus.
 
@@ -217,6 +211,10 @@ Une **détection de profil** associe un programme (`.exe`) à un profil. Pour aj
 - Branchez un seul écran, ou faites tourner Nbeam sur le plus rapide.
 - Plafonnez le jeu à la valeur « FPS contenu » du HUD.
 - Si l'image saccade, augmentez la file d'images ou choisissez Hybride ou Tampon d'image dans Synchro BFI.
+
+## Problèmes connus
+
+- **Lossless Scaling (LSFG) capturé : le pointeur de la souris n'est pas visible dans le HUD.** Le HUD reste utilisable (les clics marchent), mais il faut viser sans voir le pointeur. Le clavier reste au jeu tant que Lossless Scaling est capturé : arrêtez la mise à l'échelle pour taper du texte dans le HUD.
 
 ## Crédits et remerciements
 

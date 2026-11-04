@@ -33,6 +33,8 @@ public:
     void Render(bool present, bool ui = true);
     void Present(bool vsync);
     bool DeviceLost() const { return m_deviceLost; } // the graphics card was lost: the renderer must be restarted
+    // the input textures exist (false while they are rebuilt, or when a live rebuild failed: nothing may be captured or drawn then)
+    bool InputsReady() const { return m_inputsOk && !m_renderContext.inputTextures.empty() && !m_renderContext.inputSlots.empty(); }
 
     const winrt::com_ptr<ID3D11Texture2D>& GetNextInput() const;
     bool                                   NewInputRequired() const;
@@ -176,6 +178,7 @@ private:
     float                                   m_tearSafe { 0.0f };      // where the tear may land in the frame just rendered (0 = vblank only)
     bool                                    m_beamOk { false };
     std::atomic<bool>                       m_deviceLost { false };
+    bool                                    m_inputsOk { false };
     void                                    CheckPresent(HRESULT hr);       // beam racing allowed for this frame (never in 3D: classic vblank timing for the glasses)
     double                                  m_brLastF { 1.0 };
     bool                                    m_brLastVbl { true };

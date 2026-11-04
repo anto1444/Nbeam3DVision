@@ -7,6 +7,8 @@
 #include <algorithm>
 #include <cmath>
 #include <cwctype>
+#include <cstdarg>
+#include <cstdio>
 #include <mutex>
 #include <map>
 #include <sstream>
@@ -139,10 +141,130 @@ bool Options::ProcessRect(RECT& r) const
     return r.right - r.left >= 64 && r.bottom - r.top >= 64;
 }
 
+void LsLog(const char* fmt, ...)
+{
+    static std::mutex mtx;
+    static FILE*      f       = nullptr;
+    static long       written = 0;
+    std::lock_guard<std::mutex> lock(mtx);
+    if(written > 256 * 1024)
+        return;
+    if(!f)
+    {
+        wchar_t path[MAX_PATH * 2] = {};
+        GetModuleFileNameW(nullptr, path, MAX_PATH * 2);
+        std::wstring p(path);
+        const auto   slash = p.find_last_of(L"\\/");
+        p                  = (slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1)) + L"Nbeam_ls.log";
+        if(_wfopen_s(&f, p.c_str(), L"ab") != 0)
+            f = nullptr;
+        if(!f)
+        {
+            written = 1 << 30; // cannot write here: never try again
+            return;
+        }
+    }
+    SYSTEMTIME st;
+    GetLocalTime(&st);
+    // the program in front, to see who has the focus
+    char fgName[64] = "-";
+    if(HWND fg = GetForegroundWindow())
+    {
+        const std::string n = Options::ProcessNameOfWindow(fg);
+        if(!n.empty())
+            snprintf(fgName, sizeof(fgName), "%s", n.c_str());
+    }
+    char    msg[400];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof(msg), fmt, ap);
+    va_end(ap);
+    written += fprintf(f, "%02d:%02d:%02d.%03d [fg=%s] %s\r\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, fgName, msg);
+    fflush(f);
+}
+
+bool Options::IsScalerExe(const std::string& pathOrName)
+{
+    return NormalizeExeName(pathOrName) == "losslessscaling.exe";
+}
+
+// The scaling layer of Lossless Scaling: a visible window that stays on top and covers at least 90% of one screen (its settings window
+// is a normal window and never does). Title not needed: the layer usually has none.
+bool Options::IsScalerLayer(HWND hWnd)
+{
+    if(!hWnd || !IsWindow(hWnd) || !IsWindowVisible(hWnd) || IsIconic(hWnd))
+        return false;
+    // always on top, or at least without a title bar (a maximised settings window has one)
+    if(!(GetWindowLongW(hWnd, GWL_EXSTYLE) & WS_EX_TOPMOST) && (GetWindowLongW(hWnd, GWL_STYLE) & WS_CAPTION) == WS_CAPTION)
+        return false;
+    DWORD cloaked = 0;
+    if(SUCCEEDED(DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+        return false;
+    RECT r {};
+    if(!GetWindowRect(hWnd, &r))
+        return false;
+    HMONITOR    mon = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi {};
+    mi.cbSize = sizeof(mi);
+    if(!mon || !GetMonitorInfo(mon, &mi))
+        return false;
+    RECT inter {};
+    if(!IntersectRect(&inter, &r, &mi.rcMonitor))
+        return false;
+    const double mArea = (double)(mi.rcMonitor.right - mi.rcMonitor.left) * (double)(mi.rcMonitor.bottom - mi.rcMonitor.top);
+    const double iArea = (double)(inter.right - inter.left) * (double)(inter.bottom - inter.top);
+    return mArea > 0 && iArea >= mArea * 0.9;
+}
+
+namespace
+{
+struct ScalerCtx
+{
+    const Options*            options;
+    const std::vector<DWORD>* pids; // NULL = by process name
+    HWND                      best { 0 };
+    long                      bestArea { -1 };
+};
+
+BOOL CALLBACK ScalerProc(HWND hWnd, LPARAM lParam)
+{
+    auto* c = (ScalerCtx*)lParam;
+    if(hWnd == c->options->outputWindow || !Options::IsScalerLayer(hWnd))
+        return TRUE;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hWnd, &pid);
+    if(c->pids)
+    {
+        if(std::find(c->pids->begin(), c->pids->end(), pid) == c->pids->end())
+            return TRUE;
+    }
+    else if(!Options::IsScalerExe(Options::ProcessNameOfWindow(hWnd)))
+        return TRUE;
+    RECT r {};
+    GetWindowRect(hWnd, &r);
+    const long area = (r.right - r.left) * (r.bottom - r.top);
+    if(area > c->bestArea)
+    {
+        c->bestArea = area;
+        c->best     = hWnd;
+    }
+    return TRUE;
+}
+} // namespace
+
 HWND Options::FindCaptureWindow() const
 {
     if(captureProcess.empty())
         return NULL;
+    if(IsScalerExe(captureProcess))
+    {
+        // Lossless Scaling: its scaling layer (nothing while it is not scaling: the settings window is not captured)
+        ScalerCtx sc;
+        sc.options = this;
+        sc.pids    = nullptr;
+        EnumWindows(ScalerProc, (LPARAM)&sc);
+        return sc.best;
+    }
     FindCtx ctx;
     ctx.options = this;
     ctx.process = captureProcess;
@@ -155,6 +277,8 @@ void Options::BringToForeground(HWND hWnd)
 {
     if(!hWnd || !IsWindow(hWnd))
         return;
+    if(IsScalerExe(ProcessNameOfWindow(hWnd)))
+        return; // Lossless Scaling's layer is never activated: the game keeps the focus and its input
     if(IsIconic(hWnd))
         ShowWindow(hWnd, SW_RESTORE);
     HWND  fg  = GetForegroundWindow();
@@ -490,6 +614,14 @@ void Options::LoadApp()
             }
             if(a.has("defaultProfile"))
                 defaultProfile = a.get("defaultProfile");
+            if(a.has("setWin"))
+            {
+                int v[4] = { 0, 0, 0, 0 };
+                if(sscanf_s(a.get("setWin").c_str(), "%d,%d,%d,%d", &v[0], &v[1], &v[2], &v[3]) == 4 && v[2] - v[0] > 100 && v[3] - v[1] > 100)
+                    for(int k = 0; k < 4; k++)
+                        setWinRect[k] = v[k];
+            }
+            setWinMax = a.has("setWinMax") && a.get("setWinMax") == "1";
             if(a.has("hzSwitchMs"))
                 try { hzSwitchMs = std::clamp(std::stod(a.get("hzSwitchMs")), 100.0, 10000.0); } catch(...) { }
             if(a.has("hzSwitchN"))
@@ -588,6 +720,11 @@ void Options::SaveApp() const
         a["testBg"] = std::to_string(testBg[0]) + "," + std::to_string(testBg[1]) + "," + std::to_string(testBg[2]);
         a["defaultProfile"] = defaultProfile;
         a["hzSwitchMs"] = std::to_string((int)hzSwitchMs);
+        if(setWinRect[2] - setWinRect[0] > 100)
+        {
+            a["setWin"]    = std::to_string(setWinRect[0]) + "," + std::to_string(setWinRect[1]) + "," + std::to_string(setWinRect[2]) + "," + std::to_string(setWinRect[3]);
+            a["setWinMax"] = setWinMax ? "1" : "0";
+        }
         a["hzSwitchN"]  = std::to_string(hzSwitchCount);
         auto& h = ini["hud"];
         h["r"] = std::to_string(hud.r);
@@ -989,6 +1126,71 @@ bool Options::IsExeOnTaskbar(const std::string& pathOrName)
 {
     std::vector<DWORD> pids;
     MatchingPids(pathOrName, pids);
+    // Lossless Scaling counts as running while it is scaling (its layer is there), whether or not its settings window is open.
+    // The layer must stay 0.8 s before it counts and be missing 2 s before it stops counting: LS rebuilds its layer when scaling is
+    // stopped and started again, and a flicker of the detection would restart the capture over and over.
+    static std::mutex scalerMtx;
+    static ULONGLONG  seenSince = 0, lostSince = 0;
+    static bool       scalerOn  = false;
+    if(IsScalerExe(pathOrName))
+    {
+        bool found = false;
+        if(!pids.empty())
+        {
+            struct Probe
+            {
+                const std::vector<DWORD>* pids;
+                bool                      found;
+            } probe { &pids, false };
+            EnumWindows(
+                [](HWND w, LPARAM p) -> BOOL {
+                    auto* pr = (Probe*)p;
+                    if(!Options::IsScalerLayer(w))
+                        return TRUE;
+                    DWORD pid = 0;
+                    GetWindowThreadProcessId(w, &pid);
+                    if(std::find(pr->pids->begin(), pr->pids->end(), pid) == pr->pids->end())
+                        return TRUE;
+                    pr->found = true;
+                    return FALSE;
+                },
+                (LPARAM)&probe);
+            found = probe.found;
+        }
+        std::lock_guard<std::mutex> lock(scalerMtx);
+        const ULONGLONG             now = GetTickCount64();
+        if(pids.empty())
+        {
+            if(scalerOn)
+                LsLog("LS process gone");
+            scalerOn = false;
+            seenSince = lostSince = 0;
+            return false;
+        }
+        if(found)
+        {
+            lostSince = 0;
+            if(!seenSince)
+                seenSince = now;
+            if(!scalerOn && now - seenSince >= 800)
+            {
+                scalerOn = true;
+                LsLog("LS layer present (stable)");
+            }
+        }
+        else
+        {
+            seenSince = 0;
+            if(!lostSince)
+                lostSince = now;
+            if(scalerOn && now - lostSince >= 2000)
+            {
+                scalerOn = false;
+                LsLog("LS layer gone (2 s)");
+            }
+        }
+        return scalerOn;
+    }
     if(pids.empty())
         return false;
     TaskbarProbe probe { &pids, false, nullptr };
@@ -1004,7 +1206,26 @@ std::string Options::ScreenIdOfExeWindow(const std::string& pathOrName) const
     if(pids.empty())
         return "";
     TaskbarProbe probe { &pids, false, nullptr };
-    EnumWindows(TaskbarWindowProc, (LPARAM)&probe);
+    if(IsScalerExe(pathOrName))
+    {
+        // Lossless Scaling: the screen of its scaling layer
+        EnumWindows(
+            [](HWND w, LPARAM p) -> BOOL {
+                auto* pr = (TaskbarProbe*)p;
+                if(!Options::IsScalerLayer(w))
+                    return TRUE;
+                DWORD pid = 0;
+                GetWindowThreadProcessId(w, &pid);
+                if(std::find(pr->pids->begin(), pr->pids->end(), pid) == pr->pids->end())
+                    return TRUE;
+                pr->found = true;
+                pr->hwnd  = w;
+                return FALSE;
+            },
+            (LPARAM)&probe);
+    }
+    else
+        EnumWindows(TaskbarWindowProc, (LPARAM)&probe);
     if(!probe.found || !probe.hwnd)
         return "";
     MONITORINFOEXW mi = {};
@@ -1052,7 +1273,9 @@ void Options::RememberProfile() const
 }
 
 // 3D: the eye switch rate of the emitter and SubFrames are tied: SubFrames = display Hz / emitter rate (480 Hz, 120 Hz emitter -> 4;
-// 100 Hz, 100 Hz emitter -> 1). Auto picks the rate among display Hz / n between 80 and 165 Hz (closest to 120); out of that range
+// 100 Hz, 100 Hz emitter -> 1). Auto picks the highest rate among display Hz / n between 80 and 165 Hz (480 Hz -> 160, 360 -> 120,
+// 240 -> 120, 144 -> 144, 100 -> 100). The display rate is the one in use: with a refresh rate set in the profile configuration, Nbeam
+// restarts once that rate is applied (3D is held off meanwhile), so the choice is made for it; out of that range
 // SubFrames is left alone and the emitter is switched off.
 int Options::StereoSubFrames() const
 {
@@ -1061,19 +1284,15 @@ int Options::StereoSubFrames() const
         return 0;
     if(emitter.syncAuto)
     {
-        int    best  = 0;
-        double bestD = 1e9;
+        int best = 0;
         for(int n = MIN_SUBFRAMES; n <= MAX_SUBFRAMES; n++)
         {
             const double hz = vsyncRate / n;
-            if(hz < 80.0 - 0.5 || hz > 165.0 + 0.5)
-                continue;
-            const double d = fabs(hz - 120.0);
-            if(d < bestD)
-            {
-                bestD = d;
-                best  = n;
-            }
+            if(hz > 165.0 + 0.5)
+                continue; // too fast for the glasses
+            if(hz >= 80.0 - 0.5)
+                best = n; // the first one that fits: the highest rate
+            break;
         }
         emitter.rateBlocked = best == 0;
         return best;
@@ -1132,7 +1351,6 @@ void Options::Save(const ShaderManager& shaderManager) const
             SAVE_INT(s, splitScreen)
             SAVE_BOOL(s, splitInvert)
             SAVE_BOOL(s, hardwareSrgb)
-            SAVE_INT(s, monitorType)
             SAVE_INT(s, frameBuffer)
             SAVE_BOOL(s, useHdr)
             SAVE_INT(s, maxQueuedFrames)
@@ -1205,7 +1423,6 @@ void Options::Load(ShaderManager& shaderManager)
                 LOAD_INT(s, splitScreen)
                 LOAD_BOOL(s, splitInvert)
                 LOAD_BOOL(s, hardwareSrgb)
-                LOAD_INT(s, monitorType)
                 LOAD_INT(s, frameBuffer)
                 frameBuffer = std::clamp(frameBuffer, -1, 5);
                 if(frameBuffer < 0)

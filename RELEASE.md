@@ -1,23 +1,36 @@
-# Nbeam 3D Vision 2.2.0
+# Nbeam 3D Vision 2.3.0
 
-Mise à jour de la version 2.1.0. Surcouche Windows : BFI, CRT Beam Simulator et 3D active (lunettes NVIDIA 3D Vision ou émetteur Arduino), sur n'importe quel écran.
+Mise à jour de la version 2.2.0. Surcouche Windows : BFI, CRT Beam Simulator et 3D active (lunettes NVIDIA 3D Vision ou émetteur Arduino), sur n'importe quel écran — et maintenant aussi par-dessus d'autres surcouches de capture comme Lossless Scaling.
 
-> **À savoir après la mise à jour** : le réglage **Sous-images : Auto** devient la case **BFI auto**, et le tampon d'image rejoint le nouveau menu **Synchro BFI** (visible quand un programme est capturé). Vos profils sont convertis tout seuls : un tampon réglé reste en Tampon d'image (l'ancien Auto devient un maximum de 5), un calage de phase reste en Calage de phase.
+> **À savoir après la mise à jour** : le réglage **Type d'écran** disparaît (c'est la case Anti-rétention LCD qui décide) et le **test de mouvement** devient un bouton dans la barre du bas. Vos profils et réglages sont conservés.
 
 ## Nouveautés
 
-### Synchro BFI (nouveau menu, programme capturé)
-- **Aucune (déconseillé)** : une image du jeu est prise au début de chaque cycle BFI, comme avant.
-- **Calage de phase (meilleure latence)** (2D) : Nbeam mesure l'arrivée des images du jeu, avec leurs micro-variations, et décale son cycle pour qu'elles arrivent juste avant la sous-image visible : attente plus courte et stable. **Intervalle de mesure** de 0,5 à 3 s (1 s par défaut). Les décalages sont **étalés** (jamais plus d'un rafraîchissement par cycle) et, en BFI simple, la **luminosité des cycles décalés est compensée** pour éviter les petits flashs. La valeur de plafond idéale du jeu est affichée.
-- **Tampon d'image (meilleure stabilité)** : la valeur choisie (1 à 5) est désormais un **maximum** ; le tampon utilise 1 image et ne monte que si le jeu en a besoin, une image à la fois, avec **2 secondes de transition** entre deux changements ; la taille utilisée est affichée.
-- **Hybride** (2D) : calage de phase tant que le jeu est stable ; à chaque à-coup, un tampon d'**une image** arrive aussitôt, puis repart après **1 seconde calme**.
-- **BFI auto** (case à cocher, 2D) : les sous-images suivent la cadence du jeu (ancien Sous-images : Auto), avec l'intervalle de détection, le seuil de FPS bas et la luminosité uniforme. Compatible avec chaque choix du menu : le calage de phase suit les sous-images choisies.
+### Lossless Scaling et autres surcouches de capture
+- Nbeam peut **capturer la couche de Lossless Scaling** (ajoutez `LosslessScaling.exe` dans la configuration du profil) : le BFI, le CRT ou la 3D s'ajoutent à l'image déjà mise à l'échelle ou générée.
+- Nbeam reste **au-dessus** de la couche de Lossless Scaling.
+- Le **HUD s'affiche par-dessus sans voler le focus du jeu** (sinon Lossless Scaling s'arrêtait) : il s'utilise à la souris.
+- Le menu de l'icône de notification passe au-dessus de la barre des tâches.
 
-### Affichage
-- **Présentation directe (expérimental)**, sous « Images en file » : l'overlay n'est plus une fenêtre transparente aux clics, Windows peut l'afficher directement (flip indépendant ou plan matériel) : environ un rafraîchissement de latence en moins et pas d'image BFI retardée par la composition. Pas de clic à travers tant que le HUD est caché. La présentation obtenue et les images en retard par minute sont affichées pour comparer.
+### Interface
+- **Test de mouvement** : un bouton dans la barre du bas, entre « Benchmark » et le bouton des effets (**Test de mouvement** / **Arrêter le test**), à la place de la case.
+- **Configuration du profil** (ancienne Détection de profil) : elle regroupe désormais **tous les réglages des profils** (réglages actifs, profil à régler, créer un profil, puis les programmes et leurs profils). Plus simple, avec **Processus à régler** (liste par ordre alphabétique), **Écrire un nouveau processus**, **Ajouter un nouveau processus** et une case **Activé** ; le bouton Actualiser disparaît (la liste des profils se met à jour toute seule).
+- **Aides « ? » plus courtes et plus simples.**
+- **Paramètres du shader** : une décimale (1.0, 2.2) et les boutons − / + avancent de 0,1.
+- **Type d'écran supprimé** : c'est la case Anti-rétention LCD qui décide ; la compensation d'inversion LCD n'apparaît que si elle est cochée.
+- **Mode fenêtre** : la fenêtre retient sa position exacte, sa taille et si elle était agrandie quand on quitte Nbeam.
+- **Émetteur non reconnu** : le message s'affiche avant le démarrage ; OK démarre Nbeam, la croix le ferme.
 
-### Capture
-- L'âge de chaque image capturée est mesuré avec l'horodatage de Windows, pour la synchro BFI.
+### 3D
+- **Synchro BFI masquée en 3D** : le tampon d'image est toujours utilisé ; **BFI auto** est masqué aussi.
+- **Images en file : 3 au minimum en 3D** (0, 1 et 2 seulement en 2D).
+- **Synchro Auto de l'émetteur** : la fréquence la plus haute entre 80 et 165 Hz (480 Hz → 160 Hz, 240 Hz → 120 Hz, 100 Hz → 100 Hz), d'après la fréquence d'écran utilisée, y compris celle de la configuration du profil.
+
+### Corrections
+- Plantage possible du rendu quand un réglage reconstruisait les images d'entrée en direct (changement de shader ou de source 3D).
+
+## Problème connu
+- **Lossless Scaling (LSFG) capturé : le pointeur de la souris n'est pas visible dans le HUD.** Les clics marchent, mais il faut viser sans voir le pointeur ; pour taper du texte dans le HUD, arrêtez la mise à l'échelle.
 
 ## Contenu de l'archive
 

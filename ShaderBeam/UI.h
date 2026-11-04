@@ -61,7 +61,6 @@ public:
     std::vector<DisplayInfo> m_displays;
     std::vector<ShaderInfo>  m_shaders;
     std::vector<CaptureInfo> m_captures;
-    std::vector<std::string> m_monitorTypes;
     std::vector<InputInfo>   m_inputs;
     std::vector<std::string> m_queuedFrames;
     std::vector<std::string> m_splitScreens;
@@ -104,7 +103,6 @@ private:
         bool hardwareSrgb;
         int  captureMethod;
         int  splitScreen;
-        int  monitorType;
         int  maxQueuedFrames;
         bool useHdr;
     } m_pending;

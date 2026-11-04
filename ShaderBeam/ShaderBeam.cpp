@@ -35,9 +35,6 @@ void ShaderBeam::Create(HWND window)
         ExitProcess(1);
     }
 
-    m_ui.m_monitorTypes.push_back("LCD");
-    m_ui.m_monitorTypes.push_back("OLED");
-
     m_ui.m_queuedFrames.push_back("3 (default)"); // index 0 = driver default (shown at the place of 3)
     for(int i = 1; i <= 14; i++)
         m_ui.m_queuedFrames.push_back(std::to_string(i));
@@ -178,8 +175,6 @@ void ShaderBeam::DefaultOptions()
     }
     if(m_options.shaderDisplayNo >= m_ui.m_displays.size())
         m_options.shaderDisplayNo = 0;
-    if(m_options.monitorType >= m_ui.m_monitorTypes.size())
-        m_options.monitorType = 0;
     if(m_options.captureMethod >= m_ui.m_captures.size())
         m_options.captureMethod = 0;
     if(m_options.splitScreen >= m_ui.m_splitScreens.size())

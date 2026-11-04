@@ -8,6 +8,7 @@ MIT License
 #include "imgui.h"
 #include <algorithm>
 #include <cstring>
+#include <cmath>
 
 namespace ShaderBeam
 {
@@ -38,7 +39,8 @@ inline void StepLabel(const char* label)
 } // namespace detail
 
 // Slider + [-] [+] buttons (held buttons repeat). The slider keeps the item width currently set (PushItemWidth).
-inline bool SliderFloatStep(const char* label, float* v, float lo, float hi, const char* fmt, float step)
+// snap > 0: the [-] / [+] buttons also round the value to a multiple of snap (2.25 -> 2.2 / 2.3 with a 0.1 step)
+inline bool SliderFloatStep(const char* label, float* v, float lo, float hi, const char* fmt, float step, float snap = 0.0f)
 {
     bool         changed = false;
     const auto&  st      = ImGui::GetStyle();
@@ -52,12 +54,16 @@ inline bool SliderFloatStep(const char* label, float* v, float lo, float hi, con
     if(ImGui::Button("-", ImVec2(btn, btn)))
     {
         *v      = (std::max)(lo, *v - step);
+        if(snap > 0.0f)
+            *v = (std::clamp)(std::round(*v / snap) * snap, lo, hi);
         changed = true;
     }
     ImGui::SameLine(0, st.ItemInnerSpacing.x);
     if(ImGui::Button("+", ImVec2(btn, btn)))
     {
         *v      = (std::min)(hi, *v + step);
+        if(snap > 0.0f)
+            *v = (std::clamp)(std::round(*v / snap) * snap, lo, hi);
         changed = true;
     }
     ImGui::PopItemFlag();
