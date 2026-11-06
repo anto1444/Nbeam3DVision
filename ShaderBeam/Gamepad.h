@@ -32,6 +32,20 @@ enum : unsigned
     RT    = 0x20000
 };
 
+// wheel and button of the NVIDIA 3D Vision emitter: written by the emitter reader thread (EmitterNvidia.cpp), taken by the poll thread
+// (Window.cpp) and given to the 3D mini menu (UI::MenuInput). They are not pad buttons: the emitter is not used for the shortcuts.
+struct EmitterInput
+{
+    std::atomic<int> menuWheel { 0 };  // ticks turned since the last take (positive / negative = the two directions)
+    std::atomic<int> menuHeld { 0 };   // the same, turned while the button is held down
+    std::atomic<int> menuClicks { 0 }; // reports of the button (the emitter reports it when it is released)
+};
+inline EmitterInput& Emitter()
+{
+    static EmitterInput s_emitter;
+    return s_emitter;
+}
+
 struct XState
 {
     DWORD packet;
@@ -75,10 +89,13 @@ inline void Poll()
             }
         }
     }
+    const ULONGLONG now = GetTickCount64();
     if(!fn)
+    {
+        Current() = 0;
         return;
-    const ULONGLONG now      = GetTickCount64();
-    const bool      probeAll = now - probe >= 1000;
+    }
+    const bool probeAll = now - probe >= 1000;
     if(probeAll)
         probe = now;
     unsigned mask = 0;
@@ -133,6 +150,9 @@ inline std::string Text(unsigned mask)
     return s;
 }
 
-constexpr unsigned kAllButtons = 0x3F3FF; // every bit that can be part of a combination
 } // namespace Pad
+
+// NVIDIA 3D Vision emitter: reads the wheel and the button all the time, also without 3D (EmitterNvidia.cpp)
+void NvidiaKeysService(bool run);   // start / stop the background reader
+void NvidiaKeysPause(bool pause);   // the 3D emitter takes over the pipes while it runs (and reads the keys itself)
 } // namespace ShaderBeam

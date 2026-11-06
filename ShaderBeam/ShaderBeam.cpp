@@ -185,6 +185,7 @@ void ShaderBeam::DefaultOptions()
 
 void ShaderBeam::Start()
 {
+    RefreshAdapters(); // (a driver update replaces the graphics card objects)
     // no display (a TV switched off, a screen unplugged) or no graphics card listed: wait and try again every 2 s
     if(m_ui.m_displays.empty())
         m_ui.m_displays = GetDisplays();

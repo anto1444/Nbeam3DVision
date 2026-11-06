@@ -81,7 +81,7 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
     Get(e, "aiConvergence", s.ai.convergence, 0.0f, 100.0f);
     Get(e, "aiSmoothing", s.ai.smoothing, 0.0f, 95.0f);
     Get(e, "aiAntiHalo", s.ai.antiHalo, -300.0f, 300.0f);
-    Get(e, "aiUseGpu", s.ai.useGpu);
+    s.ai.useGpu = true; // the GPU (DirectML) is always used; the CPU is only the fallback when it is not available
     Get(e, "aiShowDepth", s.ai.showDepth);
     Get(e, "aiMapBuffer", s.ai.mapBuffer);
 }

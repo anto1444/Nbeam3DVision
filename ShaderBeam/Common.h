@@ -14,7 +14,7 @@ MIT License
 namespace ShaderBeam
 {
 
-#define SHADERBEAM_TITLE "Nbeam 3D Vision v1.0.0"
+#define SHADERBEAM_TITLE "Nbeam 3D Vision"
 
 #define MIN_SUBFRAMES 1
 #define MAX_SUBFRAMES 20
@@ -173,7 +173,7 @@ struct Options
     bool uniformBrightness { false }; // Auto: brightness kept at the level the BFI has at the low fps threshold (see Renderer::UniformGain)
     // phase lock (BFI sync 1 or 3, 2D, captured process, no buffer in use): the cycle is shifted by whole refreshes so the game frames
     // arrive just before the visible subframe (see Renderer::PhaseSample); it follows the SubFrames of BFI auto
-    float          phaseInterval { 1.0f };  // seconds between two measures (0.5 to 3), profile setting
+    float          phaseInterval { 1.0f };  // seconds between two measures (0.1 to 2), profile setting
     volatile int   phaseState { 0 };        // 0 = off, 1 = measuring, 2 = locked, 3 = game frames at an unsteady moment of the cycle
     volatile float phaseWaitMs { 0.0f };    // median wait of the game frames before they are shown (ms)
     volatile int   phaseCorrections { 0 };  // cycle shifts made since the effects started

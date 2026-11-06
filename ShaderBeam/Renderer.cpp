@@ -986,7 +986,7 @@ void Renderer::PhaseSample(double ageMs)
         m_phaseWindowStart = m_phaseIgnoreUntil;
         return;
     }
-    const double window = std::clamp((double)m_options.phaseInterval, 0.5, 3.0) * 1000.0; // "Measure interval"
+    const double window = std::clamp((double)m_options.phaseInterval, 0.1, 2.0) * 1000.0; // "Measure interval"
     if(now - m_phaseWindowStart < window)
         return;
     std::vector<double> a;
@@ -1220,7 +1220,10 @@ void Renderer::UpdateDepth(bool newFrame)
     // worker idle and a new picture: reduce it and start the readback
     // (at most `depthFps` maps per second)
     const auto now      = std::chrono::steady_clock::now();
-    const auto interval = std::chrono::microseconds(1000000 / std::clamp(ai.depthFps, 1, 80));
+    // one depth map per 3D refresh (half of the eye switch rate) when the PC can follow, never more than 80 per second
+    const double eyeHz      = m_options.emitter.EffectiveSyncHz(m_options.vsyncRate, m_options.subFrames);
+    const int    depthRate  = eyeHz > 0 ? std::clamp((int)std::lround(eyeHz / 2.0), 1, 80) : 30;
+    const auto   interval   = std::chrono::microseconds(1000000 / depthRate);
     const bool fromRing = MapSync() && BufferActive() && !m_ringQueue.empty() && m_ringSrv.size() == m_ring.size() && m_ringTime.size() == m_ring.size();
     if((newFrame || (fromRing && m_ringArrived)) && !m_depthCopyPending && m_depth.WantsFrame() && now - m_depthLastStart >= interval)
     {
@@ -1327,8 +1330,8 @@ void Renderer::EnsureRing()
 //    by one frame at a time, at most one change every 2 seconds (each change shows a frame twice or drops one: never several at once);
 //    it goes down after 2 calm seconds; when the value chosen is lowered, the size comes down to it the same way.
 //  - Hybrid: buffer of the jolts (0 or 1 game frame): a gap longer than the usual one by more than 30 % of a content frame, or a frame
-//    that missed its cycle under the phase lock (m_fbUnderrun), brings the buffer of one frame at once; after 1 calm second it goes
-//    back to 0 and the phase lock takes over again.
+//    that missed its cycle under the phase lock (m_fbUnderrun), brings the buffer of one frame at once; after 3 calm seconds (at a
+//    natural repeat, 6 s at most) it goes back to 0 and the phase lock takes over again; 3 entries within 30 s keep it in for 30 s.
 void Renderer::AdaptFrameBuffer()
 {
     const int mode = m_options.BfiSyncMode();
@@ -1348,6 +1351,9 @@ void Renderer::AdaptFrameBuffer()
         m_fbSlices[0] = m_fbSlices[1] = 0.0;
         m_fbMeanMs                = -1.0; // (taken from the first frames)
         m_fbUnderrun              = false;
+        m_fbEntryNext             = 0;
+        m_fbEntries[0] = m_fbEntries[1] = m_fbEntries[2] = {};
+        m_fbHoldUntil             = {};
         m_options.frameBufferAuto = mode == 3 ? 0 : 1; // (hybrid: the phase lock first; Frame buffer: the smallest size first)
         double m, a;
         int    n;
@@ -1372,13 +1378,31 @@ void Renderer::AdaptFrameBuffer()
     }
     if(mode == 3)
     {
+        // Hybrid. Each change of the buffer shows a frame twice (in) or drops one (out): to keep them rare,
+        //  - the buffer goes out only after 3 calm seconds, and at a moment when a frame came a little longer than usual (a repeat or a drop
+        //    happens anyway), or after 6 calm seconds at most;
+        //  - when it came in 3 times within 30 seconds (back and forth), it stays in for 30 more seconds.
+        constexpr double kExitCalmSec = 3.0, kExitMaxSec = 6.0, kFlapWindowSec = 30.0, kFlapHoldSec = 30.0;
         if(late || extraNow > 0.3 * (std::max)(content, 1.0))
         {
-            m_fbLowSince              = now;
+            m_fbLowSince = now;
+            if(m_options.frameBufferAuto == 0)
+            {
+                m_fbEntries[m_fbEntryNext] = now;
+                m_fbEntryNext              = (m_fbEntryNext + 1) % 3;
+                const auto oldest          = m_fbEntries[m_fbEntryNext]; // (the oldest of the last 3)
+                if(oldest.time_since_epoch().count() != 0 && std::chrono::duration<double>(now - oldest).count() <= kFlapWindowSec)
+                    m_fbHoldUntil = now + std::chrono::milliseconds((long long)(kFlapHoldSec * 1000.0));
+            }
             m_options.frameBufferAuto = 1;
         }
-        else if(m_options.frameBufferAuto != 0 && std::chrono::duration<double>(now - m_fbLowSince).count() >= 1.0)
-            m_options.frameBufferAuto = 0; // 1 calm second: back to the phase lock
+        else if(m_options.frameBufferAuto != 0 && now >= m_fbHoldUntil)
+        {
+            const double calm    = std::chrono::duration<double>(now - m_fbLowSince).count();
+            const bool   natural = extraNow >= 0.1 * (std::max)(content, 1.0); // a frame a little longer than usual
+            if(calm >= kExitCalmSec && (natural || calm >= kExitMaxSec))
+                m_options.frameBufferAuto = 0; // calm: back to the phase lock
+        }
         return;
     }
     // Frame buffer: 1 up to the value chosen

@@ -30,6 +30,13 @@ public:
     void SwitchProfile(); // applies m_options.pendingProfile (call after Stop(), before Start())
     void ApplyLinkDisplay(); // the screen of the active profile detection
     void RefreshDisplayList() { m_ui.m_displays = GetDisplays(); } // after a display change (the renderer is stopped)
+    // the graphics cards are listed again (the renderer is stopped): after a driver update the old ones are gone and nothing could start
+    void RefreshAdapters()
+    {
+        auto a = GetAdapters();
+        if(!a.empty())
+            m_ui.m_adapters = a;
+    }
     void UpdateVsyncRate();
 
     UI      m_ui;

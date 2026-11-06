@@ -118,7 +118,7 @@ static FILE* OpenCrashLog(const char* what, unsigned code)
         return nullptr;
     SYSTEMTIME t;
     GetLocalTime(&t);
-    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.3.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
+    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.4.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
             GetCurrentThreadId(), GetCurrentThreadId() == s_mainThreadId ? "main" : "other (render / emitter / AI)");
     return f;
 }
@@ -294,6 +294,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
         }
     }
 
+    ::ShaderBeam::NvidiaKeysService(false); // stops the reader of the emitter wheel and button
     return (int)msg.wParam;
 }
 
@@ -527,6 +528,7 @@ static void ProcessFocusPoll(HWND hWnd)
 #define TRAY_CMD_AUTOSTART 3
 #define TRAY_CMD_STARTMIN 4
 #define TRAY_CMD_EFFECTS 5
+#define TRAY_CMD_RESTART 6
 
 static bool          s_trayAdded   = false;
 static bool          s_inTray      = false; // sent to the tray: no taskbar button, HUD hidden
@@ -847,6 +849,7 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     SetTimer(hWnd, 2, 15, NULL); // hotkey fallback (see HotkeyPoll)
     StartKeyboardHook(hWnd);     // hotkeys over games that read the keyboard in exclusive mode
     s_appReady = true;
+    ::ShaderBeam::NvidiaKeysService(true); // wheel and button of the NVIDIA emitter, also without 3D
     return TRUE;
 }
 
@@ -1075,6 +1078,15 @@ static void PadPoll(HWND hWnd)
 {
     auto& o = s_shaderBeam.m_options;
     ::ShaderBeam::Pad::Poll();
+    // The wheel and the button of the NVIDIA emitter only drive the 3D mini menu (UI::MenuInput)
+    {
+        auto& em = ::ShaderBeam::Pad::Emitter();
+        const int wheel  = em.menuWheel.exchange(0);
+        const int held   = em.menuHeld.exchange(0);
+        const int clicks = em.menuClicks.exchange(0);
+        if(s_appReady && !o.hotkeysSuspended && (wheel || held || clicks))
+            s_shaderBeam.m_ui.MenuInput(clicks, wheel, held);
+    }
     if(!s_appReady || o.hotkeysSuspended)
         return;
     static bool down[HOTKEY_COUNT] {};
@@ -1083,7 +1095,7 @@ static void PadPoll(HWND hWnd)
     for(int id = 0; id < HOTKEY_COUNT; id++)
     {
         const unsigned m = o.hotkeys[id].pad;
-        held[id]         = m && (b & m) == m;
+        held[id] = m && (b & m) == m;
     }
     for(int id = 0; id < HOTKEY_COUNT; id++)
     {
@@ -1161,6 +1173,7 @@ static bool StartSettingsUI()
     auto& o  = s_shaderBeam.m_options;
     if(ui.m_displays.empty())
         s_shaderBeam.RefreshDisplayList();
+    s_shaderBeam.RefreshAdapters(); // after a graphics driver update the old graphics card objects no longer work (the window stayed white)
     if(ui.m_displays.empty() || ui.m_adapters.empty())
         return false;
     if(o.shaderDisplayNo >= ui.m_displays.size())
@@ -1226,12 +1239,30 @@ static void RenderSettings()
     const UINT w = (UINT)(rc.right - rc.left), h = (UINT)(rc.bottom - rc.top);
     if(w == 0 || h == 0)
         return;
+    // graphics card lost (driver update, reset): the window starts again on a new device, asked once
+    static ULONGLONG s_lostAsked = 0;
+    auto             deviceLost  = [&]() {
+        const HRESULT reason = s_setDev ? s_setDev->GetDeviceRemovedReason() : E_FAIL;
+        if(reason == S_OK)
+            return false;
+        if(GetTickCount64() - s_lostAsked > 3000)
+        {
+            s_lostAsked = GetTickCount64();
+            PostMessage(s_shaderBeam.m_options.outputWindow, WM_USER_RESTART, 0, 0);
+        }
+        return true;
+    };
+    if(deviceLost())
+        return;
     if(w != s_setW || h != s_setH)
     {
         s_setRtv = nullptr;
         s_setCtx->OMSetRenderTargets(0, nullptr, nullptr);
         if(FAILED(s_setChain->ResizeBuffers(0, w, h, DXGI_FORMAT_UNKNOWN, 0)) || !SetRenderTarget())
+        {
+            deviceLost();
             return;
+        }
         s_setW = w;
         s_setH = h;
     }
@@ -1247,7 +1278,7 @@ static void RenderSettings()
     { }
     const HRESULT hr = s_setChain->Present(1, 0);
     if(hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET)
-        PostMessage(s_shaderBeam.m_options.outputWindow, WM_USER_RESTART, 0, 0); // graphics card lost: the window starts again
+        deviceLost(); // graphics card lost: the window starts again
 }
 
 // shows the window (taskbar, notification area, second launch, HUD hotkey)
@@ -2050,6 +2081,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             AppendMenuW(menu, MF_STRING, TRAY_CMD_EFFECTS,
                         WideOf(::ShaderBeam::Tr(o.windowMode ? (s_effectsOn ? "Deactivate effects" : "Activate effects") : (o.effectsSuspended ? "Show effects" : "Hide effects"))).c_str());
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
+            AppendMenuW(menu, MF_STRING, TRAY_CMD_RESTART, WideOf(::ShaderBeam::Tr("Restart")).c_str());
             AppendMenuW(menu, MF_STRING, TRAY_CMD_QUIT, WideOf(::ShaderBeam::Tr("Quit")).c_str());
             POINT pt;
             GetCursorPos(&pt);
@@ -2082,6 +2114,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 else
                     o.effectsSuspended = !o.effectsSuspended; // same as the HUD button Show / Hide
             }
+            else if(cmd == TRAY_CMD_RESTART)
+                PostMessage(hWnd, WM_USER_RESTART, 0, 0); // same as the Restart button of the HUD
             else if(cmd == TRAY_CMD_QUIT)
                 PostMessage(hWnd, WM_DESTROY, 0, 0);
         }

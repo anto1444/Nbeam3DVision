@@ -10,6 +10,7 @@ MIT License
 #include "UI.h"
 #include "Helpers.h"
 #include "CaptureBase.h"
+#include "DepthAI.h"
 
 #include "imgui.h"
 #include "imgui_internal.h"
@@ -22,6 +23,7 @@ MIT License
 #include "UIWidgets.h"
 #include "Gamepad.h"
 #include "LogoShaderBeam.h"
+#include "ReleaseNotes.h"
 #include <shellapi.h>
 #include "Lang.h"
 #include "resource.h"
@@ -119,28 +121,29 @@ static bool WindowsHdrOn(HWND hWnd)
 
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
-const char* SHADERBEAM_ABOUT = "             " SHADERBEAM_TITLE "\n"
-                               "              Version 2.3.0\n"
-                               "         Made by anto1444, 2026\n"
+// About: one line per row, each centred in the window (the version is the one of the release notes below)
+const char* SHADERBEAM_ABOUT = SHADERBEAM_TITLE "\n"
+                               "Version 2.4.0\n"
+                               "Made by anto1444, 2026\n"
                                "\n"
-                               "   Based on ShaderBeam (c) 2025-2026 mausimus\n"
-                               "         Distributed under MIT License\n"
+                               "Based on ShaderBeam (c) 2025-2026 mausimus\n"
+                               "Distributed under MIT License\n"
                                "\n"
-                               "    Includes Blur Busters CRT Beam Simulator\n"
-                               "        by Mark Rejhon @BlurBusters and\n"
-                               "        Timothy Lottes @NOTimothyLottes\n"
-                               "          https://blurbusters.com/crt\n\n";
-const char* SHADERBEAM_ABOUT_FR = "             " SHADERBEAM_TITLE "\n"
-                                  "              Version 2.3.0\n"
-                                  "         Fait par anto1444, 2026\n"
+                               "Includes Blur Busters CRT Beam Simulator\n"
+                               "by Mark Rejhon @BlurBusters and\n"
+                               "Timothy Lottes @NOTimothyLottes\n"
+                               "https://blurbusters.com/crt";
+const char* SHADERBEAM_ABOUT_FR = SHADERBEAM_TITLE "\n"
+                                  "Version 2.4.0\n"
+                                  "Fait par anto1444, 2026\n"
                                   "\n"
-                                  "   Basé sur ShaderBeam (c) 2025-2026 mausimus\n"
-                                  "         Distribué sous licence MIT\n"
+                                  "Bas\303\251 sur ShaderBeam (c) 2025-2026 mausimus\n"
+                                  "Distribu\303\251 sous licence MIT\n"
                                   "\n"
-                                  "    Inclut le Blur Busters CRT Beam Simulator\n"
-                                  "        de Mark Rejhon @BlurBusters et\n"
-                                  "        Timothy Lottes @NOTimothyLottes\n"
-                                  "          https://blurbusters.com/crt\n\n";
+                                  "Inclut le Blur Busters CRT Beam Simulator\n"
+                                  "de Mark Rejhon @BlurBusters et\n"
+                                  "Timothy Lottes @NOTimothyLottes\n"
+                                  "https://blurbusters.com/crt";
 
 static std::string s_hotkeyMessage;
 static std::string s_hotkeyHelp;
@@ -150,6 +153,12 @@ static bool        s_padArmed     = false; // all buttons released once since th
 static unsigned    s_padMax       = 0;     // buttons held during the capture
 
 static int s_hotkeysDrawnFrame = -1; // last HUD frame in which the Hotkeys section was drawn
+
+// the HUD and the effects shortcuts can never be empty (they must stay reachable)
+static bool IsProtectedHotkey(int id)
+{
+    return id == HOTKEY_TOGGLEUI || id == HOTKEY_EFFECTS;
+}
 
 static void CancelCaptureNow(ShaderBeam::Options& o)
 {
@@ -179,7 +188,7 @@ namespace ShaderBeam
 static std::vector<std::string> s_profiles;
 static bool                     s_profilesDirty = true;
 static char                     s_newProfile[64] = "";
-static std::string              s_procSel; // "Process to adjust": the program (normalized .exe name) shown in the profile configuration
+static std::string              s_procSel; // the program (normalized .exe name) selected in the "Program settings" tab
 static bool                     s_procFocus = false;
 static void                     SortNoCase(std::vector<std::string>& v)
 {
@@ -571,7 +580,7 @@ void UI::RenderHudHeader(float height)
     if(m_logo)
         dl->AddImage(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(logoX, p0.y + (height - logoSz) * 0.5f), ImVec2(logoX + logoSz, p0.y + (height + logoSz) * 0.5f));
     dl->AddText(font, titleSz, ImVec2(titleX, p0.y + height * 0.5f - titleSz * 0.95f), cOnAcc, title);
-    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v2.3.0");
+    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v2.4.0");
 
     // output mode (like "3440 x 1440 | 240Hz")
     char mode[64];
@@ -1004,9 +1013,9 @@ void UI::Render()
                 if((mode == 1 || mode == 3) && !in3D)
                 {
                     ImGui::PushItemWidth(m_fontSize * 16);
-                    SliderFloatStep(Tr("Measure interval"), &m_options.phaseInterval, 0.5f, 3.0f, "%.1f s", 0.5f);
+                    SliderFloatStep(Tr("Measure interval"), &m_options.phaseInterval, 0.1f, 2.0f, "%.1f s", 0.1f);
                     ImGui::PopItemWidth();
-                    ShowHelpMarker(Tr("Phase lock gives a shorter and steadier delay: Nbeam watches when the game images arrive and shifts its cycle to match. This sets how often it checks, 0.5 to 3 seconds (default 1).\nTip: cap the game close to the rate shown (RTSS, Reflex...) for the best result."));
+                    ShowHelpMarker(Tr("Phase lock gives a shorter and steadier delay: Nbeam watches when the game images arrive and shifts its cycle to match. This sets how often it checks, 0.1 to 2 seconds (default 1).\nTip: cap the game close to the rate shown (RTSS, Reflex...) for the best result."));
                     const bool   buffering = mode == 3 && m_options.EffectiveFrameBuffer() > 0;
                     const int    state     = m_options.phaseState;
                     const char*  st        = buffering ? Tr("paused, buffer in use") : state == 2 ? Tr("locked") : state == 3 ? Tr("unsteady game frame rate") : state == 1 ? Tr("measuring...") : Tr("waiting for the game");
@@ -1044,7 +1053,7 @@ void UI::Render()
                     if(autoOn)
                     {
                         ImGui::PushItemWidth(m_fontSize * 16);
-                        SliderFloatStep(Tr("Detection interval"), &m_options.autoSub.intervalSec, 0.0f, 5.0f, "%.2f s", 0.25f);
+                        SliderFloatStep(Tr("Detection interval"), &m_options.autoSub.intervalSec, 0.1f, 2.0f, "%.1f s", 0.1f);
                         ImGui::PopItemWidth();
                         ShowHelpMarker(Tr("How often the game frame rate is measured to choose SubFrames, from 0 to 5 seconds. 0 = as fast as practical (every 0.25 s). Short = follows frame rate changes quickly, long = steadier."));
                     }
@@ -1423,8 +1432,8 @@ void UI::Render()
             }
             if(s_cat == 3)
             {
-            // ---- profile configuration: everything about the profiles in one section (the profiles, then the programs they go with) ----
-            SectionHeader(Tr("Profile configuration"));
+            // ---- "Manage profiles", above the profile configuration: rename, choose, delete and create the profiles ----
+            SectionHeader(Tr("Manage profiles"));
             {
                 if(s_profilesDirty)
                 {
@@ -1457,30 +1466,142 @@ void UI::Render()
                     else
                         ImGui::Text("%s (%s)", m_options.profileFile.c_str(), adjusting ? Tr("adjusting") : Tr("detected program"));
                     ImGui::PushItemWidth(m_fontSize * 14);
-                    static bool s_profileComboWasOpen = false;
-                    const bool  profileComboOpen      = ImGui::BeginCombo(Tr("Profile to adjust"), adjusting ? m_options.profileFile.c_str() : Tr("(choose)"), 0);
-                    if(profileComboOpen)
+                    // "Profile to adjust": a field with the name of the profile (rewrite it to rename the profile), the arrow picks the
+                    // profile to adjust (the motion test opens with it), the Delete button sends it to the recycle bin
+                    static std::string s_profSel;            // the profile shown in the field
+                    static char        s_profBuf[128] = "";
+                    static std::string s_profBufFor  = "\x01";
+                    static std::string s_profNote;           // a refused rename (name taken, invalid...)
+                    if(adjusting)
+                        s_profSel = m_options.profileFile;
+                    if(!s_profSel.empty() && std::find(s_profiles.begin(), s_profiles.end(), s_profSel) == s_profiles.end() && !adjusting)
+                        s_profSel.clear(); // (deleted or renamed outside Nbeam)
+                    if(s_profBufFor != s_profSel)
                     {
-                        if(!s_profileComboWasOpen)
+                        std::string shown = s_profSel;
+                        if(shown.size() > 4 && _stricmp(shown.c_str() + shown.size() - 4, ".ini") == 0)
+                            shown.resize(shown.size() - 4); // the name without .ini
+                        strncpy_s(s_profBuf, shown.c_str(), sizeof(s_profBuf) - 1);
+                        s_profBufFor = s_profSel;
+                    }
+                    ImGui::SetNextItemWidth(m_fontSize * 14 - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x);
+                    if(s_profSel.empty())
+                        ImGui::BeginDisabled();
+                    ImGui::InputTextWithHint("##profname", Tr("(choose)"), s_profBuf, sizeof(s_profBuf));
+                    if(ImGui::IsItemDeactivatedAfterEdit() && !s_profSel.empty())
+                    {
+                        // rename: Profils\old.ini -> Profils\new.ini, the programs and the active settings follow
+                        std::string name = s_profBuf;
+                        for(char& c : name)
+                            if(strchr("\\/:*?\"<>|", c))
+                                c = '_';
+                        while(!name.empty() && (name.back() == ' ' || name.back() == '.'))
+                            name.pop_back();
+                        if(!name.empty() && (name.size() < 4 || _stricmp(name.c_str() + name.size() - 4, ".ini") != 0))
+                            name += ".ini";
+                        s_profNote.clear();
+                        if(name.empty() || _stricmp(name.c_str(), "imgui.ini") == 0)
+                            s_profNote = Tr("Invalid name.");
+                        else if(_stricmp(name.c_str(), s_profSel.c_str()) != 0 || name != s_profSel)
+                        {
+                            const auto from = Options::ProfilesDir() / s_profSel;
+                            const auto to   = Options::ProfilesDir() / name;
+                            if(_stricmp(name.c_str(), s_profSel.c_str()) != 0 && std::filesystem::exists(to))
+                                s_profNote = Tr("A profile with this name already exists.");
+                            else if(!MoveFileExW(from.wstring().c_str(), to.wstring().c_str(), 0))
+                                s_profNote = Tr("The profile could not be renamed.");
+                            else
                             {
-                                s_profiles = Options::ListProfiles(); // the list is refreshed once each time the combo opens
-                                SortNoCase(s_profiles);
+                                {
+                                    std::lock_guard<std::recursive_mutex> renameLock(m_options.linksMutex);
+                                    for(auto& l : m_options.profileLinks)
+                                        if(_stricmp(l.profile.c_str(), s_profSel.c_str()) == 0)
+                                            l.profile = name;
+                                }
+                                if(_stricmp(m_options.profileFile.c_str(), s_profSel.c_str()) == 0)
+                                    m_options.profileFile = name;
+                                m_options.SaveApp();
+                                s_profSel       = name;
+                                s_profilesDirty = true;
                             }
+                        }
+                        s_profBufFor = "\x01"; // the field shows the real name again
+                    }
+                    if(s_profSel.empty())
+                        ImGui::EndDisabled();
+                    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+                    if(ImGui::ArrowButton("##profarrow", ImGuiDir_Down))
+                    {
+                        s_profiles = Options::ListProfiles(); // the list is read again each time it opens
+                        SortNoCase(s_profiles);
+                        ImGui::OpenPopup("##proflist");
+                    }
+                    if(ImGui::BeginPopup("##proflist"))
+                    {
+                        if(s_profiles.empty())
+                            ImGui::TextDisabled("%s", Tr("(none)"));
                         for(const auto& name : s_profiles)
                         {
                             const bool selected = adjusting && name == m_options.profileFile;
                             if(ImGui::Selectable(name.c_str(), selected) && !selected)
                             {
+                                s_profSel             = name;
+                                s_profNote.clear();
                                 m_options.testProfile = name;
-                                PostMessage(m_options.outputWindow, WM_USER_GLASSESTEST, 1, 0);
+                                PostMessage(m_options.outputWindow, WM_USER_GLASSESTEST, 1, 0); // the motion test opens with it
                             }
-                            if(selected)
-                                ImGui::SetItemDefaultFocus();
                         }
-                        ImGui::EndCombo();
+                        ImGui::EndPopup();
                     }
-                    s_profileComboWasOpen = profileComboOpen;
-                    ShowHelpMarker(Tr("Profiles only apply while their program runs (see the program list below); otherwise the desktop settings are used.\nChoose a profile to adjust it: the motion test opens with it loaded. Change the settings and watch the result. Ending the test (Windows key or Escape) saves the profile and goes back to the desktop settings."));
+                    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+                    ImGui::TextUnformatted(Tr("Profile to adjust"));
+                    ShowHelpMarker(Tr("Profiles only apply while their program runs (see the program list below); otherwise the desktop settings are used.\nThe arrow picks a profile to adjust: the motion test opens with it loaded. Change the settings and watch the result. Ending the test (Windows key or Escape) saves the profile and goes back to the desktop settings.\nRewrite the name in the field to rename the profile; Delete sends it to the recycle bin."));
+                    {
+                        // Delete: the profile goes to the recycle bin (not the one being adjusted)
+                        const bool canDelete = !s_profSel.empty() && !(adjusting && s_profSel == m_options.profileFile);
+                        ImGui::SameLine();
+                        if(!canDelete)
+                            ImGui::BeginDisabled();
+                        if(ImGui::Button(Tr("Delete")))
+                            ImGui::OpenPopup("##profdelete");
+                        if(!canDelete)
+                            ImGui::EndDisabled();
+                        if(adjusting && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("%s", Tr("End the motion test first."));
+                        if(ImGui::BeginPopup("##profdelete"))
+                        {
+                            ImGui::Text("%s %s ?", Tr("Delete the profile"), s_profSel.c_str());
+                            if(ImGui::Button(Tr("Delete")))
+                            {
+                                // to the recycle bin (double zero-terminated path list)
+                                std::wstring path = (Options::ProfilesDir() / s_profSel).wstring();
+                                path.push_back(L'\0');
+                                SHFILEOPSTRUCTW op {};
+                                op.wFunc  = FO_DELETE;
+                                op.pFrom  = path.c_str();
+                                op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
+                                if(SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted)
+                                {
+                                    {
+                                        std::lock_guard<std::recursive_mutex> deleteLock(m_options.linksMutex);
+                                        for(auto& l : m_options.profileLinks)
+                                            if(_stricmp(l.profile.c_str(), s_profSel.c_str()) == 0)
+                                                l.profile.clear(); // the programs that used it: no profile until one is chosen
+                                    }
+                                    m_options.SaveApp();
+                                    s_profSel.clear();
+                                    s_profilesDirty = true;
+                                }
+                                else
+                                    s_profNote = Tr("The profile could not be deleted.");
+                                ImGui::CloseCurrentPopup();
+                            }
+                            ImGui::SameLine();
+                            if(ImGui::Button(Tr("Cancel")))
+                                ImGui::CloseCurrentPopup();
+                            ImGui::EndPopup();
+                        }
+                    }
                     ImGui::SameLine();
                     {
                         // small Explorer (folder) button: opens the Profils folder
@@ -1500,6 +1621,8 @@ void UI::Render()
                         dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.95f), ImVec2(c.x - u * 0.1f, c.y - u * 0.4f), fb, u * 0.12f);
                         dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.55f), ImVec2(c.x + u * 1.25f, c.y + u * 0.95f), fc, u * 0.12f);
                     }
+                    if(!s_profNote.empty())
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.4f, 1.0f), "%s", s_profNote.c_str());
                     ImGui::InputText(Tr("Create a profile"), s_newProfile, sizeof(s_newProfile));
                     ImGui::SameLine();
                     if(ImGui::Button(Tr("Save as")) && s_newProfile[0])
@@ -1525,14 +1648,14 @@ void UI::Render()
                     ImGui::PopItemWidth();
                 }
             }
-
-
-            ImGui::Spacing();
-            ImGui::Separator();
+            // ---- profile configuration: everything about the profiles in one section (the profiles, then the programs they go with) ----
+            SectionHeader(Tr("Profile configuration"));
+            // three tabs, in the style of a graphics driver panel: the profiles, the settings of each program (list on the left, its
+            // settings on the right), and the settings for every program at once
+            const bool profTabs = ImGui::BeginTabBar("##proftabs");
             {
                 // the detections are also read by the main thread (ProfileLinkPoll): no change of the list while it reads it
                 std::lock_guard<std::recursive_mutex> linksLock(m_options.linksMutex);
-                ShowHelpMarker(Tr("When a program is detected, its profile is loaded. When it closes, the desktop settings come back.\nWrite the name of the program (e.g. game.exe) or add it from the taskbar, then choose the profile to use on each screen. You can also press the \"Add the program to the profiles\" hotkey while it is in front.\nA program can have up to 3 profiles, one per screen. The main Windows screen is used first."));
                 if(s_profilesDirty)
                 {
                     s_profiles      = Options::ListProfiles();
@@ -1596,393 +1719,394 @@ void UI::Render()
                         }
                     }
                 }
-                ImGui::PushTextWrapPos(0.0f);
-                ImGui::TextDisabled("%s", Tr("Choose a program, then the profile to load on each screen."));
-                ImGui::PopTextWrapPos();
-                // ---- "Process to adjust": the program the lines below are for. Its name can be rewritten in the field; the arrow picks
-                // another program (alphabetical list); the two buttons next to it add a new one ----
-                const float procLimitX = ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x;
-                auto        procFits   = [&](float w) {
-                    const float end = ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
-                    return end + ImGui::GetStyle().ItemSpacing.x + w + ImGui::GetStyle().FramePadding.x * 2 <= procLimitX;
-                };
+                std::vector<int> removeList;
+                // the programs: one entry per .exe, in alphabetical order (a line whose name is still empty is the "new program")
+                std::vector<std::string> procs;
+                bool                     hasEmpty = false;
+                for(const auto& l : m_options.profileLinks)
                 {
-                    std::vector<std::string> procs;
-                    bool                     hasEmpty = false;
-                    for(const auto& l : m_options.profileLinks)
-                    {
-                        const std::string k = exeKey(l.exe);
-                        if(k.empty())
-                            hasEmpty = true;
-                        else if(std::find(procs.begin(), procs.end(), k) == procs.end())
-                            procs.push_back(k);
-                    }
-                    SortNoCase(procs);
-                    const bool valid = s_procSel.empty() ? hasEmpty || procs.empty() : std::find(procs.begin(), procs.end(), s_procSel) != procs.end();
+                    const std::string k = exeKey(l.exe);
+                    if(k.empty())
+                        hasEmpty = true;
+                    else if(std::find(procs.begin(), procs.end(), k) == procs.end())
+                        procs.push_back(k);
+                }
+                SortNoCase(procs);
+                {
+                    const bool valid = s_procSel.empty() ? hasEmpty : std::find(procs.begin(), procs.end(), s_procSel) != procs.end();
                     if(!valid)
                         s_procSel = procs.empty() ? std::string() : procs[0];
-                    static std::string s_procBufFor = "\x01";
-                    static char        s_procBuf[520];
-                    if(s_procBufFor != s_procSel)
+                }
+                const ImVec4 dimText = ImGui::GetStyle().Colors[ImGuiCol_TextDisabled];
+                // ---- tab "Program settings": the list of the programs on the left, the settings of the selected one on the right ----
+                if(profTabs && ImGui::BeginTabItem(Tr("Program settings")))
+                {
+                    const float listW = m_fontSize * 12.0f;
+                    const float paneH = m_fontSize * 19.0f;
+                    ImGui::BeginGroup();
                     {
-                        strncpy_s(s_procBuf, s_procSel.c_str(), sizeof(s_procBuf) - 1);
-                        s_procBufFor = s_procSel;
-                    }
-                    if(s_procFocus)
-                    {
-                        ImGui::SetKeyboardFocusHere();
-                        s_procFocus = false;
-                    }
-                    ImGui::SetNextItemWidth(m_fontSize * 10);
-                    if(ImGui::InputTextWithHint("##procname", Tr("Path or name of the .exe"), s_procBuf, sizeof(s_procBuf)))
-                    {
-                        bool any = false;
-                        for(auto& l : m_options.profileLinks)
-                            if(exeKey(l.exe) == s_procSel)
-                            {
-                                l.exe = s_procBuf;
-                                any   = true;
-                            }
-                        if(!any && s_procBuf[0] && m_options.profileLinks.size() < 64)
-                        {
-                            Options::ProfileLink nl;
-                            nl.exe      = s_procBuf;
-                            nl.screenId = cur;
-                            m_options.profileLinks.push_back(nl);
-                        }
-                        s_procSel    = exeKey(s_procBuf);
-                        s_procBufFor = s_procSel; // (the text stays as typed)
-                    }
-                    if(ImGui::IsItemDeactivatedAfterEdit())
-                        save = true;
-                    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-                    if(ImGui::ArrowButton("##procarrow", ImGuiDir_Down))
-                        ImGui::OpenPopup("##proclist");
-                    if(ImGui::BeginPopup("##proclist"))
-                    {
-                        if(procs.empty())
-                            ImGui::TextDisabled("%s", Tr("(none added)"));
+                        ImGui::BeginChild("##proglist", ImVec2(listW, paneH - ImGui::GetFrameHeightWithSpacing() * 2.0f), ImGuiChildFlags_Borders);
+                        ImGui::TextDisabled("%d %s", (int)procs.size(), Tr("programs"));
+                        ImGui::Separator();
                         for(const auto& k : procs)
+                        {
+                            bool on = false;
+                            for(const auto& l : m_options.profileLinks)
+                                on = on || (exeKey(l.exe) == k && l.enabled);
+                            if(!on)
+                                ImGui::PushStyleColor(ImGuiCol_Text, dimText); // unchecked program: greyed in the list
                             if(ImGui::Selectable(k.c_str(), k == s_procSel))
                                 s_procSel = k;
-                        ImGui::EndPopup();
-                    }
-                    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-                    ImGui::TextUnformatted(Tr("Process to adjust"));
-                    ShowHelpMarker(Tr("The program (.exe) the settings below are for. Rewrite its name in the field to change it, or press the arrow to pick another program. The two buttons add a new one."));
-                }
-                if(procFits(ImGui::CalcTextSize(Tr("Write a new process")).x + ImGui::GetStyle().FramePadding.x * 2))
-                    ImGui::SameLine();
-                if(ImGui::Button(Tr("Write a new process")))
-                {
-                    // an empty line to fill in: its name is typed in the field on the left
-                    bool haveEmpty = false;
-                    for(const auto& l : m_options.profileLinks)
-                        haveEmpty = haveEmpty || exeKey(l.exe).empty();
-                    if(!haveEmpty && m_options.profileLinks.size() < 64)
-                    {
-                        Options::ProfileLink nl;
-                        nl.screenId = cur; // the first profile of a program: the current screen
-                        m_options.profileLinks.push_back(nl);
-                        save = true;
-                    }
-                    s_procSel     = std::string();
-                    s_procFocus   = true;
-                }
-                if(ImGui::IsItemHovered())
-                    ImGui::SetTooltip("%s", Tr("Adds an empty line: type the name of the .exe (e.g. game.exe) in the field on the left."));
-                // add a program chosen among the ones shown on the taskbar
-                {
-                    static std::vector<std::string> s_taskbarExes; // scanned when the list is opened
-                    if(procFits(ImGui::CalcTextSize(Tr("Add a new process")).x + ImGui::GetStyle().FramePadding.x * 2))
-                        ImGui::SameLine();
-                    if(ImGui::Button(Tr("Add a new process")))
-                    {
-                        s_taskbarExes.clear();
-                        EnumWindows(
-                            [](HWND w, LPARAM p) -> BOOL {
-                                auto&      list = *(std::vector<std::string>*)p;
-                                const auto ex   = GetWindowLongW(w, GWL_EXSTYLE);
-                                if(!IsWindowVisible(w) || GetWindowTextLengthW(w) == 0)
-                                    return TRUE;
-                                if(GetWindow(w, GW_OWNER) != NULL && !(ex & WS_EX_APPWINDOW))
-                                    return TRUE;
-                                if((ex & WS_EX_TOOLWINDOW) && !(ex & WS_EX_APPWINDOW))
-                                    return TRUE;
-                                DWORD cloaked = 0;
-                                if(SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
-                                    return TRUE;
-                                DWORD pid = 0;
-                                GetWindowThreadProcessId(w, &pid);
-                                if(!pid || pid == GetCurrentProcessId())
-                                    return TRUE;
-                                const std::string name = Options::ProcessNameOfWindow(w);
-                                static const char* ignored[] = { "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
-                                                                 "textinputhost.exe", "applicationframehost.exe", "lockapp.exe", "dwm.exe" };
-                                if(name.empty())
-                                    return TRUE;
-                                for(const char* ig : ignored)
-                                    if(name == ig)
-                                        return TRUE;
-                                if(std::find(list.begin(), list.end(), name) == list.end())
-                                    list.push_back(name);
-                                return TRUE;
-                            },
-                            (LPARAM)&s_taskbarExes);
-                        // Lossless Scaling is always offered: its scaling layer is what is detected and captured, its settings window does not
-                        // have to be open
-                        if(std::find(s_taskbarExes.begin(), s_taskbarExes.end(), std::string("losslessscaling.exe")) == s_taskbarExes.end())
-                            s_taskbarExes.push_back("losslessscaling.exe");
-                        std::sort(s_taskbarExes.begin(), s_taskbarExes.end());
-                        ImGui::OpenPopup("##taskbarExes");
-                    }
-                    if(ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", Tr("Choose a program among the ones open on the taskbar."));
-                    if(ImGui::BeginPopup("##taskbarExes"))
-                    {
-                        int shown = 0;
-                        for(const auto& exe : s_taskbarExes)
+                            if(!on)
+                                ImGui::PopStyleColor();
+                        }
+                        if(hasEmpty && ImGui::Selectable(Tr("(new program)"), s_procSel.empty()))
+                            s_procSel.clear();
+                        if(procs.empty() && !hasEmpty)
                         {
-                            bool known = false; // programs already in the detections are not listed
+                            ImGui::PushTextWrapPos(0.0f);
+                            ImGui::TextDisabled("%s", Tr("No program yet: write a name above or add one from the taskbar."));
+                            ImGui::PopTextWrapPos();
+                        }
+                        ImGui::EndChild();
+                        if(ImGui::Button(Tr("Write a new process"), ImVec2(listW, 0)))
+                        {
+                            // an empty line to fill in: its name is typed in the field on the right
+                            bool haveEmpty = false;
                             for(const auto& l : m_options.profileLinks)
-                                known = known || Options::NormalizeExeName(l.exe) == exe;
-                            if(known)
-                                continue;
-                            shown++;
-                            if(ImGui::Selectable(exe.c_str()) && m_options.profileLinks.size() < 64)
+                                haveEmpty = haveEmpty || exeKey(l.exe).empty();
+                            if(!haveEmpty && m_options.profileLinks.size() < 64)
                             {
                                 Options::ProfileLink nl;
-                                nl.exe      = exe;
-                                nl.screenId = cur;
+                                nl.screenId = cur; // the first profile of a program: the current screen
                                 m_options.profileLinks.push_back(nl);
-                                s_procSel = exe; // the program just added is the one shown
                                 save = true;
                             }
+                            s_procSel   = std::string();
+                            s_procFocus = true;
                         }
-                        if(shown == 0)
-                            ImGui::TextUnformatted(Tr("No program open on the taskbar"));
-                        ImGui::EndPopup();
-                    }
-                }
-                if(m_options.profileLinks.empty())
-                    ImGui::TextDisabled("%s", Tr("No program yet: write a name above or add one from the taskbar."));
-                // one line per program: its exe, then one (profile, screen) pair per screen on the same line (the pairs that do not fit
-                // continue on the next line, under the exe)
-                std::vector<bool> done(m_options.profileLinks.size(), false);
-                std::vector<int>  removeList;
-                for(size_t first = 0; first < m_options.profileLinks.size(); first++)
-                {
-                    if(done[first])
-                        continue;
-                    std::vector<size_t> grp { first };
-                    done[first] = true;
-                    const std::string key = exeKey(m_options.profileLinks[first].exe);
-                    if(!key.empty())
-                        for(size_t k = first + 1; k < m_options.profileLinks.size(); k++)
-                            if(!done[k] && exeKey(m_options.profileLinks[k].exe) == key)
-                            {
-                                grp.push_back(k);
-                                done[k] = true;
-                            }
-                    if(key != s_procSel)
-                        continue; // only the program chosen in "Process to adjust" is shown
-                    auto& head = m_options.profileLinks[first];
-                    ImGui::PushID((int)first);
-                    bool        en        = head.enabled;
-                    const float rowStartX = ImGui::GetCursorPosX();
-                    const float limitX    = rowStartX + ImGui::GetContentRegionAvail().x;
-                    // right end (window coordinates) of the last item drawn
-                    auto lastEnd = [&]() { return ImGui::GetItemRectMax().x - ImGui::GetWindowPos().x + ImGui::GetScrollX(); };
-                    if(ImGui::Checkbox((std::string(Tr("Enabled")) + "##on").c_str(), &en))
-                    {
-                        for(size_t k : grp)
-                            m_options.profileLinks[k].enabled = en;
-                        save = true;
-                    }
-                    if(ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", Tr("Enable this detection. Unchecked = ignored (nothing is loaded when the program runs)."));
-                    const float indentX = rowStartX + m_fontSize * 1.5f; // a pair that does not fit goes on the next line, under the check box
-                    const float pairW = m_fontSize * (6.5f + 7.5f + 4.6f) + ImGui::GetStyle().ItemSpacing.x * 3 + m_fontSize * 1.6f;
-                    int         dropMember = -1;
-                    for(size_t n = 0; n < grp.size(); n++)
-                    {
-                        auto& link = m_options.profileLinks[grp[n]];
-                        if(lastEnd() + ImGui::GetStyle().ItemSpacing.x + pairW <= limitX)
-                            ImGui::SameLine(); // same line as the check box (or as the previous pair)
-                        else
-                            ImGui::SetCursorPosX(indentX); // does not fit: next line
-                        ImGui::PushID((int)grp[n]);
-                        ImGui::SetNextItemWidth(m_fontSize * 6.5f);
-                        if(ImGui::BeginCombo("##profile", link.profile.empty() ? Tr("(no profile)") : link.profile.c_str(), 0))
-                        {
-                            for(const auto& name : s_profiles)
-                                if(ImGui::Selectable(name.c_str(), name == link.profile))
-                                {
-                                    link.profile = name;
-                                    save         = true;
-                                }
-                            ImGui::EndCombo();
-                        }
-                        ImGui::SameLine();
-                        {
-                            // screen of this profile: used when the program runs with that screen connected
-                            std::string label = Tr("Choose a screen");
-                            for(const auto& m : mons)
-                                if(m.id == link.screenId)
-                                    label = m.name + (m.connected ? "" : " *");
-                            ImGui::SetNextItemWidth(m_fontSize * 7.5f);
-                            if(ImGui::BeginCombo("##screen", label.c_str(), 0))
-                            {
-                                for(const auto& m : mons)
-                                {
-                                    if(m.id != link.screenId && usedByOther(grp[n], m.id))
-                                        continue; // one screen per profile of a program
-                                    if(ImGui::Selectable(monLabel(m).c_str(), m.id == link.screenId))
-                                    {
-                                        link.screenId = m.id;
-                                        save          = true;
-                                    }
-                                    if(ImGui::IsItemHovered() && !m.rates.empty())
-                                    {
-                                        std::string r;
-                                        for(int hz : m.rates)
-                                            r += (r.empty() ? "" : ", ") + std::to_string(hz);
-                                        ImGui::SetTooltip("%s %s Hz", Tr("Refresh rates:"), r.c_str());
-                                    }
-                                }
-                                ImGui::EndCombo();
-                            }
-                            if(ImGui::IsItemHovered())
-                            {
-                                std::string full;
-                                for(const auto& m : mons)
-                                    if(m.id == link.screenId)
-                                        full = monLabel(m) + "\n";
-                                ImGui::SetTooltip("%s%s", full.c_str(), Tr("Screen of this profile. The screens are recognised by their name and remembered, even when they are not connected.\nWhen several screens are connected, the profile of the Windows main screen is used first."));
-                            }
-                        }
-                        ImGui::SameLine();
-                        {
-                            // refresh rate of this screen while the program runs (every screen of the program changes when it is detected)
-                            char cur[32];
-                            if(link.hz > 0)
-                                snprintf(cur, sizeof(cur), "%d Hz", link.hz);
-                            else
-                                snprintf(cur, sizeof(cur), "%s", Tr("Current Hz"));
-                            ImGui::SetNextItemWidth(m_fontSize * 4.6f);
-                            if(ImGui::BeginCombo("##hz", cur, 0))
-                            {
-                                std::vector<int> rates;
-                                for(const auto& m : mons)
-                                    if(m.id == link.screenId)
-                                        rates = m.rates; // remembered rates, even when the screen is not connected
-                                if(link.hz > 0 && std::find(rates.begin(), rates.end(), link.hz) == rates.end())
-                                    rates.push_back(link.hz);
-                                std::sort(rates.begin(), rates.end());
-                                if(ImGui::Selectable(Tr("Current Hz"), link.hz == 0))
-                                {
-                                    link.hz = 0;
-                                    save    = true;
-                                }
-                                for(int hz : rates)
-                                {
-                                    char t[32];
-                                    snprintf(t, sizeof(t), "%d Hz", hz);
-                                    if(ImGui::Selectable(t, hz == link.hz))
-                                    {
-                                        link.hz = hz;
-                                        save    = true;
-                                    }
-                                }
-                                ImGui::EndCombo();
-                            }
-                            if(ImGui::IsItemHovered())
-                                ImGui::SetTooltip("%s", Tr("Windows refresh rate of this screen while the program runs. \"Current Hz\" = no change. When the program is detected every screen of the program changes its rate, and the original rates come back when it closes."));
-                        }
-                        if(n > 0)
-                        {
-                            ImGui::SameLine();
-                            if(ImGui::Button("-", ImVec2(m_fontSize * 1.6f, 0)))
-                                dropMember = (int)grp[n];
-                            if(ImGui::IsItemHovered())
-                                ImGui::SetTooltip("%s", Tr("Remove this profile / screen"));
-                        }
-                        ImGui::PopID();
-                    }
-                    if(dropMember >= 0)
-                        removeList.push_back(dropMember);
-                    // shared by the profiles of the program: activation delay, add a screen, remove the program
-                    if(lastEnd() + ImGui::GetStyle().ItemSpacing.x + m_fontSize * 8.0f <= limitX)
-                        ImGui::SameLine();
-                    else
-                        ImGui::SetCursorPosX(indentX);
-                    ImGui::SetNextItemWidth(m_fontSize * 4.0f);
-                    int delay = head.delay;
-                    if(ImGui::DragInt("##delay", &delay, 0.2f, 0, 600, "%d s"))
-                        for(size_t k : grp)
-                            m_options.profileLinks[k].delay = std::clamp(delay, 0, 600);
-                    if(ImGui::IsItemDeactivatedAfterEdit())
-                        save = true;
-                    if(ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", Tr("Activation delay: the program must have been running for this many seconds before the profile is applied."));
-                    ImGui::SameLine();
-                    {
-                        const bool canAdd = !key.empty() && (int)grp.size() < Options::MAX_LINKS_PER_EXE && !freeScreen(grp.back()).empty();
-                        if(!canAdd)
-                            ImGui::BeginDisabled();
-                        if(ImGui::Button("+"))
-                            addAfter = (int)grp.back();
-                        if(!canAdd)
-                            ImGui::EndDisabled();
-                        if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                            ImGui::SetTooltip("%s", Tr("Add another profile for this program, on another screen (up to 3, one per screen). A screen has to have been connected once to be listed."));
-                    }
-                    ImGui::SameLine();
-                    if(ImGui::Button("X"))
-                        for(size_t k : grp)
-                            removeList.push_back((int)k);
-                    ImGui::PopID();
-                    ImGui::Dummy(ImVec2(0, m_fontSize * 0.2f));
-                }
-                ImGui::Separator();
-                // "Global settings": one line that sets a value for every detection at once (each detection can still be changed alone afterwards).
-                // A control shows the shared value, or "(mixed)" when the detections differ.
-                if(!m_options.profileLinks.empty())
-                {
-                    auto& links = m_options.profileLinks;
-                    ImGui::PushID("global");
-                    bool allOn = true;
-                    for(const auto& l : links)
-                        allOn = allOn && l.enabled;
-                    if(ImGui::Checkbox("##gon", &allOn))
-                    {
-                        for(auto& l : links)
-                            l.enabled = allOn;
-                        save = true;
-                    }
-                    if(ImGui::IsItemHovered())
-                        ImGui::SetTooltip("%s", Tr("Checks / unchecks every detection."));
-                    ImGui::SameLine();
-                    ImGui::AlignTextToFramePadding();
-                    ImGui::TextUnformatted(Tr("Global settings"));
-                    ShowHelpMarker(Tr("Changes every program at once: the check box, the delay, and for each screen the profile and refresh rate. You can still change each program on its own afterwards. \"(mixed)\" = the programs have different values."));
-                    ImGui::SameLine();
-                    {
-                        bool sameDelay = true;
-                        for(const auto& l : links)
-                            sameDelay = sameDelay && l.delay == links[0].delay;
-                        int gdelay = links[0].delay;
-                        ImGui::SetNextItemWidth(m_fontSize * 4.0f);
-                        if(ImGui::DragInt("##gdelay", &gdelay, 0.2f, 0, 600, sameDelay ? "%d s" : Tr("(mixed)")))
-                            for(auto& l : links)
-                                l.delay = std::clamp(gdelay, 0, 600);
-                        if(ImGui::IsItemDeactivatedAfterEdit())
-                            save = true;
                         if(ImGui::IsItemHovered())
-                            ImGui::SetTooltip("%s", Tr("Activation delay of every program."));
+                            ImGui::SetTooltip("%s", Tr("Adds an empty program: type the name of its .exe (e.g. game.exe) in the field at the top right."));
+                        // add a program chosen among the ones shown on the taskbar
+                        static std::vector<std::string> s_taskbarExes; // scanned when the list is opened
+                        if(ImGui::Button(Tr("Add a new process"), ImVec2(listW, 0)))
+                        {
+                            s_taskbarExes.clear();
+                            EnumWindows(
+                                [](HWND w, LPARAM p) -> BOOL {
+                                    auto&      list = *(std::vector<std::string>*)p;
+                                    const auto ex   = GetWindowLongW(w, GWL_EXSTYLE);
+                                    if(!IsWindowVisible(w) || GetWindowTextLengthW(w) == 0)
+                                        return TRUE;
+                                    if(GetWindow(w, GW_OWNER) != NULL && !(ex & WS_EX_APPWINDOW))
+                                        return TRUE;
+                                    if((ex & WS_EX_TOOLWINDOW) && !(ex & WS_EX_APPWINDOW))
+                                        return TRUE;
+                                    DWORD cloaked = 0;
+                                    if(SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+                                        return TRUE;
+                                    DWORD pid = 0;
+                                    GetWindowThreadProcessId(w, &pid);
+                                    if(!pid || pid == GetCurrentProcessId())
+                                        return TRUE;
+                                    const std::string name = Options::ProcessNameOfWindow(w);
+                                    static const char* ignored[] = { "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
+                                                                     "textinputhost.exe", "applicationframehost.exe", "lockapp.exe", "dwm.exe" };
+                                    if(name.empty())
+                                        return TRUE;
+                                    for(const char* ig : ignored)
+                                        if(name == ig)
+                                            return TRUE;
+                                    if(std::find(list.begin(), list.end(), name) == list.end())
+                                        list.push_back(name);
+                                    return TRUE;
+                                },
+                                (LPARAM)&s_taskbarExes);
+                            // Lossless Scaling is always offered: its scaling layer is what is detected and captured, its settings window does not
+                            // have to be open
+                            if(std::find(s_taskbarExes.begin(), s_taskbarExes.end(), std::string("losslessscaling.exe")) == s_taskbarExes.end())
+                                s_taskbarExes.push_back("losslessscaling.exe");
+                            std::sort(s_taskbarExes.begin(), s_taskbarExes.end());
+                            ImGui::OpenPopup("##taskbarExes");
+                        }
+                        if(ImGui::IsItemHovered())
+                            ImGui::SetTooltip("%s", Tr("Choose a program among the ones open on the taskbar."));
+                        if(ImGui::BeginPopup("##taskbarExes"))
+                        {
+                            int shown = 0;
+                            for(const auto& exe : s_taskbarExes)
+                            {
+                                bool known = false; // programs already in the list are not offered
+                                for(const auto& l : m_options.profileLinks)
+                                    known = known || Options::NormalizeExeName(l.exe) == exe;
+                                if(known)
+                                    continue;
+                                shown++;
+                                if(ImGui::Selectable(exe.c_str()) && m_options.profileLinks.size() < 64)
+                                {
+                                    Options::ProfileLink nl;
+                                    nl.exe      = exe;
+                                    nl.screenId = cur;
+                                    m_options.profileLinks.push_back(nl);
+                                    s_procSel = exe; // the program just added is the one shown
+                                    save      = true;
+                                }
+                            }
+                            if(shown == 0)
+                                ImGui::TextUnformatted(Tr("No program open on the taskbar"));
+                            ImGui::EndPopup();
+                        }
                     }
-                    // one line per connected screen (Windows order, at most 3): profile and refresh rate for every program on that screen
+                    ImGui::EndGroup();
+                    ImGui::SameLine();
+                    ImGui::BeginChild("##progpane", ImVec2(0, paneH), ImGuiChildFlags_Borders);
                     {
+                        // the links of the selected program (one per screen)
+                        std::vector<size_t> grp;
+                        for(size_t k = 0; k < m_options.profileLinks.size(); k++)
+                            if(exeKey(m_options.profileLinks[k].exe) == s_procSel)
+                                grp.push_back(k);
+                        if(grp.empty())
+                            ImGui::TextDisabled("%s", Tr("Choose a program in the list."));
+                        else
+                        {
+                            // its name: rewrite it here to change it
+                            static std::string s_procBufFor = "\x01";
+                            static char        s_procBuf[520];
+                            if(s_procBufFor != s_procSel)
+                            {
+                                strncpy_s(s_procBuf, s_procSel.c_str(), sizeof(s_procBuf) - 1);
+                                s_procBufFor = s_procSel;
+                            }
+                            if(s_procFocus)
+                            {
+                                ImGui::SetKeyboardFocusHere();
+                                s_procFocus = false;
+                            }
+                            ImGui::SetNextItemWidth(-ImGui::GetFrameHeight() * 1.5f);
+                            if(ImGui::InputTextWithHint("##procname", Tr("Path or name of the .exe"), s_procBuf, sizeof(s_procBuf)))
+                            {
+                                for(size_t k : grp)
+                                    m_options.profileLinks[k].exe = s_procBuf;
+                                s_procSel    = exeKey(s_procBuf);
+                                s_procBufFor = s_procSel; // (the text stays as typed)
+                            }
+                            if(ImGui::IsItemDeactivatedAfterEdit())
+                                save = true;
+                            ShowHelpMarker(Tr("When a program is detected, its profile is loaded. When it closes, the desktop settings come back.\nWrite the name of the program (e.g. game.exe) or add it from the taskbar, then choose the profile to use on each screen. You can also press the \"Add the program to the profiles\" hotkey while it is in front.\nA program can have up to 3 profiles, one per screen. The main Windows screen is used first."));
+                            auto& head = m_options.profileLinks[grp[0]];
+                            int   dropMember = -1;
+                            if(ImGui::BeginTable("##progtable", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp))
+                            {
+                                ImGui::TableSetupColumn(Tr("Setting"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+                                ImGui::TableSetupColumn(Tr("Current value"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
+                                ImGui::TableHeadersRow();
+                                auto rowLabel = [&](const char* label, bool indent = false) {
+                                    ImGui::TableNextRow();
+                                    ImGui::TableSetColumnIndex(0);
+                                    ImGui::AlignTextToFramePadding();
+                                    if(indent)
+                                        ImGui::Indent(m_fontSize);
+                                    ImGui::TextUnformatted(label);
+                                    if(indent)
+                                        ImGui::Unindent(m_fontSize);
+                                    ImGui::TableSetColumnIndex(1);
+                                    ImGui::SetNextItemWidth(-FLT_MIN);
+                                };
+                                rowLabel(Tr("Enabled"));
+                                {
+                                    bool en = head.enabled;
+                                    if(ImGui::Checkbox("##on", &en))
+                                    {
+                                        for(size_t k : grp)
+                                            m_options.profileLinks[k].enabled = en;
+                                        save = true;
+                                    }
+                                    if(ImGui::IsItemHovered())
+                                        ImGui::SetTooltip("%s", Tr("Enable this detection. Unchecked = ignored (nothing is loaded when the program runs)."));
+                                }
+                                rowLabel(Tr("Activation delay"));
+                                {
+                                    int delay = head.delay;
+                                    if(ImGui::DragInt("##delay", &delay, 0.2f, 0, 600, "%d s"))
+                                        for(size_t k : grp)
+                                            m_options.profileLinks[k].delay = std::clamp(delay, 0, 600);
+                                    if(ImGui::IsItemDeactivatedAfterEdit())
+                                        save = true;
+                                    if(ImGui::IsItemHovered())
+                                        ImGui::SetTooltip("%s", Tr("Activation delay: the program must have been running for this many seconds before the profile is applied."));
+                                }
+                                for(size_t n = 0; n < grp.size(); n++)
+                                {
+                                    auto& link = m_options.profileLinks[grp[n]];
+                                    ImGui::PushID((int)grp[n]);
+                                    char screenLabel[48];
+                                    snprintf(screenLabel, sizeof(screenLabel), "%s %d", Tr("Screen"), (int)n + 1);
+                                    rowLabel(screenLabel);
+                                    {
+                                        // screen of this profile: used when the program runs with that screen connected
+                                        std::string label = Tr("Choose a screen");
+                                        for(const auto& m : mons)
+                                            if(m.id == link.screenId)
+                                                label = monLabel(m);
+                                        if(n > 0)
+                                            ImGui::SetNextItemWidth(-ImGui::GetFrameHeight() - ImGui::GetStyle().ItemSpacing.x);
+                                        if(ImGui::BeginCombo("##screen", label.c_str(), 0))
+                                        {
+                                            for(const auto& m : mons)
+                                            {
+                                                if(m.id != link.screenId && usedByOther(grp[n], m.id))
+                                                    continue; // one screen per profile of a program
+                                                if(ImGui::Selectable(monLabel(m).c_str(), m.id == link.screenId))
+                                                {
+                                                    link.screenId = m.id;
+                                                    save          = true;
+                                                }
+                                            }
+                                            ImGui::EndCombo();
+                                        }
+                                        if(ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("%s", Tr("Screen of this profile. The screens are recognised by their name and remembered, even when they are not connected.\nWhen several screens are connected, the profile of the Windows main screen is used first."));
+                                        if(n > 0)
+                                        {
+                                            ImGui::SameLine();
+                                            if(ImGui::Button("-", ImVec2(ImGui::GetFrameHeight(), 0)))
+                                                dropMember = (int)grp[n];
+                                            if(ImGui::IsItemHovered())
+                                                ImGui::SetTooltip("%s", Tr("Remove this profile / screen"));
+                                        }
+                                    }
+                                    rowLabel(Tr("Profile"), true);
+                                    if(ImGui::BeginCombo("##profile", link.profile.empty() ? Tr("(no profile)") : link.profile.c_str(), 0))
+                                    {
+                                        for(const auto& name : s_profiles)
+                                            if(ImGui::Selectable(name.c_str(), name == link.profile))
+                                            {
+                                                link.profile = name;
+                                                save         = true;
+                                            }
+                                        ImGui::EndCombo();
+                                    }
+                                    rowLabel(Tr("Refresh rate"), true);
+                                    {
+                                        // refresh rate of this screen while the program runs (every screen of the program changes when it is detected)
+                                        char curHz[32];
+                                        if(link.hz > 0)
+                                            snprintf(curHz, sizeof(curHz), "%d Hz", link.hz);
+                                        else
+                                            snprintf(curHz, sizeof(curHz), "%s", Tr("Current Hz"));
+                                        if(ImGui::BeginCombo("##hz", curHz, 0))
+                                        {
+                                            std::vector<int> rates;
+                                            for(const auto& m : mons)
+                                                if(m.id == link.screenId)
+                                                    rates = m.rates; // remembered rates, even when the screen is not connected
+                                            if(link.hz > 0 && std::find(rates.begin(), rates.end(), link.hz) == rates.end())
+                                                rates.push_back(link.hz);
+                                            std::sort(rates.begin(), rates.end());
+                                            if(ImGui::Selectable(Tr("Current Hz"), link.hz == 0))
+                                            {
+                                                link.hz = 0;
+                                                save    = true;
+                                            }
+                                            for(int hz : rates)
+                                            {
+                                                char t[32];
+                                                snprintf(t, sizeof(t), "%d Hz", hz);
+                                                if(ImGui::Selectable(t, hz == link.hz))
+                                                {
+                                                    link.hz = hz;
+                                                    save    = true;
+                                                }
+                                            }
+                                            ImGui::EndCombo();
+                                        }
+                                        if(ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("%s", Tr("Windows refresh rate of this screen while the program runs. \"Current Hz\" = no change. When the program is detected every screen of the program changes its rate, and the original rates come back when it closes."));
+                                    }
+                                    ImGui::PopID();
+                                }
+                                ImGui::EndTable();
+                            }
+                            if(dropMember >= 0)
+                                removeList.push_back(dropMember);
+                            {
+                                const bool canAdd = !s_procSel.empty() && (int)grp.size() < Options::MAX_LINKS_PER_EXE && !freeScreen(grp.back()).empty();
+                                if(!canAdd)
+                                    ImGui::BeginDisabled();
+                                if(ImGui::Button(Tr("Add a screen")))
+                                    addAfter = (int)grp.back();
+                                if(!canAdd)
+                                    ImGui::EndDisabled();
+                                if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                                    ImGui::SetTooltip("%s", Tr("Add another profile for this program, on another screen (up to 3, one per screen). A screen has to have been connected once to be listed."));
+                            }
+                            ImGui::SameLine();
+                            if(ImGui::Button(Tr("Remove the program")))
+                                for(size_t k : grp)
+                                    removeList.push_back((int)k);
+                        }
+                    }
+                    ImGui::EndChild();
+                    ImGui::EndTabItem();
+                }
+                // ---- tab "Global settings": a value for every program at once (each program can still be changed alone afterwards). A control
+                // shows the shared value, or "(mixed)" when the programs differ ----
+                if(profTabs && ImGui::BeginTabItem(Tr("Global settings")))
+                {
+                    ImGui::PushTextWrapPos(0.0f);
+                    ImGui::TextDisabled("%s", Tr("Changes every program at once."));
+                    ImGui::PopTextWrapPos();
+                    ShowHelpMarker(Tr("Changes every program at once: the check box, the delay, and for each screen the profile and refresh rate. You can still change each program on its own afterwards. \"(mixed)\" = the programs have different values."));
+                    auto& links = m_options.profileLinks;
+                    if(links.empty())
+                        ImGui::TextDisabled("%s", Tr("No program yet: write a name above or add one from the taskbar."));
+                    else if(ImGui::BeginTable("##globaltable", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp))
+                    {
+                        ImGui::PushID("global");
+                        ImGui::TableSetupColumn(Tr("Setting"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+                        ImGui::TableSetupColumn(Tr("Current value"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
+                        ImGui::TableHeadersRow();
+                        auto rowLabel = [&](const char* label, bool indent = false) {
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
+                            ImGui::AlignTextToFramePadding();
+                            if(indent)
+                                ImGui::Indent(m_fontSize);
+                            ImGui::TextUnformatted(label);
+                            if(indent)
+                                ImGui::Unindent(m_fontSize);
+                            ImGui::TableSetColumnIndex(1);
+                            ImGui::SetNextItemWidth(-FLT_MIN);
+                        };
+                        rowLabel(Tr("Enabled"));
+                        {
+                            bool allOn = true;
+                            for(const auto& l : links)
+                                allOn = allOn && l.enabled;
+                            if(ImGui::Checkbox("##gon", &allOn))
+                            {
+                                for(auto& l : links)
+                                    l.enabled = allOn;
+                                save = true;
+                            }
+                            if(ImGui::IsItemHovered())
+                                ImGui::SetTooltip("%s", Tr("Checks / unchecks every detection."));
+                        }
+                        rowLabel(Tr("Activation delay"));
+                        {
+                            bool sameDelay = true;
+                            for(const auto& l : links)
+                                sameDelay = sameDelay && l.delay == links[0].delay;
+                            int gdelay = links[0].delay;
+                            if(ImGui::DragInt("##gdelay", &gdelay, 0.2f, 0, 600, sameDelay ? "%d s" : Tr("(mixed)")))
+                                for(auto& l : links)
+                                    l.delay = std::clamp(gdelay, 0, 600);
+                            if(ImGui::IsItemDeactivatedAfterEdit())
+                                save = true;
+                            if(ImGui::IsItemHovered())
+                                ImGui::SetTooltip("%s", Tr("Activation delay of every program."));
+                        }
                         // the programs (one head link per .exe)
                         std::vector<size_t> heads;
                         for(size_t k = 0; k < links.size(); k++)
@@ -2007,6 +2131,7 @@ void UI::Render()
                                     n++;
                             return n;
                         };
+                        // one group of rows per connected screen (Windows order, at most 3): profile and refresh rate for every program on it
                         const int nScreens = (int)(std::min)(m_displays.size(), (size_t)Options::MAX_LINKS_PER_EXE);
                         for(int d = 0; d < nScreens; d++)
                         {
@@ -2018,58 +2143,62 @@ void UI::Render()
                                 if(m.id == sid)
                                     mon = &m;
                             ImGui::PushID(d);
+                            char screenLabel[48];
+                            snprintf(screenLabel, sizeof(screenLabel), "%s %d", Tr("Screen"), d + 1);
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
                             ImGui::AlignTextToFramePadding();
-                            ImGui::Text("%s %d", Tr("Screen"), d + 1);
-                            if(ImGui::IsItemHovered() && mon)
-                                ImGui::SetTooltip("%s", monLabel(*mon).c_str());
-                            ImGui::SameLine(m_fontSize * 5.0f);
-                            // profile of every program on this screen
-                            std::string shared;
-                            bool        same = true, firstSeen = true;
-                            for(size_t h : heads)
+                            ImGui::TextUnformatted(screenLabel);
+                            ImGui::TableSetColumnIndex(1);
+                            ImGui::AlignTextToFramePadding();
+                            ImGui::TextDisabled("%s", mon ? monLabel(*mon).c_str() : "");
+                            rowLabel(Tr("Profile"), true);
                             {
-                                const int k = linkOn(h, sid);
-                                const std::string p = k >= 0 ? links[k].profile : std::string();
-                                if(firstSeen)
-                                    shared = p, firstSeen = false;
-                                else if(p != shared)
-                                    same = false;
-                            }
-                            ImGui::SetNextItemWidth(m_fontSize * 7.5f);
-                            if(ImGui::BeginCombo("##gsprofile", !same ? Tr("(mixed)") : (shared.empty() ? Tr("(no profile)") : shared.c_str()), 0))
-                            {
-                                auto apply = [&](const std::string& name) {
-                                    std::vector<Options::ProfileLink> added;
-                                    for(size_t h : heads)
-                                    {
-                                        const int k = linkOn(h, sid);
-                                        if(k >= 0)
-                                            links[k].profile = name;
-                                        else if(!name.empty() && countOf(h) < Options::MAX_LINKS_PER_EXE)
+                                std::string shared;
+                                bool        same = true, firstSeen = true;
+                                for(size_t h : heads)
+                                {
+                                    const int         k = linkOn(h, sid);
+                                    const std::string p = k >= 0 ? links[k].profile : std::string();
+                                    if(firstSeen)
+                                        shared = p, firstSeen = false;
+                                    else if(p != shared)
+                                        same = false;
+                                }
+                                if(ImGui::BeginCombo("##gsprofile", !same ? Tr("(mixed)") : (shared.empty() ? Tr("(no profile)") : shared.c_str()), 0))
+                                {
+                                    auto apply = [&](const std::string& name) {
+                                        std::vector<Options::ProfileLink> added;
+                                        for(size_t h : heads)
                                         {
-                                            Options::ProfileLink nl = links[h]; // same program, delay and check box
-                                            nl.profile              = name;
-                                            nl.screenId             = sid;
-                                            nl.hz                   = 0;
-                                            added.push_back(nl);
+                                            const int k = linkOn(h, sid);
+                                            if(k >= 0)
+                                                links[k].profile = name;
+                                            else if(!name.empty() && countOf(h) < Options::MAX_LINKS_PER_EXE)
+                                            {
+                                                Options::ProfileLink nl = links[h]; // same program, delay and check box
+                                                nl.profile              = name;
+                                                nl.screenId             = sid;
+                                                nl.hz                   = 0;
+                                                added.push_back(nl);
+                                            }
                                         }
-                                    }
-                                    for(const auto& nl : added)
-                                        if(links.size() < 64)
-                                            links.push_back(nl);
-                                    save = true;
-                                };
-                                if(ImGui::Selectable(Tr("(no profile)"), same && shared.empty()))
-                                    apply(std::string());
-                                for(const auto& name : s_profiles)
-                                    if(ImGui::Selectable(name.c_str(), same && name == shared))
-                                        apply(name);
-                                ImGui::EndCombo();
+                                        for(const auto& nl : added)
+                                            if(links.size() < 64)
+                                                links.push_back(nl);
+                                        save = true;
+                                    };
+                                    if(ImGui::Selectable(Tr("(no profile)"), same && shared.empty()))
+                                        apply(std::string());
+                                    for(const auto& name : s_profiles)
+                                        if(ImGui::Selectable(name.c_str(), same && name == shared))
+                                            apply(name);
+                                    ImGui::EndCombo();
+                                }
+                                if(ImGui::IsItemHovered())
+                                    ImGui::SetTooltip("%s", Tr("Profile loaded for every program when it runs on this screen."));
                             }
-                            if(ImGui::IsItemHovered())
-                                ImGui::SetTooltip("%s", Tr("Profile loaded for every program when it runs on this screen."));
-                            ImGui::SameLine();
-                            // refresh rate of this screen for every program
+                            rowLabel(Tr("Refresh rate"), true);
                             {
                                 int  hzShared = 0;
                                 bool hzSame = true, hzFirst = true;
@@ -2090,7 +2219,6 @@ void UI::Render()
                                     snprintf(curHz, sizeof(curHz), "%d Hz", hzShared);
                                 else
                                     snprintf(curHz, sizeof(curHz), "%s", Tr("Current Hz"));
-                                ImGui::SetNextItemWidth(m_fontSize * 4.6f);
                                 if(ImGui::BeginCombo("##gshz", curHz, 0))
                                 {
                                     auto applyHz = [&](int hz) {
@@ -2116,9 +2244,10 @@ void UI::Render()
                             }
                             ImGui::PopID();
                         }
+                        ImGui::PopID();
+                        ImGui::EndTable();
                     }
-                    ImGui::PopID();
-                    ImGui::Separator();
+                    ImGui::EndTabItem();
                 }
                 if(addAfter >= 0 && m_options.profileLinks.size() < 64)
                 {
@@ -2142,6 +2271,8 @@ void UI::Render()
                 if(save)
                     m_options.SaveApp();
             }
+            if(profTabs)
+                ImGui::EndTabBar();
 
             }
             if(s_cat == 7)
@@ -2283,7 +2414,7 @@ void UI::Render()
                     changed |= SliderFloatStep(Tr("Grey level (HDR)"), &m_options.hud.hdrGrey, 0.5f, 2.0f, "%.2f", 0.01f);
                     ShowHelpMarker(Tr("Captured image, Windows HDR only: mid-tone curve below white. Above 1 = darker greys, below 1 = lighter greys (1 = unchanged). Black and highlights stay put."));
                     changed |= SliderFloatStep(Tr("Nits (HDR)"), &m_options.hud.hdrNits, -1000.0f, 1000.0f, "%+.0f nits", 1.0f);
-                    ShowHelpMarker(Tr("Captured image only, Windows HDR only: brightness of the picture from -1000 to +1000 nits around the SDR white level (0 = unchanged). The HUD is not affected."));
+                    ShowHelpMarker(Tr("Captured image only, Windows HDR only: brightness of the picture, -1000 to +1000 nits (0 = unchanged, -1000 = black screen). The HUD is not affected."));
                     UpdateCaptureTone();
                 }
                 else
@@ -2458,14 +2589,83 @@ void UI::Render()
                 if(ImGui::Button(labels[4]))
                     PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
 
-                ImVec2 popupSize = ImVec2(m_fontSize * 24, m_fontSize * 15);
+                ImVec2 popupSize = ImVec2((std::min)(m_fontSize * 34, viewport.x * 0.95f), (std::min)(m_fontSize * 34, viewport.y * 0.95f));
                 ImGui::SetNextWindowSize(popupSize, ImGuiCond_Always);
                 ImGui::SetNextWindowPos(ImVec2((viewport.x - popupSize.x) / 2, (viewport.y - popupSize.y) / 2), ImGuiCond_Always);
                 if(ImGui::BeginPopup("About"))
                 {
-                    ImGui::TextUnformatted(GetLanguage() == LANG_FR ? SHADERBEAM_ABOUT_FR : SHADERBEAM_ABOUT);
-                    if(ImGui::Button(Tr("Close")))
-                        ImGui::CloseCurrentPopup();
+                    const bool fr = GetLanguage() == LANG_FR;
+                    // red close cross, top right
+                    {
+                        const ImVec2 back = ImGui::GetCursorPos();
+                        const float  sz   = ImGui::GetFrameHeight();
+                        ImGui::SetCursorPos(ImVec2(ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x - sz, ImGui::GetStyle().WindowPadding.y));
+                        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.80f, 0.15f, 0.15f, 1.0f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.92f, 0.25f, 0.25f, 1.0f));
+                        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.65f, 0.10f, 0.10f, 1.0f));
+                        if(ImGui::Button("X##aboutclose", ImVec2(sz, sz)))
+                            ImGui::CloseCurrentPopup();
+                        ImGui::PopStyleColor(3);
+                        ImGui::SetCursorPos(back);
+                    }
+                    // credits, each line centred
+                    const std::string about = fr ? SHADERBEAM_ABOUT_FR : SHADERBEAM_ABOUT;
+                    size_t start = 0;
+                    while(start <= about.size())
+                    {
+                        size_t end = about.find('\n', start);
+                        if(end == std::string::npos)
+                            end = about.size();
+                        const std::string line = about.substr(start, end - start);
+                        const float w = ImGui::CalcTextSize(line.c_str()).x;
+                        ImGui::SetCursorPosX((std::max)(ImGui::GetStyle().WindowPadding.x, (ImGui::GetWindowWidth() - w) * 0.5f));
+                        ImGui::TextUnformatted(line.empty() ? " " : line.c_str());
+                        start = end + 1;
+                    }
+                    // the release notes, to read what is new after an update
+                    SectionHeader(Tr("Release notes"));
+                    const float closeH = ImGui::GetFrameHeightWithSpacing();
+                    if(ImGui::BeginChild("##relnotes", ImVec2(0, -closeH), ImGuiChildFlags_Borders))
+                    {
+                        const ImVec4 accent = ImGui::GetStyle().Colors[ImGuiCol_CheckMark];
+                        ImGui::PushTextWrapPos(0.0f);
+                        for(const char* const* n = fr ? RELEASE_NOTES_FR : RELEASE_NOTES_EN; *n; ++n)
+                        {
+                            const char  kind = (*n)[0];
+                            const char* text = *n + 1;
+                            switch(kind)
+                            {
+                            case 'T':
+                                ImGui::PushFont(m_largeFont, m_fontSize * 1.3f);
+                                ImGui::TextColored(accent, "%s", text);
+                                ImGui::PopFont();
+                                break;
+                            case 'H':
+                                ImGui::Spacing();
+                                ImGui::TextColored(accent, "%s", text);
+                                ImGui::Separator();
+                                break;
+                            case 'S':
+                                ImGui::Spacing();
+                                ImGui::TextUnformatted(text);
+                                break;
+                            case 'B':
+                                ImGui::Bullet();
+                                ImGui::TextWrapped("%s", text);
+                                break;
+                            case 'N':
+                                ImGui::TextColored(ImGui::GetStyle().Colors[ImGuiCol_TextDisabled], "%s", text);
+                                break;
+                            default:
+                                ImGui::TextWrapped("%s", text);
+                                break;
+                            }
+                        }
+                        ImGui::PopTextWrapPos();
+                    }
+                    ImGui::EndChild();
+                    if(ImGui::Button(Tr("New version")))
+                        ShellExecuteW(nullptr, L"open", L"https://github.com/anto1444/Nbeam3DVision/releases", nullptr, nullptr, SW_SHOWNORMAL);
                     ImGui::EndPopup();
                 }
             }
@@ -2541,6 +2741,7 @@ void UI::Render()
     if(BannerActive())
     {
         RenderBanner();
+        RenderMenu();
     }
     // a shortcut capture started in the Hotkeys section, then another tab was opened: cancelled (the hotkeys work again)
     if((s_captureId >= 0 || s_padCaptureId >= 0) && s_hotkeysDrawnFrame != ImGui::GetFrameCount())
@@ -2740,7 +2941,7 @@ void UI::ShowNote(const std::string& text)
 bool UI::BannerActive() const
 {
     const auto now = GetTickCount64();
-    return m_ready && ((m_bannerUntil && now < m_bannerUntil) || (m_adjustUntil && now < m_adjustUntil) || (m_noteUntil && now < m_noteUntil));
+    return m_ready && ((m_bannerUntil && now < m_bannerUntil) || (m_adjustUntil && now < m_adjustUntil) || (m_noteUntil && now < m_noteUntil) || (m_menuUntil && now < m_menuUntil));
 }
 
 // shown for 3 seconds when a 3D mode is active: tells that the emitter is on (or could not start)
@@ -2819,6 +3020,293 @@ void UI::RenderBanner()
     }
 }
 
+// ---- 3D mini menu: driven only by the NVIDIA emitter ----
+// wheel = move between the lines, button held + wheel = change the value, button released = apply the heavy changes (3D mode, AI resolution)
+void UI::MenuInput(int clicks, int wheel, int held)
+{
+    if(!m_ready || m_windowMode || m_options.emitter.hold)
+        return;
+    const auto now = GetTickCount64();
+    if(!(m_menuUntil && now < m_menuUntil))
+        m_menuOpen = false; // the timer ran out: the next input opens the menu again
+    m_menuClicks += clicks;
+    m_menuWheel += wheel;
+    m_menuHeld += held;
+    if(held)
+        m_menuLastHeld = now;
+    const int sec = m_options.hud.bannerSeconds;
+    m_menuUntil   = sec > 10 ? ~0ULL : now + (ULONGLONG)(sec > 0 ? sec : 5) * 1000ULL; // the same duration as the 3D banner
+}
+
+void UI::RenderMenu()
+{
+    const auto now = GetTickCount64();
+    if(!(m_menuUntil && now < m_menuUntil))
+    {
+        m_menuOpen        = false;
+        m_menuPendingItem = -1;
+        return;
+    }
+    auto& s = m_options.emitter;
+
+    // a line is either a live setting (adjust) or a heavy one (3D mode, AI resolution) chosen from a short list and applied on release
+    struct Item
+    {
+        std::string                           label;
+        std::string                           value;
+        std::function<void(int)>              adjust;                    // live: n steps (positive = wheel up)
+        int                                   count = 0;                 // heavy: number of choices
+        int                                   cur   = 0;
+        std::function<std::string(int)>       name;
+        std::function<bool(int)>              enabled;
+        std::function<void(int)>              apply;
+    };
+    std::vector<Item> items;
+    char              buf[64];
+    auto addFloat = [&](const char* label, float* p, float lo, float hi, float step, const char* fmt) {
+        snprintf(buf, sizeof(buf), fmt, *p);
+        Item it;
+        it.label  = Tr(label);
+        it.value  = buf;
+        it.adjust = [=](int n) { *p = std::clamp(*p + (float)n * step, lo, hi); };
+        items.push_back(std::move(it));
+    };
+    auto addBool = [&](const char* label, bool* p) {
+        Item it;
+        it.label  = Tr(label);
+        it.value  = *p ? Tr("On") : Tr("Off");
+        it.adjust = [=](int n) { *p = n > 0; };
+        items.push_back(std::move(it));
+    };
+
+    const double syncHz = s.EffectiveSyncHz(m_options.vsyncRate, m_options.subFrames);
+    const int    range  = syncHz > 0 ? (int)(1e6 / syncHz) : 10000;
+    const bool   on3d   = s.sourceFormat != StereoSource::Off;
+
+    // 3D mode (restarts the 3D renderer: applied when the button is released)
+    {
+        static const char* kNames[] = { "Off", "Side by Side (SBS)", "Top and Bottom (TB)", "Checkerboard", "2D to 3D (AI)" };
+        static std::vector<std::string> s_missing;
+        static ULONGLONG                s_missingAt = 0;
+        if(now - s_missingAt > 2000)
+        {
+            s_missing   = MissingAiFilesNextToExe();
+            s_missingAt = now;
+        }
+        const bool aiOk = s_missing.empty();
+        Item       it;
+        it.label   = Tr("3D Source Format");
+        it.count   = 5;
+        it.cur     = std::clamp((int)s.sourceFormat, 0, 4);
+        it.name    = [](int i) { return std::string(Tr(kNames[i])); };
+        it.enabled = [aiOk](int i) { return i != 4 || aiOk; };
+        it.apply   = [this](int i) {
+            auto& e = m_options.emitter;
+            if((int)e.sourceFormat == i)
+                return;
+            e.sourceFormat   = (StereoSource)i;
+            m_options.liveReload = true; // the 3D source changed: rebuilt without a restart
+            m_lastSource         = e.sourceFormat;
+        };
+        items.push_back(std::move(it));
+    }
+    if(on3d)
+    {
+        // convergence, shown -100..+100 like the slider
+        {
+            const float conv = (50.0f - s.ai.convergence) * 2.0f;
+            snprintf(buf, sizeof(buf), "%+.0f", conv);
+            Item it;
+            it.label  = Tr("Convergence");
+            it.value  = buf;
+            it.adjust = [&s](int n) {
+                const float c    = std::clamp((50.0f - s.ai.convergence) * 2.0f + (float)n, -100.0f, 100.0f);
+                s.ai.convergence = std::clamp(50.0f - c * 0.5f, 0.0f, 100.0f);
+            };
+            items.push_back(std::move(it));
+        }
+        if(s.sourceFormat == StereoSource::AiDepth)
+        {
+            static const int kWidths[] = { 224, 308, 420, 518, 672, 840, 1008 };
+            int              idx       = 1;
+            for(int i = 0; i < 7; i++)
+                if(std::abs(kWidths[i] - s.ai.modelWidth) < std::abs(kWidths[idx] - s.ai.modelWidth))
+                    idx = i;
+            Item it;
+            it.label = Tr("AI resolution (px)");
+            it.count = 7;
+            it.cur   = idx;
+            it.name  = [](int i) { return std::to_string(kWidths[i]); };
+            it.apply = [&s](int i) { s.ai.modelWidth = kWidths[std::clamp(i, 0, 6)]; };
+            items.push_back(std::move(it));
+            addFloat("Depth Strength (%)", &s.ai.strength, 0.0f, 10.0f, 0.1f, "%.1f");
+            addFloat("Depth smoothing (%)", &s.ai.smoothing, 0.0f, 95.0f, 1.0f, "%.0f");
+            addFloat("Anti-halo (%)", &s.ai.antiHalo, -300.0f, 300.0f, 2.0f, "%.0f");
+        }
+        {
+            snprintf(buf, sizeof(buf), "%d", s.syncOffsetUs);
+            Item it;
+            it.label  = Tr("Sync Offset (us)");
+            it.value  = buf;
+            it.adjust = [&s, range](int n) { s.syncOffsetUs = std::clamp(s.syncOffsetUs + n * 100, -range, 0); };
+            items.push_back(std::move(it));
+        }
+        addFloat("Open Duration (us)", &s.nvidia.openDurationUs, 0.0f, (float)range, 100.0f, "%.0f");
+        addBool("Swap Eyes", &s.swapEyes);
+    }
+
+    // ---- pending input ----
+    const int clicks = m_menuClicks.exchange(0);
+    const int wheel  = m_menuWheel.exchange(0);
+    const int held   = m_menuHeld.exchange(0);
+    const int count  = (int)items.size();
+    bool      changed = false;
+    if(!m_menuOpen)
+    {
+        // any input opens the menu on the first line
+        if(clicks || wheel || held)
+        {
+            m_menuOpen        = true;
+            m_menuIndex       = 0;
+            m_menuPendingItem = -1;
+        }
+        else
+            return;
+    }
+    else
+    {
+        m_menuIndex = std::clamp(m_menuIndex, 0, count - 1);
+        // the wheel moves between the lines (up = previous line)
+        // (less sensitive than the settings: 3 ticks of the wheel per line)
+        m_menuNavRest += wheel;
+        const int nav = m_menuNavRest / 3;
+        m_menuNavRest -= nav * 3;
+        if(nav != 0)
+        {
+            m_menuPendingItem = -1; // a change that was not confirmed is dropped
+            m_menuIndex       = std::clamp(m_menuIndex - nav, 0, count - 1);
+        }
+        // button held + wheel: change the value of the highlighted line
+        if(held != 0)
+        {
+            Item& it = items[m_menuIndex];
+            if(it.count > 0)
+            {
+                if(m_menuPendingItem != m_menuIndex)
+                {
+                    m_menuPendingItem = m_menuIndex;
+                    m_menuPendingVal  = it.cur;
+                    m_menuChoiceRest  = 0;
+                }
+                // (less sensitive than the other settings: 3 ticks of the wheel per choice)
+                m_menuChoiceRest += held;
+                const int choiceSteps = m_menuChoiceRest / 3;
+                m_menuChoiceRest -= choiceSteps * 3;
+                int v   = m_menuPendingVal;
+                const int dir = choiceSteps > 0 ? 1 : -1;
+                for(int k = 0; k < std::abs(choiceSteps); k++)
+                {
+                    int nv = v + dir;
+                    while(nv >= 0 && nv < it.count && it.enabled && !it.enabled(nv))
+                        nv += dir;
+                    if(nv >= 0 && nv < it.count)
+                        v = nv;
+                }
+                m_menuPendingVal = v;
+            }
+            else if(it.adjust)
+            {
+                it.adjust(held);
+                RequestSave();
+                changed = true;
+            }
+        }
+        // the button was released: apply what was chosen (a plain click with nothing to apply closes the menu)
+        for(int i = 0; i < clicks; i++)
+        {
+            if(m_menuPendingItem >= 0)
+            {
+                Item& it = items[std::clamp(m_menuPendingItem, 0, count - 1)];
+                if(it.apply && m_menuPendingVal != it.cur)
+                {
+                    it.apply(m_menuPendingVal);
+                    RequestSave();
+                    changed = true;
+                }
+                m_menuPendingItem = -1;
+            }
+            else if(now - m_menuLastHeld < 1500)
+                ; // the release at the end of a turn with the button held
+            else
+            {
+                m_menuOpen  = false;
+                m_menuUntil = 0; // a click closes the menu
+                return;
+            }
+        }
+    }
+    if(changed)
+        return RenderMenu(); // draw the new values (the list is rebuilt from the settings)
+
+    // ---- drawing: stacked on the 3D banner (above it when the banner is at the bottom, below it when it is at the top) ----
+    const ImU32 accent   = IM_COL32((int)(m_options.hud.r * 255), (int)(m_options.hud.g * 255), (int)(m_options.hud.b * 255), 255);
+    auto        drawList = ImGui::GetForegroundDrawList();
+    const auto  size     = ImGui::GetMainViewport()->Size;
+    const float fs       = m_fontSize;
+    const float rowH     = fs * 1.7f;
+    const int   maxRows  = 9;
+    const int   rows     = (std::min)(count, maxRows);
+    const int   first    = std::clamp(m_menuIndex - rows / 2, 0, count - rows);
+    const char* help[]   = { Tr("Wheel: move up / down"), Tr("Button held + wheel: change the value"), Tr("3D mode, AI resolution: press the button again to confirm"), Tr("Click: close the menu") };
+    std::vector<std::string> shown(count);
+    for(int i = 0; i < count; i++)
+    {
+        const Item& it = items[i];
+        if(it.count > 0)
+        {
+            const bool pend = m_menuPendingItem == i;
+            shown[i]        = it.name(pend ? m_menuPendingVal : it.cur) + (pend && m_menuPendingVal != it.cur ? "  >" : "");
+        }
+        else
+            shown[i] = it.value;
+    }
+    float boxW = fs * 26.0f;
+    for(int i = 0; i < count; i++)
+        boxW = (std::max)(boxW, m_smallFont->CalcTextSizeA(fs, size.x, 0, items[i].label.c_str()).x + m_smallFont->CalcTextSizeA(fs, size.x, 0, shown[i].c_str()).x + fs * 5.0f);
+    for(const char* h : help)
+        boxW = (std::max)(boxW, m_smallFont->CalcTextSizeA(fs, size.x, 0, h).x + fs * 2.5f);
+    const float helpH   = fs * 1.35f * 4.0f + fs * 0.8f;
+    const float boxH    = rowH * (float)rows + fs * 1.2f + helpH;
+    const float bannerH = fs * (5.0f + 1.4f * 2.0f); // height of the banner (two lines)
+    const int   corner  = std::clamp(m_options.hud.bannerCorner, 0, 3);
+    const float x0      = (corner == 1 || corner == 2) ? size.x - fs - boxW : fs;
+    const bool  top     = corner == 2 || corner == 3;
+    const float y0      = top ? fs + bannerH + fs * 0.5f : size.y - fs - bannerH - fs * 0.5f - boxH;
+    drawList->AddRectFilled(ImVec2(x0, y0), ImVec2(x0 + boxW, y0 + boxH), IM_COL32(0, 0, 0, 255));
+    float y = y0 + fs * 0.6f;
+    for(int i = first; i < first + rows; i++)
+    {
+        const bool sel = i == m_menuIndex;
+        if(sel)
+            drawList->AddRectFilled(ImVec2(x0 + fs * 0.4f, y), ImVec2(x0 + boxW - fs * 0.4f, y + rowH), accent);
+        const ImU32 col = sel ? IM_COL32(0, 0, 0, 255) : IM_COL32(215, 215, 215, 255);
+        const float ty  = y + (rowH - fs) * 0.5f;
+        drawList->AddText(ImVec2(x0 + fs, ty), col, items[i].label.c_str());
+        const float vw = m_smallFont->CalcTextSizeA(fs, size.x, 0, shown[i].c_str()).x;
+        drawList->AddText(ImVec2(x0 + boxW - fs - vw, ty), sel ? col : accent, shown[i].c_str());
+        y += rowH;
+    }
+    // how to use it (for beginners)
+    y += fs * 0.3f;
+    drawList->AddLine(ImVec2(x0 + fs, y), ImVec2(x0 + boxW - fs, y), IM_COL32(90, 90, 90, 255));
+    y += fs * 0.5f;
+    for(const char* h : help)
+    {
+        drawList->AddText(ImVec2(x0 + fs, y), IM_COL32(170, 170, 170, 255), h);
+        y += fs * 1.35f;
+    }
+}
+
 void UI::UpdateCaptureTone(bool refreshHdr)
 {
     if(refreshHdr)
@@ -2826,7 +3314,10 @@ void UI::UpdateCaptureTone(bool refreshHdr)
     const bool hdr = m_options.useHdr && WindowsHdrOn(m_options.outputWindow);
     m_options.captureBlack = hdr ? std::clamp(m_options.hud.hdrBlackNits, 0.0f, 20.0f) / 80.0f : 0.0f;
     m_options.captureGrey  = hdr ? std::clamp(m_options.hud.hdrGrey, 0.5f, 2.0f) : 1.0f;
-    m_options.captureGain  = hdr ? (std::max)(0.05f, 1.0f + std::clamp(m_options.hud.hdrNits, -1000.0f, 1000.0f) / ((std::max)(s_sdrWhiteScale, 0.1f) * 80.0f)) : 1.0f;
+    // Nits: above 0 the picture gets brighter by that many nits; below 0 it fades down to a black picture at -1000 (the HUD, drawn after,
+    // is never affected)
+    const float nits       = std::clamp(m_options.hud.hdrNits, -1000.0f, 1000.0f);
+    m_options.captureGain  = !hdr ? 1.0f : nits >= 0.0f ? 1.0f + nits / ((std::max)(s_sdrWhiteScale, 0.1f) * 80.0f) : 1.0f + nits / 1000.0f;
 }
 
 void UI::RefreshHotkeyTexts()
@@ -2855,9 +3346,18 @@ void UI::RenderHotkeys()
         m_options.SaveApp(); // hotkeys are global: saved in Nbeam.app.cfg, whatever the active profile
     };
 
+    // a click anywhere but on the box being set cancels the change (a click on another box then starts that one)
+    static bool s_captureHovered = false;
+    if(s_captureId >= 0 && ImGui::IsMouseClicked(0) && !s_captureHovered)
+    {
+        s_hotkeyError.clear();
+        CancelCaptureNow(m_options);
+    }
+
     if(s_captureId >= 0)
     {
-        // poll the keyboard (the global hotkeys are unregistered while capturing so they cannot fire)
+        // keyboard: the first key pressed is the new shortcut. The gamepad / emitter part is handled below (same box).
+        // (the global hotkeys are unregistered while capturing so they cannot fire)
         unsigned mods = 0;
         if(GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
         if(GetAsyncKeyState(VK_MENU) & 0x8000) mods |= MOD_ALT;
@@ -2879,33 +3379,39 @@ void UI::RenderHotkeys()
                     s_hotkeyError = "This shortcut cannot be empty."; // the HUD / the effects must always be reachable
                 else
                 {
-                    m_options.hotkeys[s_captureId].mods = 0, m_options.hotkeys[s_captureId].vk = 0; // Backspace clears the shortcut
+                    m_options.hotkeys[s_captureId].mods = 0, m_options.hotkeys[s_captureId].vk = 0, m_options.hotkeys[s_captureId].pad = 0; // Backspace clears the shortcut
                     s_hotkeyError.clear();
                 }
             }
             else
             {
-                bool clash = false;
+                // a shortcut already used by another action: the two actions swap their shortcuts
+                int other = -1;
                 for(int id : ids)
                     if(id != s_captureId && m_options.hotkeys[id].vk == vk && m_options.hotkeys[id].mods == mods)
-                        clash = true;
-                if(clash)
-                    s_hotkeyError = "Already used by another action.";
+                        other = id;
+                auto& hkA = m_options.hotkeys[s_captureId];
+                if(other >= 0 && IsProtectedHotkey(other) && !hkA.vk)
+                    s_hotkeyError = "This shortcut cannot be empty."; // the other action would be left without a key
                 else
                 {
-                    const auto old = m_options.hotkeys[s_captureId];
-                    m_options.hotkeys[s_captureId].mods = mods, m_options.hotkeys[s_captureId].vk = vk;
-                    restoreAll(); // registers everything again; check this one
-                    if(false)
+                    const auto oldA = hkA;
+                    hkA.mods = mods, hkA.vk = vk;
+                    if(!IsProtectedHotkey(s_captureId))
+                        hkA.pad = 0; // one device per box (the HUD and the effects keep their pad shortcut: they must stay reachable)
+                    if(other >= 0)
                     {
-                        m_options.hotkeys[s_captureId] = old;
-                        s_hotkeyError                  = "That combination is taken by another program.";
+                        auto& hkB = m_options.hotkeys[other];
+                        hkB.mods = oldA.mods, hkB.vk = oldA.vk;
+                        hkB.pad  = IsProtectedHotkey(s_captureId) ? (IsProtectedHotkey(other) ? hkB.pad : 0) : oldA.pad;
                     }
-                    else
-                        s_hotkeyError.clear();
+                    restoreAll(); // registers everything again
+                    s_hotkeyError.clear();
                 }
             }
-            s_captureId = -1;
+            s_captureId    = -1;
+            s_padCaptureId = -1;
+            s_padMax       = 0;
             restoreAll();
             RefreshHotkeyTexts();
             break;
@@ -2937,21 +3443,29 @@ void UI::RenderHotkeys()
             s_padMax |= b;
         else if(s_padMax)
         {
-            bool clash = false;
+            // a combination already used by another action: the two actions swap their shortcuts
+            int other = -1;
             for(int id : ids)
                 if(id != s_padCaptureId && m_options.hotkeys[id].pad == s_padMax)
-                    clash = true;
-            if(clash)
-                s_hotkeyError = "Already used by another action.";
-            else
+                    other = id;
+            auto&      hkA  = m_options.hotkeys[s_padCaptureId];
+            const auto oldA = hkA;
+            hkA.pad         = s_padMax;
+            if(!IsProtectedHotkey(s_padCaptureId))
+                hkA.mods = 0, hkA.vk = 0; // one device per box
+            if(other >= 0)
             {
-                m_options.hotkeys[s_padCaptureId].pad = s_padMax;
-                s_hotkeyError.clear();
+                auto& hkB = m_options.hotkeys[other];
+                hkB.pad   = oldA.pad;
+                if(!IsProtectedHotkey(s_padCaptureId) && !(IsProtectedHotkey(other) && !oldA.vk))
+                    hkB.mods = oldA.mods, hkB.vk = oldA.vk;
             }
+            s_hotkeyError.clear();
             done = true;
         }
         if(done)
         {
+            s_captureId    = -1;
             s_padCaptureId = -1;
             s_padMax       = 0;
             restoreAll();
@@ -2959,38 +3473,46 @@ void UI::RenderHotkeys()
         }
     }
 
+    // what an action is bound to: the keyboard shortcut and / or the pad / emitter combination
+    auto bindingText = [](const Options::Hotkey& h) {
+        std::string t;
+        if(h.vk)
+            t = Options::HotkeyText(h);
+        if(h.pad)
+            t += (t.empty() ? "" : " / ") + Pad::Text(h.pad);
+        return t.empty() ? std::string(Tr("None")) : t;
+    };
     for(int id : ids)
     {
         ImGui::PushID(id);
-        const bool capturing = s_captureId == id;
-        std::string label    = capturing ? std::string(Tr("Press keys... (Esc cancels, Backspace clears)")) : Options::HotkeyText(m_options.hotkeys[id]);
+        const bool  capturing = s_captureId == id;
+        std::string label     = capturing ? std::string(Tr("Press a key or a button... (Esc cancels, Backspace clears)")) : bindingText(m_options.hotkeys[id]);
         ImGui::TextUnformatted(Tr(Options::HotkeyActionName(id)));
-        // the key buttons are lined up on the right edge of the HUD so the action names stay readable
-        const float keyWidth = m_fontSize * 11.5f, padWidth = m_fontSize * 10.0f;
-        ImGui::SameLine(ImGui::GetCursorPosX() + (std::max)(ImGui::GetContentRegionAvail().x - keyWidth - padWidth - ImGui::GetStyle().ItemSpacing.x, m_fontSize * 9));
-        if(ImGui::Button((label + "###hk").c_str(), ImVec2(keyWidth, 0)) && s_captureId < 0 && s_padCaptureId < 0)
+        // one box per action, lined up on the right edge of the HUD so the action names stay readable
+        const float boxWidth = m_fontSize * 21.5f;
+        ImGui::SameLine(ImGui::GetCursorPosX() + (std::max)(ImGui::GetContentRegionAvail().x - boxWidth, m_fontSize * 9));
+        if(ImGui::Button((label + "###hk").c_str(), ImVec2(boxWidth, 0)))
         {
-            s_captureId = id;
-            s_hotkeyError.clear();
-            m_options.hotkeysSuspended = true;
-            for(int i = 0; i < HOTKEY_COUNT; i++)
-                m_options.UnregisterHotkey(i);
+            if(capturing)
+                CancelCaptureNow(m_options); // a click on the box being set cancels it
+            else if(s_captureId < 0)
+            {
+                s_captureId    = id;
+                s_padCaptureId = id;
+                s_padArmed     = false;
+                s_padMax       = 0;
+                s_hotkeyError.clear();
+                m_options.hotkeysSuspended = true;
+                for(int i = 0; i < HOTKEY_COUNT; i++)
+                    m_options.UnregisterHotkey(i);
+            }
         }
-        ImGui::SameLine();
-        const bool        padCapturing = s_padCaptureId == id;
-        const std::string padLabel     = padCapturing ? std::string(Tr("Press buttons...")) : (m_options.hotkeys[id].pad ? Pad::Text(m_options.hotkeys[id].pad) : std::string(Tr("Pad: none")));
-        if(ImGui::Button((padLabel + "###pad").c_str(), ImVec2(padWidth, 0)) && s_captureId < 0 && s_padCaptureId < 0)
-        {
-            s_padCaptureId = id;
-            s_padArmed     = false;
-            s_padMax       = 0;
-            s_hotkeyError.clear();
-            m_options.hotkeysSuspended = true;
-        }
+        if(capturing)
+            s_captureHovered = ImGui::IsItemHovered();
         ImGui::PopID();
     }
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("%s", Tr("Gamepad (XInput): click a Pad button, then hold the buttons together and release. Esc cancels, Backspace clears. The pad moves the HUD only while the HUD is open and in front."));
+    ImGui::TextDisabled("%s", Tr("Click a box, then press a key, a gamepad button (several together: hold, then release) - the NVIDIA emitter only drives the 3D menu. A click elsewhere or Esc cancels, Backspace clears. The pad moves the HUD only while the HUD is open and in front."));
     ImGui::PopTextWrapPos();
     if(ImGui::Button(Tr("Reset hotkeys")) && s_captureId < 0 && s_padCaptureId < 0)
     {

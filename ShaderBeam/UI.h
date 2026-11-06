@@ -44,6 +44,9 @@ public:
     std::timed_mutex m_imguiMutex;
     void             CancelHotkeyCapture(); // a shortcut capture left open (HUD hidden, other tab): the hotkeys work again
     bool Toggle();
+    // 3D mini menu driven by the NVIDIA emitter: a click opens it / moves down, the wheel changes the highlighted setting
+    void MenuInput(int clicks, int wheel, int held);
+    bool MenuOpen() const { return m_menuOpen; }
     // Window mode: the HUD fills a normal window of its own (settings made there while the effects are off)
     void SetWindowMode(bool on) { m_windowMode = on; }
     bool WindowMode() const { return m_windowMode; }
@@ -123,6 +126,18 @@ private:
     std::string        m_noteText;
     std::mutex         m_noteMutex; // m_noteText: written by the main thread (hotkeys), read by the render thread
     volatile unsigned long long m_noteUntil { 0 };
+    std::atomic<int>   m_menuClicks { 0 };
+    std::atomic<int>   m_menuWheel { 0 };
+    std::atomic<int>   m_menuHeld { 0 };
+    int                m_menuChoiceRest { 0 };  // wheel ticks (button held) not yet used to change a 3D mode / AI resolution choice
+    int                m_menuNavRest { 0 };     // wheel ticks not yet used to move between the lines
+    int                m_menuPendingItem { -1 }; // line whose new value waits for the button to be released (3D mode, AI resolution)
+    int                m_menuPendingVal { 0 };
+    unsigned long long m_menuLastHeld { 0 };
+    std::atomic<bool>  m_menuOpen { false };
+    volatile unsigned long long m_menuUntil { 0 };
+    int                m_menuIndex { 0 };
+    void               RenderMenu();
     unsigned long long m_bannerUntil { 0 }; // tick count until which the "3D emitter on" banner is shown
     EmitterPanelContext m_emitterPanel;
     float           m_fontSize { 0 };

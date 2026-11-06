@@ -118,6 +118,9 @@ private:
     std::chrono::steady_clock::time_point        m_fbSliceStart {};
     std::chrono::steady_clock::time_point        m_fbLowSince {};
     bool                                         m_fbUnderrun { false };
+    std::chrono::steady_clock::time_point        m_fbEntries[3] {}; // hybrid: the last 3 times the buffer came in (to spot a back-and-forth)
+    int                                          m_fbEntryNext { 0 };
+    std::chrono::steady_clock::time_point        m_fbHoldUntil {};  // hybrid: the buffer stays in until then (back-and-forth)
     double                                       m_fbMeanMs { 8.0 };
     std::chrono::steady_clock::time_point        m_ringLastArrival {};
     std::vector<std::chrono::steady_clock::time_point> m_ringTime; // capture time of each ring frame (2D to 3D (AI): pairs images and depth maps)

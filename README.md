@@ -1,6 +1,6 @@
 # Nbeam 3D Vision
 
-**Version 2.3.0 — par anto1444, 2026**
+**Version 2.4.0 — par anto1444, 2026**
 
 <p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision - NVIDIA 3D Vision glasses, BFI and CRT beam simulator overlay for Windows" width="420"></p>
 
@@ -49,6 +49,13 @@ Au tout premier lancement (quand le dossier `Profils` est créé), Nbeam affiche
 
 Principe : Nbeam **capture** l'écran ou la fenêtre d'un programme, applique l'effet puis **réaffiche** l'image en plein écran au rythme de l'écran de sortie. Les **sous-images** sont le nombre d'images affichées pour chaque image du contenu : sur 240 Hz, 4 sous-images = un contenu à 60 images/s.
 
+## Conseils
+
+- **Pour de meilleurs réglages 3D, privilégiez toujours les raccourcis clavier ou le mini menu de l'émetteur** (molette et bouton) plutôt que le HUD à la souris : le pointeur visible peut provoquer une désynchronisation temporaire de la 3D.
+- Branchez un seul écran, ou faites tourner Nbeam sur le plus rapide.
+- Plafonnez le jeu à la valeur « FPS contenu » du HUD.
+- Si l'image saccade, augmentez la file d'images ou choisissez Hybride ou Tampon d'image dans Synchro BFI.
+
 ## Mode fenêtre
 
 Nbeam s'ouvre toujours dans une **fenêtre Windows normale** (déplaçable, redimensionnable), avec la même présentation que le HUD : bandeau, catégories à gauche, réglages au centre, barre du bas. On y fait tous les réglages **effets coupés** (rien n'est capturé).
@@ -57,6 +64,7 @@ Nbeam s'ouvre toujours dans une **fenêtre Windows normale** (déplaçable, redi
 - **Pendant que les effets tournent**, le HUD par-dessus l'écran fonctionne comme avant (son raccourci) ; son bouton du bas devient **Désactiver les effets**.
 - **Les effets s'arrêtent** à la fermeture du programme détecté, avec **Désactiver les effets** ou avec le même raccourci ; la fenêtre revient (sans prendre le focus du jeu quand c'est le raccourci).
 - **Place et taille** : quand on quitte Nbeam, la fenêtre retient sa position exacte, sa taille et si elle était agrandie ; elle revient pareille au prochain lancement (au centre si cet écran n'est plus branché).
+- **Menu de l'icône de notification** (clic droit) : démarrer avec Windows, démarrer réduit, activer / désactiver les effets, **Redémarrer** et Quitter.
 - **La croix** de la fenêtre la réduit si **Réduire au lieu de fermer** est coché (Application) : dans la zone de notification si cette option est cochée, les détections continuent. Décochée, la croix quitte Nbeam.
 - La **taille de l'interface** se règle séparément pour la fenêtre et pour le HUD par-dessus l'écran (Apparence → Taille du HUD, dans le mode concerné).
 
@@ -94,13 +102,13 @@ Le BFI fait clignoter l'image à un rythme fixe ; le jeu, lui, envoie ses images
 | **Aucune (déconseillé)** | Nbeam prend l'image du jeu quand son cycle commence. Simple, mais une image peut attendre presque un cycle entier. | Pour comparer. |
 | **Calage de phase (meilleure latence)** | Nbeam observe quand les images du jeu arrivent et se cale dessus : chaque image est montrée presque aussitôt. | Jeux à cadence stable (plafonnée). |
 | **Tampon d'image (meilleure stabilité)** | Nbeam garde une ou quelques images d'avance, pour qu'un jeu irrégulier reste fluide. Un peu plus de latence. | Jeux qui saccadent. |
-| **Hybride (recommandé)** | Le calage de phase tant que tout va bien ; un tampon d'une image seulement quand le jeu a un à-coup, retiré une seconde après. | La plupart des jeux. |
+| **Hybride (recommandé)** | Le calage de phase tant que tout va bien ; un tampon d'une image seulement quand le jeu a un à-coup, retiré après 3 secondes de calme. | La plupart des jeux. |
 
 #### Calage de phase
 
 Imaginez un métro qui passe à heure fixe : si vous arrivez juste après son départ, vous attendez le suivant. Le calage de phase **décale doucement les passages du métro** pour qu'ils partent juste après votre arrivée. Concrètement :
 
-- Nbeam mesure régulièrement l'arrivée des images (réglage **Intervalle de mesure**, de 0,5 à 3 secondes, 1 par défaut) et ajuste son rythme par petits pas, sans à-coup ni flash visible.
+- Nbeam mesure régulièrement l'arrivée des images (réglage **Intervalle de mesure**, de 0,1 à 2 secondes par pas de 0,1, 1 par défaut) et ajuste son rythme par petits pas, sans à-coup ni flash visible.
 - Il garde une petite marge de sécurité, pour qu'une image ne soit jamais montrée deux fois puis sautée.
 - Il suit les sous-images choisies par **BFI auto** quand elles changent, et reprend tout seul après une pause du jeu.
 - Une ligne d'état indique ce qu'il fait : *mesure*, *calée* (avec l'attente actuelle), *cadence du jeu irrégulière*...
@@ -118,13 +126,13 @@ Avec la **2D vers 3D (IA)**, le tampon d'image fonctionne comme ailleurs. La syn
 
 #### Hybride
 
-Le meilleur des deux : la latence du calage de phase quand le jeu est stable, et la sécurité du tampon (une seule image) le temps d'un à-coup. Nbeam passe de l'un à l'autre tout seul ; la ligne *Tampon* indique quand la réserve est utilisée.
+Le meilleur des deux : la latence du calage de phase quand le jeu est stable, et la sécurité du tampon (une seule image) le temps d'un à-coup. Nbeam passe de l'un à l'autre tout seul ; la ligne *Tampon* indique quand la réserve est utilisée. Pour limiter les à-coups de chaque bascule, le tampon n'est retiré qu'après **3 secondes de calme**, au moment où une image arrive un peu plus longtemps que d'habitude (6 secondes au plus), et il **reste en place 30 secondes** s'il est entré 3 fois en 30 secondes (jeu très irrégulier).
 
 #### BFI auto
 
 Case à cocher sous le menu (2D, programme capturé ; masquée en 3D). Nbeam **mesure la cadence du jeu et choisit tout seul le nombre de sous-images** (par exemple 120 images/s sur un écran 480 Hz → 4). L'effet reste net même quand le jeu change de cadence (cinématique, menu, chute d'images).
 
-- **Intervalle de détection** : à quelle fréquence la cadence est mesurée.
+- **Intervalle de détection** : à quelle fréquence la cadence est mesurée, de 0,1 à 2 secondes par pas de 0,1 (1 par défaut).
 - **Seuil de FPS bas** : en dessous, le BFI clignoterait trop lentement ; il est alors doublé ou coupé (au choix).
 - **Luminosité uniforme** (BFI simple) : plus il y a de sous-images, plus l'image est sombre ; cochée, la luminosité reste la même quelle que soit la cadence.
 
@@ -151,15 +159,28 @@ Case à cocher sous le menu (2D, programme capturé ; masquée en 3D). Nbeam **m
 
 ## Raccourcis clavier et manette
 
-Tous les raccourcis sont **entièrement personnalisables**, au clavier comme à la manette, dans la section **Raccourcis** du HUD :
+Tous les raccourcis sont **entièrement personnalisables**, dans la section **Raccourcis** du HUD. Chaque action a **une seule case**, pour tous les appareils : cliquez dessus, puis appuyez sur une touche, un bouton de manette. Ce qui est utilisé remplace l'ancien raccourci de l'action (le raccourci du HUD et celui des effets gardent leur touche du clavier). Si ce raccourci était déjà utilisé par une autre action, les deux actions **échangent** leurs raccourcis. Un clic ailleurs, ou Échap, annule le changement ; Retour arrière efface le raccourci.
 
-- **Clavier** : cliquez sur un raccourci, puis appuyez sur la nouvelle combinaison (au moins Ctrl, Alt, Maj ou Windows ; Échap annule). Ils fonctionnent partout, même dans un jeu en plein écran, y compris les jeux qui s'approprient le clavier (Nbeam reçoit les touches directement de Windows, sans les bloquer). Si un jeu tourne **en administrateur**, lancez aussi Nbeam en administrateur, sinon Windows lui cache les touches.
-- **Manette (XInput)** : cliquez sur le bouton « Pad » d'une action, maintenez ensemble les boutons voulus (gâchettes comprises) puis relâchez ; Retour arrière efface. La manette sert aussi à **naviguer dans le HUD** quand il est ouvert (croix directionnelle ou stick, A pour valider, B pour revenir).
+- **Clavier** : au moins Ctrl, Alt, Maj ou Windows avec la touche choisie ; ils fonctionnent partout, même dans un jeu en plein écran, y compris les jeux qui s'approprient le clavier (Nbeam reçoit les touches directement de Windows, sans les bloquer). Si un jeu tourne **en administrateur**, lancez aussi Nbeam en administrateur, sinon Windows lui cache les touches.
+- **Manette (XInput)** : maintenez ensemble les boutons voulus (gâchettes comprises) puis relâchez. La manette sert aussi à **naviguer dans le HUD** quand il est ouvert (croix directionnelle ou stick, A pour valider, B pour revenir).
+- **Émetteur NVIDIA 3D Vision** : sa molette et son bouton pilotent le **mini menu 3D** (voir ci-dessous).
 - Les actions couvrent l'affichage du HUD, le redémarrage, la sortie, l'inversion des yeux en 3D, les sous-images, les images claires, le Sync Offset et l'Open Duration, l'**affichage / masquage des effets** (Ctrl+Maj+D par défaut), la configuration du profil et l'**ajout du programme aux profils** (voir Profils). Les raccourcis du HUD et des effets ne peuvent pas être vides.
 
 Les raccourcis sont les mêmes pour tous les profils : changer de profil ne les modifie jamais.
 
+### Mini menu 3D (émetteur NVIDIA)
+
+Un mini menu, uniquement piloté par l'émetteur NVIDIA, s'affiche à côté de la bannière 3D (au-dessus si la bannière est en bas de l'écran, en dessous si elle est en haut), pendant la même durée que la bannière.
+
+- **Molette** : ouvre le menu puis monte / descend dans la liste (moins sensible que les réglages : 3 crans par ligne).
+- **Bouton maintenu + molette** : change la valeur de la ligne en surbrillance. Les réglages sont appliqués tout de suite, sauf le **mode 3D** et la **résolution IA** (lourds) : leur choix s'affiche avec un « > » et n'est appliqué qu'en **rappuyant sur le bouton** pour confirmer (comme pour la navigation, 3 crans de molette par choix).
+- **Clic** : ferme le menu.
+
+Réglages proposés : mode 3D, convergence, résolution IA, force de la profondeur, lissage, anti-halo (2D vers 3D IA), décalage de synchro, durée d'ouverture, inverser les yeux. La cadence de la profondeur suit le taux de rafraîchissement 3D (selon ce que le PC peut faire) et l'IA utilise toujours le GPU (DirectML), sans réglage à faire.
+
 **Afficher / Masquer les effets** : le bouton du bas du HUD, le raccourci et le menu de l'icône de notification coupent **tous les effets et l'émetteur 3D** (l'image s'affiche telle quelle, pour comparer). Ils restent coupés, HUD ouvert ou fermé, jusqu'à « Afficher ». Ouvrir le HUD ne coupe plus les effets. Dans la fenêtre de Nbeam, ils activent / désactivent les effets (voir Mode fenêtre).
+
+**À propos** : le bouton de la barre du bas affiche la version, les crédits et les **notes de version** (les nouveautés de la mise à jour), à lire après chaque mise à jour. La croix rouge ferme la fenêtre ; **Nouvelle version** ouvre la page des versions sur GitHub.
 
 ## Test
 
@@ -176,12 +197,13 @@ La catégorie **Test** (juste au-dessus de Profils, icône de compteur de vitess
 
 Un **profil** est un fichier `.ini` du dossier `Profils\` qui mémorise tous les réglages de rendu, d'affichage et de 3D. **Un profil ne s'applique que lorsqu'un programme (.exe) lié est détecté.** Sans programme détecté, Nbeam utilise les **réglages du bureau** (fichier `Bureau.cfg` du même dossier, créé à la mise à jour à partir de l'ancien profil par défaut ou du profil actif).
 
-Tout ce qui concerne les profils se trouve dans la section **Configuration du profil** (catégorie Profils) : les réglages actifs, le profil à régler, la création d'un profil, puis la liste des programmes et de leurs profils.
+Tout ce qui concerne les profils se trouve dans la section **Configuration du profil** (catégorie Profils), en deux onglets, à la manière du panneau d'un pilote graphique, précédés de la section **Gérer les profils** :
 
-- **Profil à régler** : choisissez un profil dans cette liste pour le régler sans lancer son jeu. Le test de mouvement s'ouvre avec ce profil chargé et le HUD par-dessus les voitures ; changez les réglages en regardant le résultat. Quand on quitte le test (touche Windows ou Échap), le profil est enregistré et les réglages du bureau reviennent.
-- **Créer un profil / Enregistrer sous** : enregistre les réglages actuels sous un nouveau nom, sans changer les réglages actifs.
+- **Paramètres du programme** : la liste des programmes à gauche, et à droite le tableau des réglages du programme choisi (Activé, délai d'activation, puis pour chaque écran son profil et sa fréquence) ;
+- **Paramètres globaux** : le même tableau, appliqué à tous les programmes d'un coup ;
+- **Gérer les profils** (au-dessus des onglets) : les réglages actifs, le profil à régler, renommer, supprimer et créer un profil.
 
-Plus bas dans la même section, chaque programme (`.exe`) est associé à un profil. Choisissez le programme dans **Processus à régler** (la flèche ouvre la liste, par ordre alphabétique), ou ajoutez-en un avec **Écrire un nouveau processus** (on tape son nom), **Ajouter un nouveau processus** (liste des programmes ouverts) ou, depuis le programme lui-même, le raccourci **Ajouter le programme aux profils** (Ctrl+Maj+P par défaut). Cochez **Activé**, puis choisissez le profil de chaque écran. Ensuite :
+**Onglet Paramètres du programme :** chaque programme (`.exe`) est associé à un profil. Choisissez le programme dans la liste de gauche (par ordre alphabétique ; un programme désactivé est grisé), ou ajoutez-en un avec **Écrire un nouveau processus** (on tape son nom en haut à droite), **Ajouter un nouveau processus** (liste des programmes ouverts) ou, depuis le programme lui-même, le raccourci **Ajouter le programme aux profils** (Ctrl+Maj+P par défaut). Dans le tableau de droite, cochez **Activé**, puis choisissez le profil et la fréquence de chaque écran (**Ajouter un écran** pour un autre écran, **Supprimer le programme** pour le retirer). Ensuite :
 
 - quand le programme est détecté (fenêtre visible dans la barre des tâches, après un délai réglable), son profil est chargé, il est capturé et le HUD se réduit ;
 - à sa fermeture, les **réglages du bureau** reviennent ; un profil réaffiche les effets s'ils avaient été masqués sur le bureau ;
@@ -190,7 +212,13 @@ Plus bas dans la même section, chaque programme (`.exe`) est associé à un pro
 - un même programme peut avoir jusqu'à 3 profils, un par écran ; celui de l'écran où se trouve sa fenêtre est choisi ;
 - chaque écran peut avoir son propre **taux de rafraîchissement**, appliqué pendant la capture puis rétabli ;
 - un programme peut être désactivé (case **Activé**) sans être supprimé ;
-- la ligne **Paramètres globaux** règle une valeur pour tous les programmes d'un coup (case, profil, fréquence, délai) ; chaque programme reste modifiable sur sa ligne ensuite.
+- l'onglet **Paramètres globaux** règle une valeur pour tous les programmes d'un coup (case, délai, profil et fréquence de chaque écran ; « (mixte) » quand ils diffèrent) ; chaque programme reste modifiable ensuite.
+
+**Section Gérer les profils :**
+
+- **Profil à régler** : la petite flèche à côté du champ choisit un profil à régler sans lancer son jeu. Le test de mouvement s'ouvre avec ce profil chargé et le HUD par-dessus les voitures ; changez les réglages en regardant le résultat. Quand on quitte le test (touche Windows ou Échap), le profil est enregistré et les réglages du bureau reviennent.
+- **Renommer / supprimer** : réécrivez le nom dans le champ « Profil à régler » pour renommer le profil (les programmes qui l'utilisent suivent) ; **Supprimer** l'envoie à la corbeille (pas pendant qu'on le règle).
+- **Créer un profil / Enregistrer sous** : enregistre les réglages actuels sous un nouveau nom, sans changer les réglages actifs.
 
 ## Tutos d'usage
 
@@ -206,14 +234,9 @@ Plus bas dans la même section, chaque programme (`.exe`) est associé à un pro
 
 **Latence minimale** : mettez les images en file à « 0 (tearing autorisé) » et réglez le contrôle du tearing pour cacher la déchirure en haut de l'image.
 
-## Conseils
-
-- Branchez un seul écran, ou faites tourner Nbeam sur le plus rapide.
-- Plafonnez le jeu à la valeur « FPS contenu » du HUD.
-- Si l'image saccade, augmentez la file d'images ou choisissez Hybride ou Tampon d'image dans Synchro BFI.
-
 ## Problèmes connus
 
+- **Désynchronisation temporaire quand la souris est visible.** Pour régler la 3D, préférez les raccourcis clavier ou le mini menu de l'émetteur.
 - **Lossless Scaling (LSFG) capturé : le pointeur de la souris n'est pas visible dans le HUD.** Le HUD reste utilisable (les clics marchent), mais il faut viser sans voir le pointeur. Le clavier reste au jeu tant que Lossless Scaling est capturé : arrêtez la mise à l'échelle pour taper du texte dans le HUD.
 
 ## Crédits et remerciements

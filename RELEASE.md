@@ -1,35 +1,38 @@
-# Nbeam 3D Vision 2.3.0
+# Nbeam 3D Vision 2.4.0
 
-Mise à jour de la version 2.2.0. Surcouche Windows : BFI, CRT Beam Simulator et 3D active (lunettes NVIDIA 3D Vision ou émetteur Arduino), sur n'importe quel écran — et maintenant aussi par-dessus d'autres surcouches de capture comme Lossless Scaling.
+Mise à jour de la version 2.3.0. Surcouche Windows : BFI, CRT Beam Simulator et 3D active (lunettes NVIDIA 3D Vision ou émetteur Arduino), sur n'importe quel écran. Cette version apporte surtout un **mini menu 3D piloté par la molette et le bouton de l'émetteur NVIDIA**.
 
-> **À savoir après la mise à jour** : le réglage **Type d'écran** disparaît (c'est la case Anti-rétention LCD qui décide) et le **test de mouvement** devient un bouton dans la barre du bas. Vos profils et réglages sont conservés.
+> **À savoir après la mise à jour** : le curseur **Cadence 3D (images/s)** et la case **Utiliser le GPU (DirectML)** disparaissent (voir ci-dessous). Vos profils et réglages sont conservés.
 
 ## Nouveautés
 
-### Lossless Scaling et autres surcouches de capture
-- Nbeam peut **capturer la couche de Lossless Scaling** (ajoutez `LosslessScaling.exe` dans la configuration du profil) : le BFI, le CRT ou la 3D s'ajoutent à l'image déjà mise à l'échelle ou générée.
-- Nbeam reste **au-dessus** de la couche de Lossless Scaling.
-- Le **HUD s'affiche par-dessus sans voler le focus du jeu** (sinon Lossless Scaling s'arrêtait) : il s'utilise à la souris.
-- Le menu de l'icône de notification passe au-dessus de la barre des tâches.
+### Mini menu 3D (émetteur NVIDIA)
+- Un mini menu, **uniquement piloté par l'émetteur**, s'affiche à côté de la bannière 3D (au-dessus si la bannière est en bas de l'écran, en dessous si elle est en haut), pendant la même durée que la bannière.
+- **Molette** : ouvre le menu puis monte / descend dans la liste (3 crans par ligne). **Bouton maintenu + molette** : change la valeur de la ligne en surbrillance. **Clic** : ferme le menu. Un rappel d'utilisation est affiché sous le menu pour les débutants.
+- Réglages proposés : **mode 3D**, convergence, résolution IA, force de la profondeur, lissage, anti-halo (2D vers 3D IA), décalage de synchro, durée d'ouverture, inverser les yeux. Les réglages sont enregistrés dans le profil.
+- Le **mode 3D** et la **résolution IA** sont lourds : le nouveau choix s'affiche avec un « > » et n'est appliqué qu'en **rappuyant sur le bouton** pour confirmer.
+- Le menu fonctionne aussi quand la 3D est coupée (mode 3D sur Off) : l'émetteur est lu en permanence.
+
+### 3D par IA
+- **Cadence de la profondeur automatique** : une carte de profondeur par rafraîchissement 3D, dans la limite de ce que le PC peut faire (80 par seconde au maximum). Le curseur « Cadence 3D (images/s) » est supprimé.
+- **L'IA utilise toujours le GPU (DirectML)** ; le processeur ne sert que de secours. La case est supprimée.
+
+### Synchro BFI (mode Hybride)
+- Moins d'à-coups quand le tampon d'une image entre et sort : il n'est retiré qu'après **3 secondes de calme** (au lieu d'1), au moment où une image est de toute façon plus longue que d'habitude, et il reste en place 30 secondes s'il est entré 3 fois en 30 secondes.
 
 ### Interface
-- **Test de mouvement** : un bouton dans la barre du bas, entre « Benchmark » et le bouton des effets (**Test de mouvement** / **Arrêter le test**), à la place de la case.
-- **Configuration du profil** (ancienne Détection de profil) : elle regroupe désormais **tous les réglages des profils** (réglages actifs, profil à régler, créer un profil, puis les programmes et leurs profils). Plus simple, avec **Processus à régler** (liste par ordre alphabétique), **Écrire un nouveau processus**, **Ajouter un nouveau processus** et une case **Activé** ; le bouton Actualiser disparaît (la liste des profils se met à jour toute seule).
-- **Aides « ? » plus courtes et plus simples.**
-- **Paramètres du shader** : une décimale (1.0, 2.2) et les boutons − / + avancent de 0,1.
-- **Type d'écran supprimé** : c'est la case Anti-rétention LCD qui décide ; la compensation d'inversion LCD n'apparaît que si elle est cochée.
-- **Mode fenêtre** : la fenêtre retient sa position exacte, sa taille et si elle était agrandie quand on quitte Nbeam.
-- **Émetteur non reconnu** : le message s'affiche avant le démarrage ; OK démarre Nbeam, la croix le ferme.
-
-### 3D
-- **Synchro BFI masquée en 3D** : le tampon d'image est toujours utilisé ; **BFI auto** est masqué aussi.
-- **Images en file : 3 au minimum en 3D** (0, 1 et 2 seulement en 2D).
-- **Synchro Auto de l'émetteur** : la fréquence la plus haute entre 80 et 165 Hz (480 Hz → 160 Hz, 240 Hz → 120 Hz, 100 Hz → 100 Hz), d'après la fréquence d'écran utilisée, y compris celle de la configuration du profil.
+- **Calage de phase** et **BFI auto** : l'intervalle de mesure (calage de phase) et l'intervalle de détection (BFI auto) vont de 0,1 à 2 secondes, par pas de 0,1, avec une décimale.
+- **Configuration du profil** : deux onglets, **Paramètres du programme** et **Paramètres globaux** (le même tableau appliqué à tous les programmes d'un coup).
+- **Gérer les profils** : une section au-dessus de la configuration du profil (réglages actifs, profil à régler, renommer, supprimer vers la corbeille, ouvrir le dossier, créer un profil).
+- **Raccourcis** : une seule case par action pour le clavier et la manette (ce qui est utilisé remplace l'ancien raccourci) ; une touche déjà utilisée par une autre action est **échangée** entre les deux actions ; un clic ailleurs ou Échap annule la saisie.
+- **À propos** : crédits centrés, **notes de version**, croix rouge, bouton **Nouvelle version** qui ouvre la page des versions sur GitHub. 
+- **Redémarrer** dans le menu de l'icône de notification.
 
 ### Corrections
-- Plantage possible du rendu quand un réglage reconstruisait les images d'entrée en direct (changement de shader ou de source 3D).
+- La description du programme (propriétés du fichier) affiche maintenant « Nbeam 3D Vision » et la bonne version.
 
-## Problème connu
+## Problèmes connus
+- **Désynchronisation temporaire quand la souris est visible.** Pour régler la 3D, préférez les raccourcis clavier ou le mini menu de l'émetteur.
 - **Lossless Scaling (LSFG) capturé : le pointeur de la souris n'est pas visible dans le HUD.** Les clics marchent, mais il faut viser sans voir le pointeur ; pour taper du texte dans le HUD, arrêtez la mise à l'échelle.
 
 ## Contenu de l'archive

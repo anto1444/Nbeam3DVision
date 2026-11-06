@@ -1455,11 +1455,11 @@ void Options::Load(ShaderManager& shaderManager)
                     else // (profiles of earlier builds: phase lock, or the frame buffer that was set)
                         bfiSync = s.has("phaseLock") && s.get("phaseLock") == "1" ? 1 : frameBuffer != 0 ? 2 : 0;
                     if(s.has("phaseInterval"))
-                        phaseInterval = std::clamp(std::stof(s.get("phaseInterval")), 0.5f, 3.0f);
+                        phaseInterval = std::clamp(std::stof(s.get("phaseInterval")), 0.1f, 2.0f);
                     // the captured program comes from the active profile link (captureProcess is not stored in profiles)
                     captureWindow = captureProcess.empty() ? NULL : FindCaptureWindow();
                     if(s.has("autoInterval"))
-                        autoSub.intervalSec = std::clamp(std::stof(s.get("autoInterval")), 0.0f, 5.0f);
+                        autoSub.intervalSec = std::clamp(std::stof(s.get("autoInterval")), 0.1f, 2.0f);
                 }
                 catch(...)
                 { }

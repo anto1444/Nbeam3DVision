@@ -125,9 +125,6 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         }
         Help(Tr("A plain 2D picture is turned into 3D: an AI model estimates the depth of every pixel (needs onnxruntime.dll and the model file next to the exe), then the left and right eyes are built from it."));
 
-        ImGui::SliderInt(Tr("3D framerate (fps)"), &s.ai.depthFps, 1, 80);
-        Help(Tr("Maximum number of depth maps the AI computes per second (1 to 80). The eyes are still drawn at every frame; this only limits how often the depth is refreshed. Lower it to leave GPU time to the game; the real rate is shown above and cannot exceed what the PC can do."));
-
         static const int   kWidths[]  = { 224, 308, 420, 518, 672, 840, 1008 };
         static const char* kLabels[]  = { "224", "308", "420", "518", "672", "840", "1008" };
         int                widthIdx   = 1;
@@ -144,8 +141,6 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         Help(Tr("Averages the depth map over time so it does not flicker. Higher = steadier but slower to follow fast changes."));
         ImGui::SliderFloat(Tr("Anti-halo (%)"), &s.ai.antiHalo, -300.0f, 300.0f, "%.0f");
         Help(Tr("Reduces the halo (smeared edges) around objects: the depth of a foreground object no longer spills onto the background next to it. Too high shrinks thin objects slightly. Negative values: the same, inverted (for an inverted depth, Swap Eyes checked)."));
-        ImGui::Checkbox(Tr("Use GPU (DirectML)"), &s.ai.useGpu);
-        Help(Tr("Runs the AI on the graphics card (much faster). If DirectML is not available the processor is used instead. Applied immediately (the model reloads)."));
         ImGui::Checkbox(Tr("Show depth map"), &s.ai.showDepth);
         Help(Tr("Shows the estimated depth (white = near, black = far) instead of the picture, to check the AI and adjust the settings."));
         ImGui::Checkbox(Tr("Map buffer"), &s.ai.mapBuffer);

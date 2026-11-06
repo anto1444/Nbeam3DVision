@@ -35,7 +35,7 @@ struct LowFpsSettings
 // Auto settings
 struct AutoSettings
 {
-    float intervalSec { 1.0f }; // how often the game frame rate is measured (0 = as fast as practical, every 0.25 s)
+    float intervalSec { 1.0f }; // how often the game frame rate is measured (0.1 to 2 s)
 };
 
 class LowFpsGate
@@ -78,7 +78,7 @@ class AutoSubFrames
 {
 public:
     static constexpr int    kMax        = 16;
-    static constexpr double kMinWindowMs = 250.0; // shortest measurement window (interval 0)
+    static constexpr double kMinWindowMs = 100.0; // shortest measurement window (interval 0.1 s)
 
     void Reset()
     {
