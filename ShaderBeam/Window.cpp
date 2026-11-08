@@ -118,7 +118,7 @@ static FILE* OpenCrashLog(const char* what, unsigned code)
         return nullptr;
     SYSTEMTIME t;
     GetLocalTime(&t);
-    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.4.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
+    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.4.1  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
             GetCurrentThreadId(), GetCurrentThreadId() == s_mainThreadId ? "main" : "other (render / emitter / AI)");
     return f;
 }
@@ -232,6 +232,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
     if(lpCmdLine && wcsstr(lpCmdLine, L"/cartest"))
         return ::ShaderBeam::RunCarTest(hInstance, lpCmdLine);
     s_startHidden = lpCmdLine && wcsstr(lpCmdLine, L"/tray") != nullptr;
+
+    // "Run as administrator": starts again through Windows (UAC) with administrator rights, before the single instance check (this process leaves).
+    // If the confirmation is refused Nbeam simply goes on without the rights.
+    if(::ShaderBeam::Options::AppRunAsAdmin() && !::ShaderBeam::Options::IsElevated())
+    {
+        wchar_t exe[MAX_PATH * 2] = {};
+        GetModuleFileNameW(nullptr, exe, MAX_PATH * 2);
+        SHELLEXECUTEINFOW sei {};
+        sei.cbSize       = sizeof(sei);
+        sei.lpVerb       = L"runas";
+        sei.lpFile       = exe;
+        sei.lpParameters = lpCmdLine;
+        sei.nShow        = SW_SHOWNORMAL;
+        if(ShellExecuteExW(&sei))
+            return 0;
+    }
 
     // a single instance: a second launch asks the first one to show its HUD, then leaves
     s_showMsg = RegisterWindowMessageW(L"Nbeam3DVision_ShowHud");
@@ -529,6 +545,7 @@ static void ProcessFocusPoll(HWND hWnd)
 #define TRAY_CMD_STARTMIN 4
 #define TRAY_CMD_EFFECTS 5
 #define TRAY_CMD_RESTART 6
+#define TRAY_CMD_ADMIN 7
 
 static bool          s_trayAdded   = false;
 static bool          s_inTray      = false; // sent to the tray: no taskbar button, HUD hidden
@@ -1845,6 +1862,55 @@ static void RefreshRatePoll(HWND hWnd)
 
 // A display or resolution change that Nbeam did not make itself (screen connected / disconnected, resolution changed in Windows
 // or by a game): the renderer restarts after a short moment, with the list of the displays read again.
+// Nbeam needs 80 Hz minimum: when the output screen drops below 79 Hz while it runs (3 seconds in a row, not during a change made by
+// Nbeam itself) it shows the error and closes, unless another connected screen is compatible
+static void LowRatePoll(HWND hWnd)
+{
+    static int  s_lowCount = 0;
+    static bool s_shown    = false;
+    auto&       o          = s_shaderBeam.m_options;
+    if(s_shown || !s_appReady || s_standby || s_quitting || s_testOn || o.emitter.hold || GetTickCount64() < s_ownChangeUntil)
+    {
+        s_lowCount = 0;
+        return;
+    }
+    int hz = 0;
+    if(HMONITOR mon = o.OutputMonitor(s_shaderBeam.m_ui.m_displays))
+    {
+        MONITORINFOEXW mi {};
+        mi.cbSize = sizeof(mi);
+        DEVMODEW dm {};
+        dm.dmSize = sizeof(dm);
+        if(GetMonitorInfoW(mon, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+            hz = (int)dm.dmDisplayFrequency;
+    }
+    if(hz <= 1 || hz >= 79)
+    {
+        s_lowCount = 0;
+        return;
+    }
+    if(++s_lowCount < 3)
+        return;
+    bool              other = false;
+    const std::string outId = o.ScreenIdOfDisplay(o.shaderDisplayNo, s_shaderBeam.m_ui.m_displays);
+    for(const auto& m : o.MonitorsSnapshot())
+    {
+        int best = m.hz;
+        for(int r : m.rates)
+            best = (std::max)(best, r);
+        if(m.connected && m.id != outId && best >= 80)
+            other = true;
+    }
+    if(other)
+        return;
+    s_shown = true;
+    const char* msg = ::ShaderBeam::Tr("Refresh rate not compatible with Nbeam 3D Vision: 80 Hz minimum are needed to work. Change the refresh rate or connect a compatible screen.");
+    wchar_t     wide[512] = {};
+    MultiByteToWideChar(CP_UTF8, 0, msg, -1, wide, 511);
+    MessageBoxW(nullptr, wide, L"Nbeam 3D Vision", MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST);
+    PostMessage(hWnd, WM_DESTROY, 0, 0); // same as Quit in the notification area menu
+}
+
 static void DisplayChangePoll(HWND hWnd)
 {
     if(!s_appReady || !s_displayChangeAt || GetTickCount64() - s_displayChangeAt < 1000)
@@ -2078,6 +2144,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             HMENU       menu = CreatePopupMenu();
             AppendMenuW(menu, MF_STRING | (o.startWithWindows ? MF_CHECKED : 0), TRAY_CMD_AUTOSTART, WideOf(::ShaderBeam::Tr("Start with Windows")).c_str());
             AppendMenuW(menu, MF_STRING | (o.startMinimized ? MF_CHECKED : 0), TRAY_CMD_STARTMIN, WideOf(::ShaderBeam::Tr("Start minimized")).c_str());
+            AppendMenuW(menu, MF_STRING | (o.runAsAdmin ? MF_CHECKED : 0), TRAY_CMD_ADMIN, WideOf(::ShaderBeam::Tr("Run as administrator")).c_str());
             AppendMenuW(menu, MF_STRING, TRAY_CMD_EFFECTS,
                         WideOf(::ShaderBeam::Tr(o.windowMode ? (s_effectsOn ? "Deactivate effects" : "Activate effects") : (o.effectsSuspended ? "Show effects" : "Hide effects"))).c_str());
             AppendMenuW(menu, MF_SEPARATOR, 0, nullptr);
@@ -2105,6 +2172,11 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             else if(cmd == TRAY_CMD_STARTMIN)
             {
                 o.startMinimized = !o.startMinimized;
+                o.SaveApp();
+            }
+            else if(cmd == TRAY_CMD_ADMIN)
+            {
+                o.runAsAdmin = !o.runAsAdmin;
                 o.SaveApp();
             }
             else if(cmd == TRAY_CMD_EFFECTS)
@@ -2236,6 +2308,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             s_shaderBeam.m_options.Save(s_shaderBeam.Shaders());
         RefreshRatePoll(hWnd);
         DisplayChangePoll(hWnd);
+        LowRatePoll(hWnd);
         s_shaderBeam.m_ui.UpdateCaptureTone(true);
         ProcessAppearPoll(hWnd);
         if(s_shaderBeam.m_options.ui)

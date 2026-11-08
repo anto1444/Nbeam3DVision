@@ -87,6 +87,9 @@ public:
     void ShowAdjustBanner(int kind); // banner with the current values, 3 seconds from the last change (kind = which one changed)
 private:
     bool BannerActive() const;
+    bool Banner3d() const;       // 3D active: the banner is the Nbeam 3D Vision one
+    bool BannerFx() const;       // BFI / CRT active (more than one subframe), no window mode
+    bool StatsBannerOn() const;  // Show stats: the banner stays on
     void SetApplyRequired();
     void ApplyPendingChanges();
     void ClearPendingChanges();

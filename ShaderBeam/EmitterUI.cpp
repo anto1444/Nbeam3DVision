@@ -137,8 +137,8 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
 
         ImGui::SliderFloat(Tr("Depth Strength (%)"), &s.ai.strength, 0.0f, 10.0f, "%.1f");
         Help(Tr("Maximum parallax between the two eyes, as a percentage of the screen width. 0 = flat; around 2-4 is comfortable."));
-        ImGui::SliderFloat(Tr("Depth smoothing (%)"), &s.ai.smoothing, 0.0f, 95.0f, "%.0f");
-        Help(Tr("Averages the depth map over time so it does not flicker. Higher = steadier but slower to follow fast changes."));
+        ImGui::SliderFloat(Tr("Depth smoothing (%)"), &s.ai.smoothing, 0.0f, 100.0f, "%.0f");
+        Help(Tr("Averages the depth map over time so it does not flicker. The stronger it is, the more the map lags behind the game: the game image is held back by the same amount (one depth map at 50 %, more above) so the map stays in step. Needs Map buffer."));
         ImGui::SliderFloat(Tr("Anti-halo (%)"), &s.ai.antiHalo, -300.0f, 300.0f, "%.0f");
         Help(Tr("Reduces the halo (smeared edges) around objects: the depth of a foreground object no longer spills onto the background next to it. Too high shrinks thin objects slightly. Negative values: the same, inverted (for an inverted depth, Swap Eyes checked)."));
         ImGui::Checkbox(Tr("Show depth map"), &s.ai.showDepth);
@@ -165,26 +165,49 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         if(ImGui::Checkbox(Tr("Sync Rate Auto"), &s.syncAuto))
         {
             if(!s.syncAuto && syncHz >= 1.0)
-                s.syncRateHz = (float)(std::round(syncHz * 100.0) / 100.0); // start from the rate in use
+                s.syncRateHz = syncHz; // start from the rate in use
             restart = true;
         }
-        Help(Tr("Checked: the emitter rate is picked from the display rate (display Hz / n, the highest between 80 and 165 Hz: 480 Hz -> 160, 240 Hz -> 120, 100 Hz -> 100) and SubFrames follows. Out of that range nothing changes and the emitter is off.\nUnchecked: you type the emitter rate and SubFrames follows (display Hz / rate)."));
-        if(s.rateBlocked)
-        {
-            ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
-            ImGui::PushTextWrapPos(0.0f);
-            ImGui::TextUnformatted(Tr("No emitter rate between 80 and 165 Hz fits this display: the emitter is off."));
-            ImGui::PopTextWrapPos();
-            ImGui::PopStyleColor();
-        }
+        Help(Tr("Checked: the emitter rate is picked from the display rate (display Hz / n, the highest between 80 and 165 Hz: 480 Hz -> 160, 240 Hz -> 120, 100 Hz -> 100) and SubFrames follows. Out of that range 3D is not available.\nUnchecked: you pick the emitter rate in a list of the display rate divisors and SubFrames follows (display Hz / rate)."));
         if(!s.syncAuto)
         {
-            if(ImGui::InputFloat(Tr("Sync Rate Hz"), &s.syncRateHz, 0.01f, 1.0f, "%.3f"))
+            // the rates that divide the display rate (display Hz / n) inside the range the glasses detect (80 to 165 Hz), 6 decimals
+            std::vector<double> rates;
+            for(int n = 1; n <= 20 && ctx.displayHz > 1.0; n++)
             {
-                s.syncRateHz = std::clamp(s.syncRateHz, 1.0f, 1000.0f);
-                restart      = true;
+                const double hz = ctx.displayHz / n;
+                if(hz > 165.5)
+                    continue;
+                if(hz < 79.5)
+                    break;
+                rates.push_back(hz);
             }
-            Help(Tr("Rate at which the emitter syncs each eye. SubFrames = display Hz / this rate (rounded).\nWith BFI/CRT sim (SubFrames 2) the glasses run at half the display rate."));
+            if(!rates.empty())
+            {
+                int cur = 0;
+                for(int i = 1; i < (int)rates.size(); i++)
+                    if(std::fabs(rates[i] - s.syncRateHz) < std::fabs(rates[cur] - s.syncRateHz))
+                        cur = i;
+                if(std::fabs(rates[cur] - s.syncRateHz) > 1e-9 && std::fabs(rates[cur] - s.syncRateHz) < 0.5)
+                    s.syncRateHz = rates[cur]; // the display rate moved a little: stay on the exact divisor
+                char preview[64];
+                snprintf(preview, sizeof(preview), "%.3f Hz", s.syncRateHz);
+                if(ImGui::BeginCombo(Tr("Sync Rate Hz"), preview))
+                {
+                    for(int i = 0; i < (int)rates.size(); i++)
+                    {
+                        char item[64];
+                        snprintf(item, sizeof(item), "%.3f Hz", rates[i]);
+                        if(ImGui::Selectable(item, i == cur && std::fabs(rates[cur] - s.syncRateHz) < 0.5))
+                        {
+                            s.syncRateHz = rates[i];
+                            restart      = true;
+                        }
+                    }
+                    ImGui::EndCombo();
+                }
+            }
+            Help(Tr("Rate at which the emitter syncs each eye, picked among the rates that divide the display rate (display Hz / n) and that the glasses can detect (80 to 165 Hz). SubFrames = display Hz / this rate.\nWith BFI/CRT sim (SubFrames 2) the glasses run at half the display rate."));
         }
 
         const int range = periodUs > 0 ? (int)periodUs : 10000;

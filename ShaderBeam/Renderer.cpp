@@ -1458,7 +1458,17 @@ void Renderer::BufferedStep(const std::shared_ptr<CaptureBase>& capture)
     // content step, a frame repeated now and then to grow, never a jump), which is added on top. Grows at once, shrinks to the needed size after 2 calm seconds.
     if(MapSync() && m_depthLatencyMs > 0.0)
     {
-        const int want = std::clamp((int)std::ceil(m_depthLatencyMs / (std::max)(m_ringIntervalMs, 2.0) - 0.15), 0, FrameBufferLimit());
+        // The fade (Depth smoothing) makes the map trail behind the game by about keep / (1 - keep) depth maps (a moving average). The game
+        // image is held back by that much so the map stays in step: 0 at 0 %, one map at 50 %, more above (limited by the buffer size).
+        int extra = 0;
+        {
+            const double keep      = std::clamp(m_options.emitter.ai.smoothing * 0.01, 0.0, 0.95);
+            const double lagMaps   = keep / (1.0 - keep);
+            const double eyeHz     = m_options.emitter.EffectiveSyncHz(m_options.vsyncRate, m_options.subFrames);
+            const int    depthRate = eyeHz > 0 ? std::clamp((int)std::lround(eyeHz / 2.0), 1, 80) : 30;
+            extra                  = (int)std::lround(lagMaps * (1000.0 / depthRate) / (std::max)(m_ringIntervalMs, 2.0));
+        }
+        const int want = std::clamp((int)std::ceil(m_depthLatencyMs / (std::max)(m_ringIntervalMs, 2.0) - 0.15) + extra, 0, FrameBufferLimit());
         if(want > m_mapFrames)
         {
             m_mapFrames   = want;

@@ -123,7 +123,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 // About: one line per row, each centred in the window (the version is the one of the release notes below)
 const char* SHADERBEAM_ABOUT = SHADERBEAM_TITLE "\n"
-                               "Version 2.4.0\n"
+                               "Version 2.4.1\n"
                                "Made by anto1444, 2026\n"
                                "\n"
                                "Based on ShaderBeam (c) 2025-2026 mausimus\n"
@@ -134,7 +134,7 @@ const char* SHADERBEAM_ABOUT = SHADERBEAM_TITLE "\n"
                                "Timothy Lottes @NOTimothyLottes\n"
                                "https://blurbusters.com/crt";
 const char* SHADERBEAM_ABOUT_FR = SHADERBEAM_TITLE "\n"
-                                  "Version 2.4.0\n"
+                                  "Version 2.4.1\n"
                                   "Fait par anto1444, 2026\n"
                                   "\n"
                                   "Bas\303\251 sur ShaderBeam (c) 2025-2026 mausimus\n"
@@ -590,26 +590,20 @@ void UI::RenderHudHeader(float height)
     dl->AddText(font, fs * 1.15f, ImVec2(modeX, p0.y + height * 0.5f + fs * 0.0f), cWhite, mode);
     float       modeEnd = modeX + (std::max)(textW(fs * 1.15f, mode), textW(fs * 0.85f, Tr("Output"))) + fs * 1.0f;
 
-    // 3D, right next to the output mode: ON with the 3D refresh rate (half of the emitter rate), or OFF
+    // 3D, right next to the output mode, only when 3D is used: its refresh rate (half of the emitter rate)
+    if(m_options.emitter.sourceFormat != StereoSource::Off && !m_options.emitter.hold && m_options.StereoAllowed()) // (nothing shown when 3D is not used)
     {
-        const bool stereoOn = m_options.emitter.sourceFormat != StereoSource::Off && !m_options.emitter.hold && m_options.StereoAllowed();
-        char       v3d[48];
-        if(stereoOn)
-        {
-            const auto&  es     = m_options.emitter;
-            const double syncHz = es.EffectiveSyncHz(m_options.vsyncRate, m_options.subFrames);
-            if(syncHz > 0.0)
-                snprintf(v3d, sizeof(v3d), "%d x %d | %.0f Hz", m_options.outputWidth, m_options.outputHeight, syncHz / 2.0);
-            else
-                snprintf(v3d, sizeof(v3d), "%d x %d | ON", m_options.outputWidth, m_options.outputHeight);
-        }
+        char         v3d[48];
+        const double syncHz = m_options.emitter.EffectiveSyncHz(m_options.vsyncRate, m_options.subFrames);
+        if(syncHz > 0.0)
+            snprintf(v3d, sizeof(v3d), "%d x %d | %.0f Hz", m_options.outputWidth, m_options.outputHeight, syncHz / 2.0);
         else
-            snprintf(v3d, sizeof(v3d), "OFF");
+            snprintf(v3d, sizeof(v3d), "%d x %d | ON", m_options.outputWidth, m_options.outputHeight);
         const float cw = (std::max)(textW(fs * 1.15f, v3d), textW(fs * 0.85f, "3D"));
         const float sx = modeEnd + fs * 0.4f;
         dl->AddLine(ImVec2(sx - fs * 0.5f, p0.y + height * 0.2f), ImVec2(sx - fs * 0.5f, p1.y - height * 0.2f), cAccDim, 2.0f);
         dl->AddText(font, fs * 0.85f, ImVec2(sx + fs * 0.4f, p0.y + height * 0.5f - fs * 1.15f), cDim, "3D");
-        dl->AddText(font, fs * 1.15f, ImVec2(sx + fs * 0.4f, p0.y + height * 0.5f), stereoOn ? cOnGreen : cWhite, v3d);
+        dl->AddText(font, fs * 1.15f, ImVec2(sx + fs * 0.4f, p0.y + height * 0.5f), cOnGreen, v3d);
         modeEnd = sx + fs * 0.4f + cw + fs * 1.0f;
     }
 
@@ -894,6 +888,37 @@ void UI::Render()
                 const ImVec2 a = ImGui::GetCursorScreenPos();
                 ImGui::GetWindowDrawList()->AddRectFilled(ImVec2(a.x, a.y + fs * 0.1f), ImVec2(a.x + ImGui::GetContentRegionAvail().x, a.y + fs * 0.1f + 2.0f), ImGui::GetColorU32(accentDim));
                 ImGui::Dummy(ImVec2(0, fs * 0.5f));
+            }
+            {
+                // a screen below 80 Hz cannot run Nbeam: the message goes away when another connected screen is compatible
+                static ULONGLONG s_rateAt  = 0;
+                static bool      s_lowRate = false;
+                const ULONGLONG  nowT      = GetTickCount64();
+                if(nowT - s_rateAt > 1000)
+                {
+                    s_rateAt  = nowT;
+                    s_lowRate = false;
+                    if(m_options.vsyncRate > 1.0f && m_options.vsyncRate < 79.5f)
+                    {
+                        s_lowRate               = true;
+                        const std::string outId = m_options.ScreenIdOfDisplay(m_options.shaderDisplayNo, m_displays);
+                        for(const auto& m : m_options.MonitorsSnapshot())
+                        {
+                            int best = m.hz;
+                            for(int r : m.rates)
+                                best = (std::max)(best, r);
+                            if(m.connected && m.id != outId && best >= 80)
+                                s_lowRate = false;
+                        }
+                    }
+                }
+                if(s_lowRate)
+                {
+                    ImGui::PushTextWrapPos(0.0f);
+                    ImGui::TextColored(ImVec4(1.0f, 0.30f, 0.30f, 1.0f), "%s", Tr("Refresh rate not compatible with Nbeam 3D Vision: 80 Hz minimum are needed to work. Change the refresh rate or connect a compatible screen."));
+                    ImGui::PopTextWrapPos();
+                    ImGui::Dummy(ImVec2(0, fs * 0.4f));
+                }
             }
             ImGui::PushItemWidth(-fs * 14.0f); // controls line up in one column, the label is on their right
 
@@ -1235,16 +1260,7 @@ void UI::Render()
             }
 
             {
-                // the output screen: connected screens, then the remembered ones that are not connected (kept in the profile with their refresh rates)
-                const auto  known = m_options.MonitorsSnapshot();
-                auto        label = [&](const Options::KnownMonitor& m) {
-                    std::string t = m.name;
-                    if(m.hz > 0)
-                        t += " (" + std::to_string(m.hz) + " Hz)";
-                    if(!m.connected)
-                        t += std::string(" [") + Tr("not connected") + "]";
-                    return t;
-                };
+                // the output screen: connected screens only (the remembered ones that are not connected are hidden)
                 std::string cur = m_pending.outputOnProcess ? Tr("Process (over the game)") : m_displays[m_pending.shaderDisplayNo].name;
                 if(ImGui::BeginCombo(Tr("Output Display"), cur.c_str(), 0))
                 {
@@ -1261,20 +1277,6 @@ void UI::Render()
                         if(selected)
                         {
                             ImGui::SetItemDefaultFocus();
-                        }
-                    }
-                    for(const auto& m : known)
-                    {
-                        if(m.connected)
-                            continue;
-                        // remembered but not connected: visible (with its refresh rates), not selectable
-                        ImGui::Selectable(label(m).c_str(), false, ImGuiSelectableFlags_Disabled);
-                        if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled) && !m.rates.empty())
-                        {
-                            std::string r;
-                            for(int hz : m.rates)
-                                r += (r.empty() ? "" : ", ") + std::to_string(hz);
-                            ImGui::SetTooltip("%s %s Hz", Tr("Refresh rates:"), r.c_str());
                         }
                     }
                     if(ImGui::Selectable(Tr("Process (over the game)"), m_pending.outputOnProcess))
@@ -1419,7 +1421,7 @@ void UI::Render()
             {
             m_emitterPanel.displayHz = m_options.vsyncRate;
             m_emitterPanel.subFrames = m_options.subFrames;
-    m_emitterPanel.stereoBlocked = !m_options.StereoAllowed();
+    m_emitterPanel.stereoBlocked = !m_options.StereoManual();
             m_emitterPanel.fontSize  = m_fontSize;
             m_emitterPanel.status    = m_emitterStatus;
             m_emitterPanel.aiStatus  = m_aiStatus;
@@ -1957,6 +1959,13 @@ void UI::Render()
                                             {
                                                 if(m.id != link.screenId && usedByOther(grp[n], m.id))
                                                     continue; // one screen per profile of a program
+                                                {
+                                                    int best = m.hz;
+                                                    for(int r : m.rates)
+                                                        best = (std::max)(best, r);
+                                                    if(m.id != link.screenId && best > 0 && best < 79)
+                                                        continue; // under 80 Hz: not offered (Nbeam needs 80 Hz minimum)
+                                                }
                                                 if(ImGui::Selectable(monLabel(m).c_str(), m.id == link.screenId))
                                                 {
                                                     link.screenId = m.id;
@@ -2000,7 +2009,9 @@ void UI::Render()
                                             std::vector<int> rates;
                                             for(const auto& m : mons)
                                                 if(m.id == link.screenId)
-                                                    rates = m.rates; // remembered rates, even when the screen is not connected
+                                                    for(int r : m.rates)
+                                                        if(r >= 79)
+                                                            rates.push_back(r); // remembered rates, even when the screen is not connected (under 80 Hz: not offered)
                                             if(link.hz > 0 && std::find(rates.begin(), rates.end(), link.hz) == rates.end())
                                                 rates.push_back(link.hz);
                                             std::sort(rates.begin(), rates.end());
@@ -2361,6 +2372,9 @@ void UI::Render()
                 if(ImGui::Checkbox(Tr("Start minimized"), &m_options.startMinimized))
                     m_options.SaveApp();
                 ShowHelpMarker(Tr("Nbeam starts without showing the HUD (reduced to the notification area if that option is on)."));
+                if(ImGui::Checkbox(Tr("Run as administrator"), &m_options.runAsAdmin))
+                    m_options.SaveApp();
+                ShowHelpMarker(Tr("At the next start Nbeam asks Windows for administrator rights (a confirmation window appears). Useful for games or programs that run as administrator, which a normal Nbeam cannot capture or stay above."));
                 if(ImGui::Checkbox(Tr("Minimize instead of closing"), &m_options.closeMinimizes))
                     m_options.SaveApp();
                 ShowHelpMarker(Tr("The cross of the window minimizes it (to the notification area if that option is on: the profile detections keep working) instead of quitting Nbeam."));
@@ -2439,6 +2453,9 @@ void UI::Render()
                         m_appearanceDirty = true;
                         ShowBanner();
                     }
+                    if(ImGui::Checkbox(Tr("Show stats"), &m_options.hud.showStats))
+                        m_appearanceDirty = true;
+                    ShowHelpMarker(Tr("Adds to the Nbeam banner (the banner then stays on while an effect or 3D is active): the RAM Nbeam uses, the render latency (one game picture, with the frame buffer added in brackets when it is used) and the late frames per minute (the picture was shown for more or fewer refreshes than planned)."));
                 }
                 if(ImGui::Button(Tr("Reset appearance")))
                 {
@@ -2910,6 +2927,59 @@ bool UI::HudBounds(RECT& r) const
     return true;
 }
 
+// Stats of the banner (Appearance > Show stats): RAM used by Nbeam, estimated render latency (a game picture, the frame buffer added in
+// brackets when it is used) and late frames per minute
+static void CollectStats(const Options& o, std::string& ram, std::string& lat, std::string& late)
+{
+    static ULONGLONG s_ramTick = 0;
+    static double    s_ramMb   = 0.0;
+    if(GetTickCount64() - s_ramTick > 1000)
+    {
+        s_ramTick = GetTickCount64();
+        struct MemCounters
+        {
+            DWORD  cb, PageFaultCount;
+            SIZE_T PeakWorkingSetSize, WorkingSetSize, QuotaPeakPagedPoolUsage, QuotaPagedPoolUsage, QuotaPeakNonPagedPoolUsage, QuotaNonPagedPoolUsage, PagefileUsage, PeakPagefileUsage, PrivateUsage;
+        } mc {};
+        mc.cb = sizeof(mc);
+        using Fn = BOOL(WINAPI*)(HANDLE, MemCounters*, DWORD);
+        if(HMODULE k = GetModuleHandleW(L"kernel32.dll"))
+            if(auto fn = (Fn)GetProcAddress(k, "K32GetProcessMemoryInfo"))
+                if(fn(GetCurrentProcess(), &mc, sizeof(mc)))
+                    s_ramMb = (double)mc.WorkingSetSize / (1024.0 * 1024.0);
+    }
+    char b[48];
+    snprintf(b, sizeof(b), "%.0f MB", s_ramMb);
+    ram = b;
+    const double contentMs = 1000.0 * (std::max)(o.subFrames, 1) / (std::max)(o.vsyncRate, 1.0f);
+    const int    fbFrames  = o.EffectiveFrameBuffer();
+    const double bufMs     = fbFrames > 0 ? fbFrames * (std::max)(1, o.frameBufferStep) * contentMs : 0.0;
+    if(bufMs > 0.0)
+        snprintf(b, sizeof(b), "%.1f ms (+%.1f)", contentMs, bufMs);
+    else
+        snprintf(b, sizeof(b), "%.1f ms", contentMs);
+    lat = b;
+    snprintf(b, sizeof(b), "%.0f /min", o.presentGlitches);
+    late = b;
+}
+
+// the banner is about 3D (emitter on) or about an effect (BFI / CRT) shown with the content refresh rate
+bool UI::Banner3d() const
+{
+    return m_options.emitter.sourceFormat != StereoSource::Off && !m_options.emitter.hold && m_options.StereoAllowed();
+}
+
+bool UI::BannerFx() const
+{
+    return !m_windowMode && !m_options.effectsSuspended && m_options.subFrames > 1;
+}
+
+// stats asked: the banner stays on while 3D or an effect is active
+bool UI::StatsBannerOn() const
+{
+    return m_ready && m_options.hud.showStats && !m_windowMode && (Banner3d() || BannerFx());
+}
+
 void UI::ShowBanner()
 {
     if(m_windowMode)
@@ -2918,7 +2988,7 @@ void UI::ShowBanner()
         return;
     }
     const int sec = m_options.hud.bannerSeconds;
-    const bool on = m_options.emitter.sourceFormat != StereoSource::Off && !m_options.emitter.hold && m_options.StereoAllowed() && sec > 0;
+    const bool on = (Banner3d() || BannerFx()) && sec > 0; // (3D wins over the effect: the banner is the Nbeam 3D Vision one)
     m_bannerUntil = !on ? 0 : (sec > 10 ? ~0ULL : GetTickCount64() + (ULONGLONG)sec * 1000ULL);
 }
 
@@ -2941,7 +3011,7 @@ void UI::ShowNote(const std::string& text)
 bool UI::BannerActive() const
 {
     const auto now = GetTickCount64();
-    return m_ready && ((m_bannerUntil && now < m_bannerUntil) || (m_adjustUntil && now < m_adjustUntil) || (m_noteUntil && now < m_noteUntil) || (m_menuUntil && now < m_menuUntil));
+    return m_ready && (StatsBannerOn() || (m_bannerUntil && now < m_bannerUntil) || (m_adjustUntil && now < m_adjustUntil) || (m_noteUntil && now < m_noteUntil) || (m_menuUntil && now < m_menuUntil));
 }
 
 // shown for 3 seconds when a 3D mode is active: tells that the emitter is on (or could not start)
@@ -2980,9 +3050,19 @@ void UI::RenderBanner()
             if(line.find("FAILED") != std::string::npos)
                 failed = true;
         const int fmt = (int)m_options.emitter.sourceFormat;
+        if(!Banner3d() && !failed)
+        {
+            // BFI / CRT without 3D: the effect and the content refresh rate (screen Hz / SubFrames)
+            const int  no = std::clamp(m_options.shaderProfileNo, 0, (int)m_shaders.size() - 1);
+            char       buf[64];
+            lines.push_back({ std::string(Tr(m_shaders[no].name.c_str())) + "  -  " + Tr("On"), accent });
+            snprintf(buf, sizeof(buf), Tr("Refresh rate: %.1f Hz"), m_options.vsyncRate / (float)(std::max)(m_options.subFrames, 1));
+            lines.push_back({ buf, IM_COL32(215, 215, 215, 255) });
+        }
+        else
         lines.push_back({ failed ? std::string(Tr("3D emitter: NOT FOUND (see Status)")) : std::string(Tr("3D emitter ON  -  ")) + Tr(formats[(fmt >= 0 && fmt < 5) ? fmt : 0]),
                           failed ? IM_COL32(255, 90, 40, 255) : accent });
-        if(!failed)
+        if(!failed && Banner3d())
         {
             // 3D refresh rate = half of the emitter (eye switch) rate
             const auto&  s      = m_options.emitter;
@@ -2991,11 +3071,20 @@ void UI::RenderBanner()
             snprintf(buf, sizeof(buf), Tr("3D refresh rate: %.1f Hz"), syncHz / 2.0);
             lines.push_back({ buf, IM_COL32(215, 215, 215, 255) });
         }
+        if(m_options.hud.showStats && !failed)
+        {
+            std::string ram, lat, late;
+            CollectStats(m_options, ram, lat, late);
+            lines.push_back({ std::string(Tr("RAM")) + ": " + ram, IM_COL32(215, 215, 215, 255) });
+            lines.push_back({ std::string(Tr("Latency")) + ": " + lat, IM_COL32(215, 215, 215, 255) });
+            lines.push_back({ std::string(Tr("Late frames")) + ": " + late, IM_COL32(215, 215, 215, 255) });
+        }
     }
+    const char* title = (m_options.emitter.sourceFormat != StereoSource::Off && !(m_noteUntil == 0 && false) && Banner3d()) || m_adjustUntil > GetTickCount64() ? "Nbeam 3D Vision" : "Nbeam";
 
     auto  drawList = ImGui::GetForegroundDrawList();
     auto  size     = ImGui::GetMainViewport()->Size;
-    float textW    = m_largeFont->CalcTextSizeA(m_fontSize * 3, size.x, 0, "Nbeam 3D Vision").x;
+    float textW    = m_largeFont->CalcTextSizeA(m_fontSize * 3, size.x, 0, title).x;
     for(const auto& l : lines)
         textW = (std::max)(textW, m_smallFont->CalcTextSizeA(m_fontSize, size.x, 0, l.text.c_str()).x);
     const float boxH     = m_fontSize * (5.0f + 1.4f * (float)lines.size());
@@ -3010,7 +3099,7 @@ void UI::RenderBanner()
     boxStart.x += m_fontSize * 2;
     boxStart.y += m_fontSize;
     ImGui::PushFont(m_largeFont);
-    drawList->AddText(boxStart, accent, "Nbeam 3D Vision");
+    drawList->AddText(boxStart, accent, title);
     ImGui::PopFont();
     boxStart.y += m_fontSize * 3;
     for(const auto& l : lines)
@@ -3112,19 +3201,43 @@ void UI::RenderMenu()
     }
     if(on3d)
     {
-        // convergence, shown -100..+100 like the slider
+        // emitter rate: the display rate divided by n, between 80 and 165 Hz (what the glasses detect); chosen then confirmed like the 3D mode
+        std::vector<double> rates;
+        for(int n = 1; n <= 20 && m_options.vsyncRate > 1.0f; n++)
         {
-            const float conv = (50.0f - s.ai.convergence) * 2.0f;
-            snprintf(buf, sizeof(buf), "%+.0f", conv);
+            const double hz = (double)m_options.vsyncRate / n;
+            if(hz > 165.5)
+                continue;
+            if(hz < 79.5)
+                break;
+            rates.push_back(hz);
+        }
+        if(!rates.empty())
+        {
+            int cur = 0;
+            for(int i = 1; i < (int)rates.size(); i++)
+                if(std::fabs(rates[i] - syncHz) < std::fabs(rates[cur] - syncHz))
+                    cur = i;
             Item it;
-            it.label  = Tr("Convergence");
-            it.value  = buf;
-            it.adjust = [&s](int n) {
-                const float c    = std::clamp((50.0f - s.ai.convergence) * 2.0f + (float)n, -100.0f, 100.0f);
-                s.ai.convergence = std::clamp(50.0f - c * 0.5f, 0.0f, 100.0f);
+            it.label = Tr("Emitter frequency");
+            it.count = (int)rates.size();
+            it.cur   = cur;
+            it.name  = [rates](int i) {
+                char t[32];
+                snprintf(t, sizeof(t), "%.3f Hz", rates[std::clamp(i, 0, (int)rates.size() - 1)]);
+                return std::string(t);
+            };
+            it.apply = [this, rates](int i) {
+                auto& e      = m_options.emitter;
+                e.syncAuto   = false;
+                e.syncRateHz = rates[std::clamp(i, 0, (int)rates.size() - 1)];
+                m_emitterRestartRequired = true;
             };
             items.push_back(std::move(it));
         }
+    }
+    if(on3d)
+    {
         if(s.sourceFormat == StereoSource::AiDepth)
         {
             static const int kWidths[] = { 224, 308, 420, 518, 672, 840, 1008 };
@@ -3140,7 +3253,7 @@ void UI::RenderMenu()
             it.apply = [&s](int i) { s.ai.modelWidth = kWidths[std::clamp(i, 0, 6)]; };
             items.push_back(std::move(it));
             addFloat("Depth Strength (%)", &s.ai.strength, 0.0f, 10.0f, 0.1f, "%.1f");
-            addFloat("Depth smoothing (%)", &s.ai.smoothing, 0.0f, 95.0f, 1.0f, "%.0f");
+            addFloat("Depth smoothing (%)", &s.ai.smoothing, 0.0f, 100.0f, 1.0f, "%.0f");
             addFloat("Anti-halo (%)", &s.ai.antiHalo, -300.0f, 300.0f, 2.0f, "%.0f");
         }
         {
@@ -3152,7 +3265,116 @@ void UI::RenderMenu()
             items.push_back(std::move(it));
         }
         addFloat("Open Duration (us)", &s.nvidia.openDurationUs, 0.0f, (float)range, 100.0f, "%.0f");
+        // convergence, shown -100..+100 like the slider
+        {
+            const float conv = (50.0f - s.ai.convergence) * 2.0f;
+            snprintf(buf, sizeof(buf), "%+.0f", conv);
+            Item it;
+            it.label  = Tr("Convergence");
+            it.value  = buf;
+            it.adjust = [&s](int n) {
+                const float c    = std::clamp((50.0f - s.ai.convergence) * 2.0f + (float)n, -100.0f, 100.0f);
+                s.ai.convergence = std::clamp(50.0f - c * 0.5f, 0.0f, 100.0f);
+            };
+            items.push_back(std::move(it));
+        }
         addBool("Swap Eyes", &s.swapEyes);
+    }
+
+    // ---- the program: add it to the profiles, and the profile it uses (each applied like the 3D mode: choose, then press again) ----
+    {
+        static std::vector<std::string> s_profList;
+        static ULONGLONG                s_profAt = 0;
+        if(now - s_profAt > 2000)
+        {
+            s_profList = Options::ListProfiles();
+            SortNoCase(s_profList);
+            s_profAt = now;
+        }
+        // the captured program, or the one in the foreground (not Nbeam, not the Windows shell)
+        std::string prog = m_options.captureProcess;
+        if(prog.empty())
+        {
+            HWND  fg  = GetForegroundWindow();
+            DWORD pid = 0;
+            if(fg)
+                GetWindowThreadProcessId(fg, &pid);
+            if(pid && pid != GetCurrentProcessId())
+                prog = Options::ProcessNameOfWindow(fg);
+            static const char* ignored[] = { "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe", "textinputhost.exe", "applicationframehost.exe", "lockapp.exe", "dwm.exe" };
+            for(const char* ig : ignored)
+                if(prog == ig)
+                    prog.clear();
+        }
+        if(!prog.empty())
+        {
+            const std::string screen = m_options.ScreenIdOfDisplay(m_options.shaderDisplayNo, m_displays);
+            bool              known  = false;
+            int               curProf = -1;
+            {
+                std::lock_guard<std::recursive_mutex> lk(m_options.linksMutex);
+                const Options::ProfileLink* match = nullptr;
+                for(const auto& l : m_options.profileLinks)
+                    if(Options::NormalizeExeName(l.exe) == prog)
+                    {
+                        known = true;
+                        if(!match || l.screenId == screen)
+                            match = &l;
+                    }
+                if(match)
+                    for(int i = 0; i < (int)s_profList.size(); i++)
+                        if(s_profList[i] == match->profile)
+                            curProf = i;
+            }
+            if(!known)
+            {
+                Item it;
+                it.label   = Tr("Add the program to the profiles");
+                it.count   = 2;
+                it.cur     = known ? 1 : 0;
+                it.name    = [](int i) { return std::string(i ? Tr("Added") : Tr("Not added")); };
+                it.apply   = [this, prog, screen](int i) {
+                    if(i != 1)
+                        return;
+                    std::lock_guard<std::recursive_mutex> lk(m_options.linksMutex);
+                    for(const auto& l : m_options.profileLinks)
+                        if(Options::NormalizeExeName(l.exe) == prog)
+                            return;
+                    if(m_options.profileLinks.size() >= 64)
+                        return;
+                    Options::ProfileLink nl;
+                    nl.exe      = prog;
+                    nl.screenId = screen;
+                    m_options.profileLinks.push_back(nl);
+                    m_options.SaveApp();
+                    ShowNote(prog + " " + Tr("added to the profile detections"));
+                };
+                items.push_back(std::move(it));
+            }
+            if(known && !s_profList.empty())
+            {
+                Item it;
+                it.label = Tr("Profile of the program");
+                it.count = (int)s_profList.size();
+                it.cur   = curProf;
+                it.name  = [](int i) { return i >= 0 && i < (int)s_profList.size() ? s_profList[i] : std::string(Tr("(no profile)")); };
+                it.apply = [this, prog, screen](int i) {
+                    if(i < 0 || i >= (int)s_profList.size())
+                        return;
+                    std::lock_guard<std::recursive_mutex> lk(m_options.linksMutex);
+                    Options::ProfileLink* match = nullptr;
+                    for(auto& l : m_options.profileLinks)
+                        if(Options::NormalizeExeName(l.exe) == prog && (!match || l.screenId == screen))
+                            match = &l;
+                    if(match)
+                    {
+                        match->profile = s_profList[i];
+                        m_options.SaveApp();
+                    }
+                };
+                items.push_back(std::move(it));
+            }
+        }
     }
 
     // ---- pending input ----
@@ -3257,7 +3479,7 @@ void UI::RenderMenu()
     const int   maxRows  = 9;
     const int   rows     = (std::min)(count, maxRows);
     const int   first    = std::clamp(m_menuIndex - rows / 2, 0, count - rows);
-    const char* help[]   = { Tr("Wheel: move up / down"), Tr("Button held + wheel: change the value"), Tr("3D mode, AI resolution: press the button again to confirm"), Tr("Click: close the menu") };
+    const char* help[]   = { Tr("Wheel: move up / down"), Tr("Button held + wheel: change the value"), Tr("3D mode, AI resolution, profile: press the button again to confirm"), Tr("Click: close the menu") };
     std::vector<std::string> shown(count);
     for(int i = 0; i < count; i++)
     {

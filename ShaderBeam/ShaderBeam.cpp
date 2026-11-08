@@ -10,6 +10,7 @@ MIT License
 #include "ShaderBeam.h"
 #include "Helpers.h"
 #include "CaptureWGC.h"
+#include "Lang.h"
 
 namespace ShaderBeam
 {
@@ -55,6 +56,29 @@ void ShaderBeam::Create(HWND window)
     m_ui.m_displays = GetDisplays();
 
     DefaultOptions();
+
+    // Nbeam needs 80 Hz minimum: it does not start on a screen below 79 Hz, unless another connected screen is compatible
+    if(m_options.vsyncRate > 1.0f && m_options.vsyncRate < 79.5f)
+    {
+        bool              other = false;
+        const std::string outId = m_options.ScreenIdOfDisplay(m_options.shaderDisplayNo, m_ui.m_displays);
+        for(const auto& m : m_options.MonitorsSnapshot())
+        {
+            int best = m.hz;
+            for(int r : m.rates)
+                best = (std::max)(best, r);
+            if(m.connected && m.id != outId && best >= 80)
+                other = true;
+        }
+        if(!other)
+        {
+            const char* msg = Tr("Refresh rate not compatible with Nbeam 3D Vision: 80 Hz minimum are needed to work. Change the refresh rate or connect a compatible screen.");
+            wchar_t     wide[512] = {};
+            MultiByteToWideChar(CP_UTF8, 0, msg, -1, wide, 511);
+            MessageBoxW(nullptr, wide, L"Nbeam 3D Vision", MB_ICONERROR | MB_OK | MB_SETFOREGROUND | MB_TOPMOST);
+            ExitProcess(1);
+        }
+    }
 
     for(int id = 0; id < HOTKEY_COUNT; id++)
         m_options.RegisterHotkey(id);
@@ -149,11 +173,11 @@ void ShaderBeam::DefaultOptions()
     m_options.subFrames        = m_options.subFramesSetting;
 
     if(m_options.captureAdapterNo >= m_ui.m_adapters.size())
-        m_options.captureAdapterNo = 0;
+        m_options.captureAdapterNo = m_ui.m_adapters.empty() ? 0 : (decltype(m_options.captureAdapterNo))(m_ui.m_adapters.size() - 1); // too big: the highest that exists
     if(m_options.shaderAdapterNo >= m_ui.m_adapters.size())
-        m_options.shaderAdapterNo = 0;
+        m_options.shaderAdapterNo = m_ui.m_adapters.empty() ? 0 : (decltype(m_options.shaderAdapterNo))(m_ui.m_adapters.size() - 1); // too big: the highest that exists
     if(m_options.captureDisplayNo >= m_ui.m_displays.size())
-        m_options.captureDisplayNo = 0;
+        m_options.captureDisplayNo = m_ui.m_displays.empty() ? 0 : (decltype(m_options.captureDisplayNo))(m_ui.m_displays.size() - 1); // too big: the highest that exists
     // the screens saved in the profile (by their identification) win over the display numbers
     if(!m_options.shaderScreenId.empty())
     {
@@ -174,13 +198,13 @@ void ShaderBeam::DefaultOptions()
         }
     }
     if(m_options.shaderDisplayNo >= m_ui.m_displays.size())
-        m_options.shaderDisplayNo = 0;
+        m_options.shaderDisplayNo = m_ui.m_displays.empty() ? 0 : (decltype(m_options.shaderDisplayNo))(m_ui.m_displays.size() - 1); // too big: the highest that exists
     if(m_options.captureMethod >= m_ui.m_captures.size())
-        m_options.captureMethod = 0;
+        m_options.captureMethod = m_ui.m_captures.empty() ? 0 : (decltype(m_options.captureMethod))(m_ui.m_captures.size() - 1); // too big: the highest that exists
     if(m_options.splitScreen >= m_ui.m_splitScreens.size())
-        m_options.splitScreen = 0;
+        m_options.splitScreen = m_ui.m_splitScreens.empty() ? 0 : (decltype(m_options.splitScreen))(m_ui.m_splitScreens.size() - 1); // too big: the highest that exists
     if(m_options.shaderProfileNo >= m_ui.m_shaders.size())
-        m_options.shaderProfileNo = 0;
+        m_options.shaderProfileNo = m_ui.m_shaders.empty() ? 0 : (decltype(m_options.shaderProfileNo))(m_ui.m_shaders.size() - 1); // too big: the highest that exists
 }
 
 void ShaderBeam::Start()
@@ -195,13 +219,13 @@ void ShaderBeam::Start()
         return;
     }
     if(m_options.captureDisplayNo >= m_ui.m_displays.size())
-        m_options.captureDisplayNo = 0;
+        m_options.captureDisplayNo = m_ui.m_displays.empty() ? 0 : (decltype(m_options.captureDisplayNo))(m_ui.m_displays.size() - 1); // too big: the highest that exists
     if(m_options.shaderDisplayNo >= m_ui.m_displays.size())
-        m_options.shaderDisplayNo = 0;
+        m_options.shaderDisplayNo = m_ui.m_displays.empty() ? 0 : (decltype(m_options.shaderDisplayNo))(m_ui.m_displays.size() - 1); // too big: the highest that exists
     if(m_options.captureAdapterNo >= m_ui.m_adapters.size())
-        m_options.captureAdapterNo = 0;
+        m_options.captureAdapterNo = m_ui.m_adapters.empty() ? 0 : (decltype(m_options.captureAdapterNo))(m_ui.m_adapters.size() - 1); // too big: the highest that exists
     if(m_options.shaderAdapterNo >= m_ui.m_adapters.size())
-        m_options.shaderAdapterNo = 0;
+        m_options.shaderAdapterNo = m_ui.m_adapters.empty() ? 0 : (decltype(m_options.shaderAdapterNo))(m_ui.m_adapters.size() - 1); // too big: the highest that exists
     m_options.crossAdapter     = m_options.shaderAdapterNo != m_options.captureAdapterNo;
     const auto& captureAdapter = m_ui.m_adapters.at(m_options.captureAdapterNo);
     const auto& shaderAdapter  = m_ui.m_adapters.at(m_options.shaderAdapterNo);

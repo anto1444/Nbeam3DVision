@@ -599,6 +599,7 @@ void Options::LoadApp()
             auto& a = ini["app"];
             LOAD_BOOL(a, startWithWindows)
             LOAD_BOOL(a, startMinimized)
+            LOAD_BOOL(a, runAsAdmin)
             LOAD_BOOL(a, closeMinimizes)
             LOAD_INT(a, ufoSpeed)
             ufoSpeed = std::clamp(ufoSpeed, 0, 7680);
@@ -648,6 +649,9 @@ void Options::LoadApp()
             f("bannerCorner", bc, 0.0f, 3.0f);
             hud.bannerSeconds = (int)bs;
             hud.bannerCorner  = (int)bc;
+            float ss = hud.showStats ? 1.0f : 0.0f;
+            f("showStats", ss, 0.0f, 1.0f);
+            hud.showStats = ss > 0.5f;
             f("scale", hud.scale, 0.6f, 2.0f);
             f("scaleWin", hud.scaleWin, 0.6f, 2.0f);
         }
@@ -714,6 +718,7 @@ void Options::SaveApp() const
         auto&              a = ini["app"];
         SAVE_BOOL(a, startWithWindows)
         SAVE_BOOL(a, startMinimized)
+        SAVE_BOOL(a, runAsAdmin)
         SAVE_BOOL(a, closeMinimizes)
         SAVE_INT(a, ufoSpeed)
         SAVE_INT(a, carSize)
@@ -738,6 +743,7 @@ void Options::SaveApp() const
         h["sdrBrightness"] = std::to_string(hud.sdrBrightness);
         h["bannerSeconds"] = std::to_string(hud.bannerSeconds);
         h["bannerCorner"]  = std::to_string(hud.bannerCorner);
+        h["showStats"]     = hud.showStats ? "1" : "0";
         h["scale"]         = std::to_string(hud.scale);
         h["scaleWin"]      = std::to_string(hud.scaleWin);
         {
@@ -1003,6 +1009,35 @@ HMONITOR Options::OutputMonitor(const std::vector<DisplayInfo>& displays) const
 {
     const size_t no = outputOnProcess ? (size_t)captureDisplayNo : (size_t)shaderDisplayNo;
     return no < displays.size() ? displays[no].monitor : (HMONITOR)0;
+}
+
+bool Options::AppRunAsAdmin()
+{
+    try
+    {
+        mINI::INIFile      file(ExeDir() / APP_FILE);
+        mINI::INIStructure ini;
+        if(!file.read(ini) || !ini.has("app") || !ini["app"].has("runAsAdmin"))
+            return false;
+        const std::string v = ini["app"]["runAsAdmin"];
+        return v == "1" || v == "true";
+    }
+    catch(...)
+    {
+        return false;
+    }
+}
+
+bool Options::IsElevated()
+{
+    HANDLE token = nullptr;
+    if(!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return false;
+    TOKEN_ELEVATION e {};
+    DWORD           size = 0;
+    const bool      ok   = GetTokenInformation(token, TokenElevation, &e, sizeof(e), &size) && e.TokenIsElevated;
+    CloseHandle(token);
+    return ok;
 }
 
 // Windows startup entry for the current user.
@@ -1416,6 +1451,11 @@ void Options::Load(ShaderManager& shaderManager)
                 LOAD_INT(s, shaderAdapterNo)
                 LOAD_INT(s, captureDisplayNo)
                 LOAD_INT(s, shaderDisplayNo)
+                // (adapters / displays / capture / split-screen numbers: fitted to what exists in ShaderBeam::Start / Init, the highest one when too big)
+                captureAdapterNo = (std::max)(captureAdapterNo, 0);
+                shaderAdapterNo  = (std::max)(shaderAdapterNo, 0);
+                captureDisplayNo = (std::max)(captureDisplayNo, 0);
+                shaderDisplayNo  = (std::max)(shaderDisplayNo, 0);
                 shaderScreenId  = s.has("shaderScreen") ? s.get("shaderScreen") : std::string();
                 captureScreenId = s.has("captureScreen") ? s.get("captureScreen") : std::string();
                 LOAD_BOOL(s, outputOnProcess)
@@ -1474,7 +1514,9 @@ void Options::Load(ShaderManager& shaderManager)
                 }
             }
 
-            if(ini.has("shader") && shaderProfileNo <= shaderManager.GetShaders().size())
+            // a saved value that does not exist (any more) is replaced by the nearest one that does: the highest when it is too big
+            shaderProfileNo = std::clamp(shaderProfileNo, 0, (std::max)((int)shaderManager.GetShaders().size() - 1, 0));
+            if(ini.has("shader"))
             {
                 auto& shader = ini["shader"];
                 for(const auto& param : shaderManager.GetParameterInfos(shaderProfileNo))
@@ -1489,10 +1531,24 @@ void Options::Load(ShaderManager& shaderManager)
                         switch(param.type)
                         {
                         case ParamInt:
-                            *param.p.ip.value = std::stoi(shader[param.name]);
+                        {
+                            int v = std::stoi(shader[param.name]);
+                            if(!param.dropdown.empty())
+                            {
+                                // a list: a number that is not in it becomes the highest one below it (the highest of the list when too big)
+                                if(!param.dropdown.count(v))
+                                {
+                                    auto it = param.dropdown.upper_bound(v);
+                                    v       = it == param.dropdown.begin() ? param.dropdown.begin()->first : std::prev(it)->first;
+                                }
+                            }
+                            else
+                                v = std::clamp(v, param.p.ip.min, param.p.ip.max);
+                            *param.p.ip.value = v;
                             break;
+                        }
                         case ParamFloat:
-                            *param.p.fp.value = std::stof(shader[param.name]);
+                            *param.p.fp.value = std::clamp(std::stof(shader[param.name]), param.p.fp.min, param.p.fp.max);
                             break;
                         }
                     }

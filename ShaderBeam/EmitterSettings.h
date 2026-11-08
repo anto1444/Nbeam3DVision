@@ -58,7 +58,7 @@ struct StereoEmitterSettings
 
     // common emitter settings
     bool          syncAuto { true };      // Auto: the rate is picked among the display Hz / n between 80 and 165 Hz (SubFrames follows)
-    float         syncRateHz { 120 };     // manual rate in Hz (SubFrames follows: display Hz / rate)
+    double        syncRateHz { 120.0 };   // manual rate in Hz (6 decimals, picked among display Hz / n) (SubFrames follows: display Hz / rate)
     int           syncOffsetUs { 0 };     // from vsync; negative = signal before vsync
     bool          swapEyes { false };     // reverses the eye order
     bool          scanoutSync { false };  // the glasses follow the real display refreshes (DXGI frame statistics) instead of the moment Present returned

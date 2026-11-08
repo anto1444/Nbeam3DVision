@@ -1,6 +1,6 @@
 # Nbeam 3D Vision
 
-**Version 2.4.0 — par anto1444, 2026**
+**Version 2.4.1 — par anto1444, 2026**
 
 <p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision - NVIDIA 3D Vision glasses, BFI and CRT beam simulator overlay for Windows" width="420"></p>
 
@@ -10,7 +10,7 @@
 > - **Motion blur reduction** on fast LCD and OLED screens (120 to 480 Hz): **BFI (black frame insertion)** and the **CRT beam simulator** from Blur Busters, alone or together with 3D, with **BFI sync** for captured games (phase lock for lower latency, adaptive frame buffer for stability, or both) and **BFI auto** (SubFrames following the game frame rate).
 > - **Can capture another capture overlay** similar to its own, such as **Lossless Scaling**: BFI, CRT or 3D are added on top of the picture that software has already scaled or generated.
 > - **Per-game profiles** loaded automatically when the game's .exe is detected, separate desktop settings, live adjustment of the glasses (sync offset, open duration), a **motion test** with scrolling cars to compare settings and check eye inversion, hotkeys and gamepad support.
-> - Requirements: Windows 10 (1903) or 11 64-bit, DirectX 11 GPU, a 100 Hz+ display for 3D or BFI (240 Hz+ for both). Download the latest version from the [Releases](https://github.com/anto1444/Nbeam3DVision/releases) page. The interface and the full guide below are in French (switch the interface to English in Application → Language / Langue).
+> - Requirements: Windows 10 (1903) or 11 64-bit, DirectX 11 GPU, a display running at 80 Hz minimum (100 Hz+ recommended for 3D or BFI, 240 Hz+ for both). Download the latest version from the [Releases](https://github.com/anto1444/Nbeam3DVision/releases) page. The interface and the full guide below are in French (switch the interface to English in Application → Language / Langue).
 >
 > *Keywords: NVIDIA 3D Vision, 3D Vision emitter, 3D Vision Windows 11, 3D Vision without driver, active shutter glasses, stereoscopic 3D gaming, 2D to 3D conversion, SBS 3D, BFI, black frame insertion, CRT beam simulator, motion blur reduction, OLED, high refresh rate, ShaderBeam.*
 
@@ -37,7 +37,7 @@ Au tout premier lancement (quand le dossier `Profils` est créé), Nbeam affiche
 
 - Windows 10 (1903) ou 11, 64 bits, carte graphique DirectX 11 (RTX 3050 ou AMD équivalent recommandé).
 - Processeur : **4 cœurs / 8 threads minimum** (Intel Core i5 de 8e génération ou AMD Ryzen 3 3100), **6 cœurs / 12 threads recommandé** (Intel Core i5-10400 ou AMD Ryzen 5 3600 et plus récents). Nbeam garde un thread à haute priorité pour le rendu et un autre pour la synchro des lunettes, et le beam racing occupe un cœur pendant l'attente ; le jeu doit garder assez de cœurs libres. La 2D vers 3D (IA) tourne sur la carte graphique (DirectML) ; sur le processeur seul, elle demande un processeur bien plus puissant.
-- Écran : **100 Hz minimum** pour la 3D **ou** le BFI, **240 Hz ou plus** pour les deux ensemble. Idéal : un écran **OLED**, ou un LCD à temps de réponse rapide.
+- Écran : **80 Hz minimum** (Nbeam refuse de démarrer en dessous de 79 Hz), **100 Hz recommandé** pour la 3D **ou** le BFI, **240 Hz ou plus** pour les deux ensemble. Idéal : un écran **OLED**, ou un LCD à temps de réponse rapide.
 - 3D NVIDIA : l'émetteur USB et son pilote. 3D Arduino : un émetteur compatible sur un port COM.
 
 ## Démarrage rapide
@@ -176,7 +176,9 @@ Un mini menu, uniquement piloté par l'émetteur NVIDIA, s'affiche à côté de 
 - **Bouton maintenu + molette** : change la valeur de la ligne en surbrillance. Les réglages sont appliqués tout de suite, sauf le **mode 3D** et la **résolution IA** (lourds) : leur choix s'affiche avec un « > » et n'est appliqué qu'en **rappuyant sur le bouton** pour confirmer (comme pour la navigation, 3 crans de molette par choix).
 - **Clic** : ferme le menu.
 
-Réglages proposés : mode 3D, convergence, résolution IA, force de la profondeur, lissage, anti-halo (2D vers 3D IA), décalage de synchro, durée d'ouverture, inverser les yeux. La cadence de la profondeur suit le taux de rafraîchissement 3D (selon ce que le PC peut faire) et l'IA utilise toujours le GPU (DirectML), sans réglage à faire.
+Réglages proposés : mode 3D, **fréquence de l'émetteur**, convergence, résolution IA, force de la profondeur, lissage, anti-halo (2D vers 3D IA), décalage de synchro, durée d'ouverture, inverser les yeux, **ajouter le programme aux profils** et **profil du programme**. Le mode 3D, la fréquence de l'émetteur, la résolution IA et le profil sont confirmés en rappuyant sur le bouton. La cadence de la profondeur suit le taux de rafraîchissement 3D (selon ce que le PC peut faire) et l'IA utilise toujours le GPU (DirectML), sans réglage à faire.
+
+**80 Hz minimum** : Nbeam refuse de démarrer si l'écran de sortie est sous 79 Hz (message d'erreur), et se ferme avec ce même message si l'écran passe sous 79 Hz pendant l'exécution, sauf si un autre écran connecté est compatible. Les profils ne proposent plus d'écran ni de fréquence sous 80 Hz. La **fréquence de synchro** de l'émetteur est une liste déroulante des fréquences (Hz écran ÷ n, de 80 à 165 Hz, affichées avec 3 décimales). Le **lissage** de la profondeur va jusqu'à 100 % : au-delà de 50 %, l'image du jeu est retenue pour suivre la carte (il faut le tampon de carte).
 
 **Afficher / Masquer les effets** : le bouton du bas du HUD, le raccourci et le menu de l'icône de notification coupent **tous les effets et l'émetteur 3D** (l'image s'affiche telle quelle, pour comparer). Ils restent coupés, HUD ouvert ou fermé, jusqu'à « Afficher ». Ouvrir le HUD ne coupe plus les effets. Dans la fenêtre de Nbeam, ils activent / désactivent les effets (voir Mode fenêtre).
 

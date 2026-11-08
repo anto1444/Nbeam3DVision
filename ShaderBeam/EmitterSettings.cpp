@@ -26,6 +26,12 @@ void Get(const mINI::INIMap<std::string>& m, const char* k, float& v, float lo, 
         return;
     try { v = std::clamp(std::stof(m.get(k)), lo, hi); } catch(...) { }
 }
+void Get(const mINI::INIMap<std::string>& m, const char* k, double& v, double lo, double hi)
+{
+    if(!m.has(k))
+        return;
+    try { v = std::clamp(std::stod(m.get(k)), lo, hi); } catch(...) { }
+}
 void Get(const mINI::INIMap<std::string>& m, const char* k, bool& v)
 {
     if(m.has(k))
@@ -63,13 +69,13 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
     int src = (int)s.sourceFormat;
     Get(e, "sourceFormat", src, 0, 6);
     s.sourceFormat = (StereoSource)(src <= 4 ? src : 0); // (the removed Auto / Full formats of earlier builds fall back to Off)
-    Get(e, "syncRateHz", s.syncRateHz, 0.0f, 10000.0f);
+    Get(e, "syncRateHz", s.syncRateHz, 0.0, 10000.0);
     if(e.has("syncAuto"))
         Get(e, "syncAuto", s.syncAuto);
     else
-        s.syncAuto = s.syncRateHz <= 0.0f; // old profile: 0 meant automatic
-    if(s.syncRateHz < 1.0f)
-        s.syncRateHz = 120.0f;
+        s.syncAuto = s.syncRateHz <= 0.0; // old profile: 0 meant automatic
+    if(s.syncRateHz < 1.0)
+        s.syncRateHz = 120.0;
     Get(e, "syncOffsetUs", s.syncOffsetUs, -100000, 0); // negative only: a positive value of an older profile becomes 0
     Get(e, "scanoutSync", s.scanoutSync);
     Get(e, "swapEyes", s.swapEyes);
@@ -79,7 +85,7 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
     Get(e, "aiModelWidth", s.ai.modelWidth, 126, 1008);
     Get(e, "aiStrength", s.ai.strength, 0.0f, 10.0f);
     Get(e, "aiConvergence", s.ai.convergence, 0.0f, 100.0f);
-    Get(e, "aiSmoothing", s.ai.smoothing, 0.0f, 95.0f);
+    Get(e, "aiSmoothing", s.ai.smoothing, 0.0f, 100.0f);
     Get(e, "aiAntiHalo", s.ai.antiHalo, -300.0f, 300.0f);
     s.ai.useGpu = true; // the GPU (DirectML) is always used; the CPU is only the fallback when it is not available
     Get(e, "aiShowDepth", s.ai.showDepth);

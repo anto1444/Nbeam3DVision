@@ -149,6 +149,7 @@ struct Options
         float transparency { 0.0f }; // 0 = opaque .. 0.8
         int   bannerSeconds { 5 };   // 3D banner display time: 0 .. 10 s, 11 = always
         int   bannerCorner { 0 };    // 0 bottom left, 1 bottom right, 2 top right, 3 top left
+        bool  showStats { false };   // banner of the HUD: RAM used, render latency (with the frame buffer) and late frames
         float scale { 1.0f };        // HUD size (dragging the corner of the HUD changes it), 0.6 .. 2.0
         float scaleWin { 1.0f };     // size of the interface in the window of the window mode (separate from the HUD over the screen)
     } hud;
@@ -178,7 +179,21 @@ struct Options
     volatile float phaseWaitMs { 0.0f };    // median wait of the game frames before they are shown (ms)
     volatile int   phaseCorrections { 0 };  // cycle shifts made since the effects started
     // 3D (stereo emitter) only exists in Manual mode
-    bool StereoAllowed() const { return EffectiveSubFramesMode() == SF_MANUAL; }
+    bool StereoManual() const { return EffectiveSubFramesMode() == SF_MANUAL; }
+    // an emitter rate exists for this display: display Hz / n between 80 and 165 Hz (the range the glasses detect); without it 3D is not available
+    bool StereoRateOk() const
+    {
+        if(vsyncRate <= 1.0f)
+            return true; // not measured yet
+        for(int n = MIN_SUBFRAMES; n <= MAX_SUBFRAMES; n++)
+        {
+            const double hz = (double)vsyncRate / n;
+            if(hz >= 79.5 && hz <= 165.5)
+                return true;
+        }
+        return false;
+    }
+    bool StereoAllowed() const { return StereoManual() && StereoRateOk(); }
     int  captureMethod { 0 };
     int  splitScreen { 0 };
     bool splitInvert { false }; // split-screen: the effect on the other half (right / bottom)
@@ -270,6 +285,7 @@ struct Options
     bool          startWithWindows { false };
     bool          minimizeToTray { true }; // the notification area icon always exists
     bool          startMinimized { false };
+    bool          runAsAdmin { false }; // "Run as administrator": at start Nbeam asks Windows (UAC) to start again with administrator rights
     bool          windowMode { true }; // window mode, always on: Nbeam opens as a normal window, the effects run only when activated or when a detected program runs
     bool          closeMinimizes { true }; // "Minimize instead of closing": the cross of the window minimizes it (to the notification area with that option)
     volatile bool motionTest { false };   // motion test running (the cars window, see CarTest.h, captured like a game); not saved
@@ -320,6 +336,8 @@ struct Options
     HMONITOR                 OutputMonitor(const std::vector<DisplayInfo>& displays) const; // display the output is shown on
     void                     LoadApp();
     void                     SaveApp() const;
+    static bool              AppRunAsAdmin();  // reads "runAsAdmin" in Nbeam.app.cfg (before anything else starts)
+    static bool              IsElevated();     // this process runs with administrator rights
     void                     ApplyAutoStart() const; // adds / removes the Windows startup entry (current user)
     static bool              IsExeOnTaskbar(const std::string& pathOrName); // the program has a window shown on the taskbar (otherwise it counts as closed)
     std::string               ScreenIdOfExeWindow(const std::string& pathOrName) const; // screen where the program's taskbar window is ("" if unknown)
