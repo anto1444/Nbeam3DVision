@@ -57,6 +57,8 @@ Principe : Nbeam **capture** l'écran ou la fenêtre d'un programme, applique l'
 
 ## Mode fenêtre
 
+![Nbeam 3D Vision en jeu (HUD par-dessus l'écran)](docs/hud-jeu.jpg)
+
 Nbeam s'ouvre toujours dans une **fenêtre Windows normale** (déplaçable, redimensionnable), avec la même présentation que le HUD : bandeau, catégories à gauche, réglages au centre, barre du bas. On y fait tous les réglages **effets coupés** (rien n'est capturé).
 
 - **Les effets démarrent** avec le bouton **Activer les effets** (en bas), le raccourci **Afficher / masquer les effets**, le menu de l'icône de notification, ou tout seuls quand un **programme détecté** se lance. La fenêtre disparaît et l'overlay s'affiche par-dessus l'écran.
@@ -86,9 +88,7 @@ Reproduit le balayage d'un tube cathodique : l'image est « dessinée » ligne p
 
 Case sous « Images en file ». Cochée, Windows affiche Nbeam **directement à l'écran** au lieu de le mélanger d'abord avec le bureau : un peu **moins de latence** et un BFI **plus régulier**. Le rendu redémarre quand on la change ; c'est un réglage de profil.
 
-- **Plus de clic à travers** : tant que le HUD est caché, Nbeam ne prend pas le focus, ignore les clics et cache le pointeur. La plupart des jeux 3D continuent de marcher normalement ; les jeux et menus qu'on utilise avec le pointeur Windows ne reçoivent plus les clics.
 - Ça ne marche que si **rien ne s'affiche par-dessus** Nbeam (notifications, volume, overlays Discord ou Steam...).
-- La ligne en dessous indique si Windows a accepté (*directe*) ou non (*composée par Windows*), et combien d'images sont arrivées en retard par minute. Comparez avec et sans l'option dans le même jeu.
 
 ### Synchronisation BFI
 
@@ -136,6 +136,8 @@ Case à cocher sous le menu (2D, programme capturé ; masquée en 3D). Nbeam **m
 > **Conseil** — choisissez de préférence une cadence de jeu qui **divise exactement la fréquence de l'écran** (60, 80, 120 ou 240 images/s sur 480 Hz, par exemple). Sinon le jeu peut paraître légèrement saccadé.
 
 ## 3D active
+
+![Réglages 3D de Nbeam (fenêtre)](docs/fenetre-3d.jpg)
 
 - **Formats** : côte à côte (SBS), haut/bas (TB), damier, ou **2D vers 3D (IA)**. Sous le format, l'interrupteur **Source auto** (utilisable quel que soit le rendu affiché) laisse Nbeam détecter la source, par une technique de détection automatique par algorithme : rien ne change tant qu'une source 3D différente n'est pas repérée, puis le format passe tout seul sur SBS, TB ou damier et suit l'image si elle change ; le format ne peut pas être changé à la main tant qu'il est coché, décoché il reste tel quel. Le format SBS a une case **SBS complet (expérimental)** : cochée, Nbeam redimensionne automatiquement la fenêtre du jeu (sans bordure) à deux fois la largeur de l'écran (3840x1080 sur un écran 1080p, 5120x1440 sur un 1440p…) et la remet comme avant à la décoche ; chaque moitié est un œil affiché entier, sans écrasement. Le jeu doit accepter la taille (fenêtré ou sans bordure, pas plein écran exclusif) et dessiner lui-même les deux yeux. Disponible uniquement en capture de jeu, avec une sortie qui ne recouvre pas le jeu (pas la sortie Process) ; si le jeu refuse la taille, la 3D se coupe avec un message « impossible ». Sur le bureau, la limite de fps de la 3D et la synchro auto de l'émetteur ne s'appliquent pas (elles ne servent qu'en capture de jeu).
 - La bascule des yeux se fait à Hz de l'écran ÷ sous-images ; chaque œil reçoit la moitié. En 3D, les sous-images sont **liées à la fréquence de l'émetteur** (480 Hz et émetteur à 120 Hz → 4). La case **Auto** de la synchronisation choisit la fréquence de l'émetteur **la plus haute entre 80 et 165 Hz** (Hz de l'écran ÷ n : 480 Hz → 160 Hz, 360 Hz → 120 Hz, 240 Hz → 120 Hz, 100 Hz → 100 Hz), d'après la fréquence d'écran utilisée, y compris celle réglée dans la configuration du profil (hors de cette plage, rien ne se passe et l'émetteur reste éteint).
