@@ -42,7 +42,8 @@ protected:
     virtual bool InternalPoll(const winrt::com_ptr<ID3D11Texture2D>& outputTexture) = 0;
     virtual void InternalStop()                                                     = 0;
 
-    void CopyToOutput(const winrt::com_ptr<ID3D11Texture2D>& capturedFrame, int width, int height, const winrt::com_ptr<ID3D11Texture2D>& outputTexture);
+    // srcX / srcY: top left corner of the part of the frame to take (window capture: the game only, without the title bar and the borders)
+    void CopyToOutput(const winrt::com_ptr<ID3D11Texture2D>& capturedFrame, int width, int height, const winrt::com_ptr<ID3D11Texture2D>& outputTexture, int srcX = 0, int srcY = 0);
 
 private:
     winrt::com_ptr<ID3D11DeviceContext> m_outputContext;
@@ -55,7 +56,7 @@ private:
     int                                 m_windowX { 0 };
     int                                 m_windowY { 0 };
 
-    void CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Texture2D* output, ID3D11Texture2D* source, int width, int height);
+    void CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Texture2D* output, ID3D11Texture2D* source, int width, int height, int srcX, int srcY);
     void CopyStagingToOutput(const winrt::com_ptr<ID3D11Texture2D>& outputTexture);
 };
 

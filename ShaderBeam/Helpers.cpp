@@ -92,13 +92,6 @@ float Helpers::GetTicks()
     return (float)((ticks.QuadPart - startTicks.QuadPart) / (freq.QuadPart / TICKS_PER_SEC));
 }
 
-ULONGLONG Helpers::GetQPC()
-{
-    LARGE_INTEGER li;
-    QueryPerformanceCounter(&li);
-    return li.QuadPart;
-}
-
 float Helpers::QPCToTicks(ULONGLONG qpc)
 {
     return (float)((qpc - startTicks.QuadPart) / (freq.QuadPart / TICKS_PER_SEC));
@@ -214,4 +207,163 @@ std::string Helpers::WCharToString(const wchar_t* text)
     return std::string(utfString);
 }
 
+} // namespace ShaderBeam
+
+// ---- inaudible sound that keeps Windows spatial audio (Dolby Atmos) active ----
+#include <mmdeviceapi.h>
+#include <audioclient.h>
+#include <atomic>
+#include <thread>
+#include <cstring>
+namespace ShaderBeam
+{
+namespace
+{
+std::atomic<bool> s_akStop { true };
+std::thread       s_akThread;
+HANDLE            s_akEvent = nullptr;
+
+template<class T> void SafeRelease(T*& p)
+{
+    if(p)
+    {
+        p->Release();
+        p = nullptr;
+    }
+}
+
+// one device from start to loss: false = try again later
+void AudioKeepAliveRun()
+{
+    IMMDeviceEnumerator* en  = nullptr;
+    IMMDevice*           dev = nullptr;
+    IAudioClient*        cl  = nullptr;
+    IAudioRenderClient*  rc  = nullptr;
+    WAVEFORMATEX*        fmt = nullptr;
+    LPWSTR               id  = nullptr;
+    std::wstring         myId;
+    do
+    {
+        if(FAILED(CoCreateInstance(__uuidof(MMDeviceEnumerator), nullptr, CLSCTX_ALL, __uuidof(IMMDeviceEnumerator), (void**)&en)))
+            break;
+        if(FAILED(en->GetDefaultAudioEndpoint(eRender, eConsole, &dev)))
+            break;
+        if(SUCCEEDED(dev->GetId(&id)) && id)
+            myId = id;
+        if(FAILED(dev->Activate(__uuidof(IAudioClient), CLSCTX_ALL, nullptr, (void**)&cl)))
+            break;
+        if(FAILED(cl->GetMixFormat(&fmt)) || !fmt)
+            break;
+        const REFERENCE_TIME buf = 2000000; // 200 ms
+        if(FAILED(cl->Initialize(AUDCLNT_SHAREMODE_SHARED, 0, buf, 0, fmt, nullptr)))
+            break;
+        UINT32 frames = 0;
+        if(FAILED(cl->GetBufferSize(&frames)) || FAILED(cl->GetService(__uuidof(IAudioRenderClient), (void**)&rc)))
+            break;
+        bool isFloat = fmt->wFormatTag == WAVE_FORMAT_IEEE_FLOAT;
+        if(fmt->wFormatTag == WAVE_FORMAT_EXTENSIBLE && fmt->cbSize >= 22)
+            isFloat = reinterpret_cast<WAVEFORMATEXTENSIBLE*>(fmt)->SubFormat.Data1 == WAVE_FORMAT_IEEE_FLOAT; // (the sub format starts with the format tag)
+        const int      bytes = fmt->wBitsPerSample / 8, ch = fmt->nChannels;
+        unsigned       rng   = 12345u;
+        auto           fill  = [&](UINT32 n) {
+            BYTE* data = nullptr;
+            if(FAILED(rc->GetBuffer(n, &data)) || !data)
+                return false;
+            for(UINT32 f = 0; f < n; f++)
+                for(int c = 0; c < ch; c++)
+                {
+                    rng           = rng * 1664525u + 1013904223u;
+                    const int r   = (int)(rng >> 16) & 3; // 0..3: a tiny noise, about -90 dBFS
+                    BYTE*     p   = data + ((size_t)f * ch + c) * bytes;
+                    if(isFloat && bytes == 4)
+                        *(float*)p = ((float)r - 1.5f) * 1.0e-5f;
+                    else if(bytes == 2)
+                        *(short*)p = (short)(r - 1);
+                    else if(bytes == 4)
+                        *(int*)p = (r - 1) << 16; // 32 bits: +-1 least significant bit of 16 bits
+                    else if(bytes == 3)
+                    {
+                        const int v = (r - 1) << 8; // 24 bits (little endian)
+                        p[0]        = (BYTE)(v & 0xFF);
+                        p[1]        = (BYTE)((v >> 8) & 0xFF);
+                        p[2]        = (BYTE)((v >> 16) & 0xFF);
+                    }
+                    else
+                        memset(p, 0, bytes);
+                }
+            rc->ReleaseBuffer(n, 0);
+            return true;
+        };
+        if(!fill(frames) || FAILED(cl->Start()))
+            break;
+        int ticks = 0;
+        while(!s_akStop.load())
+        {
+            if(WaitForSingleObject(s_akEvent, 50) == WAIT_OBJECT_0)
+                break;
+            UINT32 pad = 0;
+            if(FAILED(cl->GetCurrentPadding(&pad)))
+                break; // device lost / changed
+            if(frames > pad && !fill(frames - pad))
+                break;
+            if(++ticks % 20 == 0)
+            {
+                // the default device changed: start again on the new one
+                IMMDevice* now = nullptr;
+                LPWSTR     nid = nullptr;
+                bool       same = true;
+                if(SUCCEEDED(en->GetDefaultAudioEndpoint(eRender, eConsole, &now)) && now && SUCCEEDED(now->GetId(&nid)) && nid)
+                    same = myId == nid;
+                if(nid)
+                    CoTaskMemFree(nid);
+                SafeRelease(now);
+                if(!same)
+                    break;
+            }
+        }
+        cl->Stop();
+    } while(false);
+    if(id)
+        CoTaskMemFree(id);
+    if(fmt)
+        CoTaskMemFree(fmt);
+    SafeRelease(rc);
+    SafeRelease(cl);
+    SafeRelease(dev);
+    SafeRelease(en);
+}
+} // namespace
+
+void AudioKeepAliveSet(bool on)
+{
+    if(on == !s_akStop.load())
+        return;
+    if(!on)
+    {
+        s_akStop = true;
+        if(s_akEvent)
+            SetEvent(s_akEvent);
+        if(s_akThread.joinable())
+            s_akThread.join();
+        if(s_akEvent)
+        {
+            CloseHandle(s_akEvent);
+            s_akEvent = nullptr;
+        }
+        return;
+    }
+    s_akStop  = false;
+    s_akEvent = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    s_akThread = std::thread([] {
+        const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        while(!s_akStop.load())
+        {
+            AudioKeepAliveRun();
+            if(!s_akStop.load())
+                WaitForSingleObject(s_akEvent, 2000); // (device change or loss: tries again after a short pause)
+        }
+        if(SUCCEEDED(hr))
+            CoUninitialize();
+    });
+}
 } // namespace ShaderBeam

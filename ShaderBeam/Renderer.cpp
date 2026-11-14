@@ -10,7 +10,13 @@ MIT License
 #include "Helpers.h"
 #include "CaptureBase.h"
 #include "Lang.h"
+#include "StereoDetect.h"
 #include <cmath>
+#include <future>
+#include <condition_variable>
+#include <mutex>
+#include <atomic>
+#include <thread>
 
 namespace ShaderBeam
 {
@@ -27,6 +33,161 @@ static double NowMs()
     return (double)c.QuadPart / freq;
 }
 
+// ---- Full SBS: the captured game window is brought to twice the output size (borderless), and given back as it was ----
+namespace
+{
+struct SbsWindow
+{
+    HWND            h { NULL };
+    LONG_PTR        style { 0 }, exStyle { 0 };
+    WINDOWPLACEMENT placement {};
+    bool            zoomed { false };
+    int             tries { 0 };
+    bool            gaveUp { false };
+    ULONGLONG       lastTry { 0 };
+} g_sbsWin;
+std::mutex g_sbsExec; // g_sbsWin and the calls that touch the game window (they wait for the game: never on the render thread)
+
+void SbsRestore()
+{
+    if(!g_sbsWin.h)
+        return;
+    if(IsWindow(g_sbsWin.h))
+    {
+        SetWindowLongPtr(g_sbsWin.h, GWL_STYLE, g_sbsWin.style);
+        SetWindowLongPtr(g_sbsWin.h, GWL_EXSTYLE, g_sbsWin.exStyle);
+        const RECT& r = g_sbsWin.placement.rcNormalPosition;
+        SetWindowPos(g_sbsWin.h, NULL, r.left, r.top, r.right - r.left, r.bottom - r.top, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
+        if(g_sbsWin.zoomed)
+            ShowWindowAsync(g_sbsWin.h, SW_MAXIMIZE);
+    }
+    g_sbsWin = SbsWindow {};
+}
+
+// true when the window has the wanted size; otherwise it is resized (a few tries, then the caller gives up: Full SBS impossible)
+bool SbsFit(HWND h, int w, int hgt)
+{
+    if(g_sbsWin.h != h)
+    {
+        SbsRestore();
+        g_sbsWin.h      = h;
+        g_sbsWin.style  = GetWindowLongPtr(h, GWL_STYLE);
+        g_sbsWin.exStyle = GetWindowLongPtr(h, GWL_EXSTYLE);
+        g_sbsWin.placement.length = sizeof(WINDOWPLACEMENT);
+        GetWindowPlacement(h, &g_sbsWin.placement);
+        g_sbsWin.zoomed = IsZoomed(h) != FALSE;
+        g_sbsWin.tries  = 0;
+    }
+    RECT r {};
+    if(DwmGetWindowAttribute(h, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(RECT)) != S_OK && !GetWindowRect(h, &r))
+        return false;
+    if(std::abs((r.right - r.left) - w) <= 2 && std::abs((r.bottom - r.top) - hgt) <= 2)
+    {
+        g_sbsWin.tries  = 0;
+        g_sbsWin.gaveUp = false;
+        return true;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if(g_sbsWin.tries >= 4)
+    {
+        g_sbsWin.gaveUp = true; // the game refuses to be resized
+        return false;
+    }
+    if(now - g_sbsWin.lastTry < 1000)
+        return false;
+    g_sbsWin.tries++;
+    g_sbsWin.lastTry = now;
+    MONITORINFO mi {};
+    mi.cbSize = sizeof(mi);
+    GetMonitorInfo(MonitorFromWindow(h, MONITOR_DEFAULTTONEAREST), &mi);
+    if(IsZoomed(h))
+        ShowWindowAsync(h, SW_RESTORE);
+    SetWindowLongPtr(h, GWL_STYLE, g_sbsWin.style & ~(LONG_PTR)(WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZE | WS_MAXIMIZE));
+    SetWindowLongPtr(h, GWL_EXSTYLE, g_sbsWin.exStyle & ~(LONG_PTR)(WS_EX_DLGMODALFRAME | WS_EX_CLIENTEDGE | WS_EX_STATICEDGE | WS_EX_WINDOWEDGE));
+    SetWindowPos(h, NULL, mi.rcMonitor.left, mi.rcMonitor.top, w, hgt, SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_ASYNCWINDOWPOS);
+    return false;
+}
+
+// The window of the game is looked at and resized by a thread of its own (twice a second): changing its style sends messages that the game
+// answers when it wants, which would stop the render thread for as long. The render thread only gives the wanted size and reads the answer.
+struct SbsAsyncState
+{
+    std::mutex              m;
+    std::condition_variable cv;
+    HWND                    h { NULL };
+    int                     w { 0 }, hgt { 0 };
+    bool                    active { false };
+    bool                    started { false };
+    std::atomic<bool>       bad { false }; // the game refuses to be resized (Full SBS impossible)
+};
+SbsAsyncState g_sbsAsync;
+
+void SbsWorker()
+{
+    for(;;)
+    {
+        HWND h;
+        int  w, hgt;
+        bool active;
+        {
+            std::unique_lock<std::mutex> lock(g_sbsAsync.m);
+            if(g_sbsAsync.active)
+                g_sbsAsync.cv.wait_for(lock, std::chrono::milliseconds(500));
+            else
+                g_sbsAsync.cv.wait(lock, [] { return g_sbsAsync.active || g_sbsAsync.h != NULL; });
+            h      = g_sbsAsync.h;
+            w      = g_sbsAsync.w;
+            hgt    = g_sbsAsync.hgt;
+            active = g_sbsAsync.active;
+        }
+        std::lock_guard<std::mutex> exec(g_sbsExec);
+        if(active && h)
+        {
+            if(!IsWindow(h))
+                g_sbsAsync.bad = true;
+            else if(!IsIconic(h))
+            {
+                const bool fits = SbsFit(h, w, hgt);
+                g_sbsAsync.bad  = !fits && g_sbsWin.gaveUp; // (while the resizing is still being tried, 3D is not cut)
+            }
+        }
+        else
+        {
+            SbsRestore(); // (not Full SBS any more: the game gets its window back)
+            g_sbsAsync.bad = false;
+            std::lock_guard<std::mutex> lock(g_sbsAsync.m);
+            if(!g_sbsAsync.active)
+                g_sbsAsync.h = NULL; // nothing more to do until Full SBS comes back
+        }
+    }
+}
+
+// asks for the game window at the given size (h NULL: back to its own size); returns true when the game refuses to be resized
+bool SbsRequest(HWND h, int w, int hgt)
+{
+    std::lock_guard<std::mutex> lock(g_sbsAsync.m);
+    const bool                  active = h != NULL;
+    if(!g_sbsAsync.started)
+    {
+        if(!active)
+            return false;
+        g_sbsAsync.started = true;
+        std::thread(SbsWorker).detach();
+    }
+    if(g_sbsAsync.h != h || g_sbsAsync.w != w || g_sbsAsync.hgt != hgt || g_sbsAsync.active != active)
+    {
+        if(g_sbsAsync.h != h)
+            g_sbsAsync.bad = false;
+        g_sbsAsync.h      = h ? h : (g_sbsAsync.h ? g_sbsAsync.h : NULL);
+        g_sbsAsync.w      = w;
+        g_sbsAsync.hgt    = hgt;
+        g_sbsAsync.active = active;
+        g_sbsAsync.cv.notify_one();
+    }
+    return active && g_sbsAsync.bad;
+}
+} // namespace
+
 Renderer::Renderer(Options& options, UI& ui, Watcher& watcher, ShaderManager& shaderManager) :
     m_options(options), m_ui(ui), m_watcher(watcher), m_shaderManager(shaderManager), m_charts(m_options, m_watcher), m_renderContext(m_options)
 { }
@@ -34,6 +195,7 @@ Renderer::Renderer(Options& options, UI& ui, Watcher& watcher, ShaderManager& sh
 void Renderer::Start(winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11DeviceContext> context)
 {
     m_deviceLost = false;
+    g_lastPresentOk = GetTickCount64(); // (watchdog: a renderer that starts counts as showing a picture)
     m_renderContext.device        = device;
     m_renderContext.deviceContext = context;
 
@@ -64,6 +226,7 @@ void Renderer::ResetModeState()
 // the swap chain or the HUD (a restart makes the picture stutter).
 void Renderer::ReloadLive()
 {
+    const double t0 = NowMs();
     m_emitters.Stop();
     WaitTillIdle();
     m_inputsOk = false; // (until the new inputs exist: the render thread waits instead of reading destroyed textures)
@@ -82,6 +245,103 @@ void Renderer::ReloadLive()
     ResetModeState();
     StartEmitters();
     m_ui.ShowBanner();
+    LsLog("3D rebuilt live in %.0f ms (the emitters open in their own thread)", NowMs() - t0);
+}
+
+// queue length the glasses timing works with (0 = tearing, 3 = the driver default)
+int Renderer::QueueFramesNow() const
+{
+    return m_options.Tearing() ? 0 : (m_options.QueueSetting() > 0 ? m_options.QueueSetting() : 3);
+}
+
+// The queue length changes live (menu, or Auto): the frame latency of the device is set, and the glasses timing is told that the delay between a
+// present and the screen is going to change by the same number of refreshes (so it does not have to find out by itself, a frame later).
+void Renderer::ApplyQueueNow()
+{
+    try
+    {
+        m_renderContext.device.as<IDXGIDevice1>()->SetMaximumFrameLatency(m_options.Tearing() ? 1 : m_options.QueueSetting());
+    }
+    catch(...)
+    { }
+    const int q = QueueFramesNow();
+    if(q != m_queueEnv)
+    {
+        m_emitters.AnnounceQueue(m_queueEnv, q);
+        m_queueEnv = q;
+    }
+}
+
+// Auto queue. A frame that does not come at one per refresh (Windows showed a frame twice, or skipped one) means the render thread was late. One lost
+// refresh now and then cannot be avoided, so only a frame that lost 3 refreshes or more, or three single losses within 20 s, make the queue one frame
+// longer (at most one change every 3 s, up to QUEUE_AUTO_MAX). After a calm of 90 s it gets one frame shorter, after 5 minutes if it went up in the
+// last 5 minutes (not back and forth: each change moves the glasses timing by one refresh).
+void Renderer::AdaptQueue()
+{
+    if(!m_options.queueAuto || m_options.Tearing() || !m_swapChain)
+    {
+        m_qStart = {};
+        return;
+    }
+    using namespace std::chrono;
+    const auto now = steady_clock::now();
+    if(m_qStart.time_since_epoch().count() == 0)
+    {
+        m_qStart      = now;
+        m_qLastChange = now;
+        m_qCalmSince  = now;
+        m_qEventsSeen = m_psGlitchEvents;
+        m_qBigSeen    = m_psGlitchBig;
+        m_qRises.clear();
+        m_qSmall.clear();
+    }
+    const long long events = m_psGlitchEvents - m_qEventsSeen;
+    const long long big    = m_psGlitchBig - m_qBigSeen;
+    m_qEventsSeen          = m_psGlitchEvents;
+    m_qBigSeen             = m_psGlitchBig;
+    for(long long i = 0; i < events - big && m_qSmall.size() < 8; i++)
+        m_qSmall.push_back(now);
+    while(!m_qSmall.empty() && duration<double>(now - m_qSmall.front()).count() > 20.0)
+        m_qSmall.pop_front();
+    if(duration<double>(now - m_qStart).count() < 5.0)
+    {
+        m_qCalmSince = now; // (the start of the renderer is not counted)
+        return;
+    }
+    const int    cur       = m_options.queueAutoCur;
+    const double sinceLast = duration<double>(now - m_qLastChange).count();
+    if(events > 0)
+    {
+        m_qCalmSince = now;
+        // one lost refresh now and then cannot be avoided by any queue: only a bigger hiccup, or three small ones within 20 s, makes the queue longer
+        if((big > 0 || m_qSmall.size() >= 3) && cur < Options::QUEUE_AUTO_MAX && sinceLast >= 3.0)
+        {
+            m_qSmall.clear();
+            m_options.queueAutoCur = cur + 1;
+            m_qLastChange          = now;
+            m_qRises.push_back(now);
+            while(m_qRises.size() > 4 || (!m_qRises.empty() && duration<double>(now - m_qRises.front()).count() > 300.0))
+                m_qRises.pop_front();
+            ApplyQueueNow();
+            LsLog("auto queue: %d -> %d frames (%lld late frame%s)", cur, cur + 1, events, events > 1 ? "s" : "");
+        }
+        return;
+    }
+    if(cur > Options::QUEUE_AUTO_MIN)
+    {
+        int recent = 0;
+        for(const auto& t : m_qRises)
+            recent += duration<double>(now - t).count() <= 300.0 ? 1 : 0;
+        const double calmNeeded = recent >= 1 ? 300.0 : 90.0;
+        if(duration<double>(now - m_qCalmSince).count() >= calmNeeded && sinceLast >= 3.0)
+        {
+            m_options.queueAutoCur = cur - 1;
+            m_qLastChange          = now;
+            m_qCalmSince           = now;
+            ApplyQueueNow();
+            LsLog("auto queue: %d -> %d frames (calm)", cur, cur - 1);
+        }
+    }
 }
 
 void Renderer::ApplyLiveChanges()
@@ -89,12 +349,14 @@ void Renderer::ApplyLiveChanges()
     if(m_options.liveLatency)
     {
         m_options.liveLatency = false;
-        try
-        {
-            m_renderContext.device.as<IDXGIDevice1>()->SetMaximumFrameLatency(m_options.Tearing() ? 1 : m_options.QueueSetting());
-        }
-        catch(...)
-        { }
+        ApplyQueueNow();
+    }
+    if(m_options.liveEmitters && !m_options.liveReload)
+    {
+        // (safety: the 3D inputs no longer match the 3D source: a full live rebuild instead, or the picture would stay frozen)
+        const bool want = m_options.emitter.sourceFormat != StereoSource::Off && !m_options.emitter.hold && !m_options.crossAdapter && m_options.StereoAllowed();
+        if(want != m_stereoActive)
+            m_options.liveReload = true;
     }
     if(m_options.liveEmitters && !m_options.liveReload)
     {
@@ -118,7 +380,7 @@ void Renderer::ApplyLiveChanges()
         catch(...)
         { }
         if(!m_inputsOk)
-            PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0); // the live rebuild failed: a full restart builds everything again
+            PostMessage(m_options.outputWindow, WM_USER_RESTART, NB_RESTART_TAG, 0); // the live rebuild failed: a full restart builds everything again
     }
 }
 
@@ -138,7 +400,8 @@ void Renderer::StartEmitters()
     env.vsyncRateHz  = m_options.vsyncRate;
     env.subFrames    = m_options.subFrames;
     env.swapChain    = m_swapChain.get();
-    env.queuedFrames = m_options.Tearing() ? 0 : (m_options.QueueSetting() > 0 ? m_options.QueueSetting() : 3); // 0 = driver default (3)
+    env.queuedFrames = QueueFramesNow();
+    m_queueEnv       = env.queuedFrames;
     try
     {
         winrt::com_ptr<IDXGIAdapter> adapter;
@@ -157,6 +420,11 @@ void Renderer::StartEmitters()
 
 void Renderer::Stop()
 {
+    SbsRequest(NULL, 0, 0);
+    {
+        std::lock_guard<std::mutex> exec(g_sbsExec);
+        SbsRestore();
+    }
     m_emitters.Stop();
     m_shaderManager.Destroy();
     m_charts.Destroy();
@@ -180,6 +448,8 @@ void Renderer::Render(bool present, bool ui)
         ApplySubFramesLive();
 
     // eye of the content frame being rendered (before the frame counters advance)
+    if(m_emitters.Poll())
+        m_ui.m_emitterStatus = m_emitters.Status(); // the emitters opened by their own thread are ready
     const int  emitFrameNo    = m_renderContext.frameNo;
     const int  emitSubFrameNo = m_renderContext.subFrameNo;
     const bool emit           = present && m_emitters.Active() && !EffectsHidden();
@@ -212,7 +482,13 @@ void Renderer::Render(bool present, bool ui)
     // one subframe per content frame: nothing to simulate, the picture goes through untouched (no gamma / gain / blur of the shader)
     if(Bypassing() || (m_options.subFrames <= 1 && !m_stereoActive))
     {
-        m_renderContext.deviceContext->CopyResource(m_renderContext.outputTexture.get(), (m_stereoActive && EffectsOff() ? m_stereoRaw : m_renderContext.inputTextures[m_renderContext.inputSlots[0]]).get());
+        if(m_stereoActive && EffectsOff() && m_options.FullSbsActive())
+        {
+            D3D11_BOX box { 0, 0, 0, (UINT)m_options.outputWidth, (UINT)m_options.outputHeight, 1 }; // (the raw picture is twice as wide: its left half)
+            m_renderContext.deviceContext->CopySubresourceRegion(m_renderContext.outputTexture.get(), 0, 0, 0, 0, m_stereoRaw.get(), 0, &box);
+        }
+        else
+            m_renderContext.deviceContext->CopyResource(m_renderContext.outputTexture.get(), (m_stereoActive && EffectsOff() ? m_stereoRaw : m_renderContext.inputTextures[m_renderContext.inputSlots[0]]).get());
     }
     else
         m_shaderManager.Render(m_renderContext);
@@ -248,9 +524,11 @@ void Renderer::Render(bool present, bool ui)
         m_charts.Render(m_renderContext.outputTexture, m_options.outputHeight);
 
     if(ui && m_ui.RenderRequired())
+    {
+        const double h0 = NowMs();
         RenderHud();
-    else
-        m_hudLast = {}; // shown again: drawn at once
+        m_trHudMs = (std::max)(m_trHudMs, NowMs() - h0);
+    }
 
     if(emit)
     {
@@ -297,12 +575,85 @@ void Renderer::Render(bool present, bool ui)
 
     if(present)
     {
+        const double p0 = NowMs();
         Present(true);
+        const double p1 = NowMs();
         if(emit)
             m_emitters.AfterPresent(eye, emitSubFrameNo);
         UpdatePresentStats();
+        ClickTrace(p1 - p0, p1);
     }
     m_watcher.FrameSubmitted();
+}
+
+// Tracer of the HUD clicks: for 1.5 s after a click in the HUD, the frames are measured and one line sums them up in Nbeam_ls.log: interval between
+// two presents (expected: one refresh), late frames (interval over 1.5 refresh), late frames seen by Windows (a frame shown twice), time spent
+// drawing the HUD, time in Present, waits for the HUD lock (render thread / window thread). The same measure over the 1.5 s before the click
+// is given for comparison.
+void Renderer::ClickTrace(double presentMs, double nowMs)
+{
+    const double period = 1000.0 / (std::max)(1.0f, m_options.vsyncRate);
+    const double gap    = m_trLastPresent > 0.0 ? nowMs - m_trLastPresent : 0.0;
+    m_trLastPresent     = nowMs;
+    {
+        // once a minute, if frames were late (interval over 1.5 refresh: in 3D the glasses can lose step): how many and the longest gap
+        if(gap > period * 1.5)
+        {
+            m_minLate++;
+            m_minMaxGap = (std::max)(m_minMaxGap, gap);
+        }
+        if(m_minStart <= 0.0)
+            m_minStart = nowMs;
+        if(nowMs - m_minStart >= 60000.0)
+        {
+            if(m_minLate > 0)
+                LsLog("frames over the last minute: %d late (longest interval %.2f ms, refresh %.2f ms)%s", m_minLate, m_minMaxGap, period, m_stereoActive ? ", 3D on" : "");
+            m_minLate   = 0;
+            m_minMaxGap = 0.0;
+            m_minStart  = nowMs;
+        }
+    }
+    const ULONGLONG click = m_ui.LastClick();
+    const ULONGLONG tick  = GetTickCount64();
+    const bool      in    = click && tick >= click && tick - click < 1500;
+    if(in && click != m_trClick)
+    {
+        // a new click: the window before it is kept as the reference
+        m_trRef     = m_trCur;
+        m_trCur     = {};
+        m_trClick   = click;
+        m_trGlitch0 = m_psGlitches;
+        m_ui.TakeLockWaits(); // (reset)
+    }
+    auto& w = m_trCur;
+    w.frames++;
+    w.maxGap     = (std::max)(w.maxGap, gap);
+    w.late      += gap > period * 1.5 ? 1 : 0;
+    w.maxHud     = (std::max)(w.maxHud, m_trHudMs);
+    w.maxPresent = (std::max)(w.maxPresent, presentMs);
+    m_trHudMs    = 0.0;
+    if(!in && m_trClick)
+    {
+        double renderWait = 0.0, inputWait = 0.0;
+        m_ui.TakeLockWaits(&renderWait, &inputWait);
+        const long long glitches = m_psGlitches >= m_trGlitch0 ? m_psGlitches - m_trGlitch0 : 0;
+        LsLog("HUD click trace (%s): %d frames, max interval %.2f ms (refresh %.2f ms), %d late, %lld shown twice (Windows), HUD drawing max %.2f ms, Present max %.2f ms, "
+              "HUD lock wait max: render %.2f ms / window %.2f ms | before the click: %d frames, max interval %.2f ms, %d late, HUD max %.2f ms, Present max %.2f ms",
+              m_ui.LastClickName(), w.frames, w.maxGap, period, w.late, glitches, w.maxHud, w.maxPresent, renderWait, inputWait, m_trRef.frames, m_trRef.maxGap, m_trRef.late,
+              m_trRef.maxHud, m_trRef.maxPresent);
+        m_trClick = 0;
+        m_trCur   = {};
+    }
+    else if(!in)
+    {
+        // no click: a sliding window of 1.5 s, the reference for the next click
+        if(w.frames > 0 && nowMs - m_trStart > 1500.0)
+        {
+            m_trRef   = w;
+            m_trCur   = {};
+            m_trStart = nowMs;
+        }
+    }
 }
 
 // How Windows shows the overlay (composed, or directly on a hardware plane / independent flip) and how many frames stayed on screen for
@@ -348,7 +699,15 @@ void Renderer::UpdatePresentStats()
         const long long dp = (long long)(presentCount - m_psPresentCount);
         const long long dr = (long long)(refreshCount - m_psRefreshCount);
         if(dp > 0 && dr > 0 && dp < 1000 && dr < 1000)
+        {
             m_psGlitches += dr > dp ? dr - dp : dp - dr;
+            if(dr != dp)
+            {
+                m_psGlitchEvents++;
+                if((dr > dp ? dr - dp : dp - dr) >= 3)
+                    m_psGlitchBig++;
+            }
+        }
     }
     if(!m_psValid || presentCount != m_psPresentCount)
     {
@@ -367,7 +726,7 @@ void Renderer::UpdatePresentStats()
     }
 }
 
-// HUD: ImGui draws into a transparent texture (premultiplied alpha) 30 times a second (full rate while it is dragged); every frame the texture is laid over the
+// HUD: ImGui draws into a transparent texture (premultiplied alpha) every frame; the texture is laid over the
 // picture with one full-screen draw. Falls back to drawing the HUD straight into the picture if the texture cannot be created.
 void Renderer::RenderHud()
 {
@@ -430,7 +789,6 @@ float4 PShud(float4 pos : SV_Position) : SV_Target
                 THROW(dev->CreateShaderResourceView(m_hudTex.get(), nullptr, m_hudSrv.put()), "HUD texture view");
                 m_hudW    = od.Width;
                 m_hudH    = od.Height;
-                m_hudLast = {};
             }
         }
         catch(...)
@@ -446,11 +804,8 @@ float4 PShud(float4 pos : SV_Position) : SV_Target
         return;
     }
 
-    // 1. the HUD itself, 30 times a second (every frame while a HUD window is dragged, so it follows the mouse smoothly)
-    const auto now = std::chrono::steady_clock::now();
-    if(m_hudLast.time_since_epoch().count() == 0 || m_ui.HudMoving() || now - m_hudLast >= std::chrono::microseconds(33300))
+    // 1. the HUD itself, at the rate of Nbeam (every frame)
     {
-        m_hudLast             = now;
         const float clear[4]  = { 0.0f, 0.0f, 0.0f, 0.0f };
         ctx->ClearRenderTargetView(m_hudRtv.get(), clear);
         ID3D11RenderTargetView* t = m_hudRtv.get();
@@ -771,8 +1126,47 @@ void Renderer::Present(bool vsync)
 // frozen picture. Noted here; the render thread then asks for a restart (new devices) once.
 void Renderer::CheckPresent(HRESULT hr)
 {
+    if(SUCCEEDED(hr))
+        g_lastPresentOk = GetTickCount64();
     if(hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG)
+    {
+        if(!m_deviceLost)
+        {
+            // what the screen and the game window looked like at that moment (to find out what makes the card lost)
+            RECT        wr {};
+            const HWND  cw = m_options.captureWindow;
+            const bool  ok = cw && IsWindow(cw) && GetWindowRect(cw, &wr);
+            // video memory used by all programs against what Windows grants (a full video memory is a usual cause)
+            unsigned long long vramUse = 0, vramBudget = 0;
+            try
+            {
+                winrt::com_ptr<IDXGIAdapter> ad;
+                winrt::com_ptr<IDXGIAdapter3> ad3;
+                DXGI_QUERY_VIDEO_MEMORY_INFO vi {};
+                if(m_renderContext.device && SUCCEEDED(m_renderContext.device.as<IDXGIDevice>()->GetAdapter(ad.put())) && ad.try_as(ad3) &&
+                   SUCCEEDED(ad3->QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &vi)))
+                {
+                    vramUse    = vi.CurrentUsage >> 20;
+                    vramBudget = vi.Budget >> 20;
+                }
+            }
+            catch(...)
+            {
+            }
+            LsLog("graphics card lost: video memory %llu / %llu MB; Present 0x%08X, reason 0x%08X, 3D source %d (Auto source %d, picture readback %s), output %ux%u, game window %s %ldx%ld at %ld,%ld style 0x%08lX%s", vramUse, vramBudget, (unsigned)hr,
+                  (unsigned)(m_renderContext.device ? m_renderContext.device->GetDeviceRemovedReason() : 0), (int)m_options.emitter.sourceFormat, (int)m_options.emitter.autoSource,
+                  m_autoPending ? "pending" : "idle", (unsigned)m_options.outputWidth, (unsigned)m_options.outputHeight,
+                  ok ? "found" : "none", wr.right - wr.left, wr.bottom - wr.top, wr.left, wr.top, ok ? (unsigned long)GetWindowLongW(cw, GWL_STYLE) : 0UL,
+                  ok && IsZoomed(cw) ? " maximized" : "");
+        }
+        if(!m_deviceLost)
+        {
+            g_deviceLostTotal++;
+            if(m_options.emitter.autoSource && !g_autoNoReadback.exchange(true))
+                LsLog("Auto source: picture analysis switched off after the graphics card was lost (the last format stays)");
+        }
         m_deviceLost = true;
+    }
 }
 
 // Auto SubFrames: every second the measured game frame rate gives SubFrames = round(display Hz / fps); Render() applies it live.
@@ -780,6 +1174,129 @@ void Renderer::CheckPresent(HRESULT hr)
 void Renderer::UpdateSubFramesMode()
 {
     const int effective = m_options.EffectiveSubFramesMode();
+    {
+        auto& em = m_options.emitter;
+        // Full SBS needs a game window twice as wide as the screen (checked twice a second by a thread of its own); in doubt it is refused, 3D stays off
+        {
+            const bool fullSbs = m_options.FullSbsActive() && m_options.outputHeight > 0;
+            const bool bad     = fullSbs ? SbsRequest(m_options.captureWindow, m_options.outputWidth * 2, m_options.outputHeight) : (SbsRequest(NULL, 0, 0), false);
+            if(em.fullSbsBad != bad)
+            {
+                em.fullSbsBad        = bad;
+                m_options.liveReload = true;
+            }
+        }
+        // 3D frame rate cap (stability of the glasses): above half the highest emitter rate + 5 fps (480 Hz: 85 fps, 240 Hz: 65 fps) the 3D and
+        // the emitter are switched off; they come back after 2 s under the limit
+        if(em.sourceFormat != StereoSource::Off && !em.hold && m_options.Stereo3DWanted() && !m_options.crossAdapter && m_options.captureWindow && !m_options.motionTest) // (no limit on the desktop, nor in the motion test)
+        {
+            const double             now    = NowMs();
+            const unsigned long long frames = m_watcher.TotalInputFrames();
+            if(m_capT0 == 0.0 || frames < m_capN0)
+            {
+                m_capT0 = now;
+                m_capN0 = frames;
+            }
+            else if(now - m_capT0 >= 1000.0)
+            {
+                const double fps   = (double)(frames - m_capN0) * 1000.0 / (now - m_capT0);
+                const double limit = m_options.StereoFpsLimit();
+                m_capT0            = now;
+                m_capN0            = frames;
+                if(limit > 0.0)
+                {
+                    em.fpsLimit = (float)limit;
+                    if(!em.fpsCapped)
+                    {
+                        if(fps <= limit)
+                            m_capHigh = 0;
+                        else if(++m_capHigh >= 2) // (two readings in a row, 2 x 1 s: a single peak, e.g. while a window is being resized, does not cut the 3D)
+                        {
+                            m_capHigh            = 0;
+                            em.fpsCapped         = true;
+                            em.cappedFps         = (float)fps;
+                            m_capOk              = 0;
+                            m_options.liveReload = true;
+                        }
+                    }
+                    else
+                    {
+                        em.cappedFps = (float)fps;
+                        if(fps <= limit)
+                        {
+                            if(++m_capOk >= 2)
+                            {
+                                em.fpsCapped         = false;
+                                m_capOk              = 0;
+                                m_options.liveReload = true;
+                            }
+                        }
+                        else
+                            m_capOk = 0;
+                    }
+                }
+            }
+        }
+        else
+        {
+            m_capT0   = 0.0;
+            m_capHigh = 0;
+            if(em.fpsCapped)
+            {
+                em.fpsCapped = false;
+                m_options.liveReload = true;
+            }
+        }
+        // 3D Sync Auto: the emitter rate follows the game frame rate at the chosen interval (0.5 to 2 s), among the rates of the display
+        if(em.sourceFormat != StereoSource::Off && em.syncAuto && !em.hold && m_options.StereoAllowed() && m_options.captureWindow) // (game capture only)
+        {
+            const double             now    = NowMs();
+            const unsigned long long frames = m_watcher.TotalInputFrames();
+            if(m_syncAutoT0 == 0.0 || frames < m_syncAutoN0)
+            {
+                m_syncAutoT0 = now;
+                m_syncAutoN0 = frames;
+            }
+            else if(now - m_syncAutoT0 >= (double)std::clamp(em.syncAutoSec, 0.5f, 2.0f) * 1000.0)
+            {
+                const double fps = (double)(frames - m_syncAutoN0) * 1000.0 / (now - m_syncAutoT0);
+                m_syncAutoT0     = now;
+                m_syncAutoN0     = frames;
+                if(fps >= 5.0)
+                {
+                    const int pick = m_options.PickStereoDivisor(fps);
+                    if(pick > 0)
+                        em.autoDivisor = pick;
+                }
+            }
+        }
+        else
+            m_syncAutoT0 = 0.0;
+        // Clear Frames (BFI) is kept for each emitter rate: loaded when the rate changes, the edits are stored for the rate in use
+        if(em.sourceFormat != StereoSource::Off && !em.hold && m_options.StereoAllowed())
+        {
+            const int act = em.timingActive;
+            if(act >= 0 && act < em.timingCount)
+                for(const auto& p : m_shaderManager.GetParameterInfos())
+                    if(p.type == ParameterType::ParamInt && p.name == "Clear Frames" && p.dropdown.empty())
+                    {
+                        auto& r = em.timings[act];
+                        if(act != m_clearSlot)
+                        {
+                            if(r.clearFrames >= 0)
+                                *p.p.ip.value = std::clamp(r.clearFrames, p.p.ip.min, p.p.ip.max);
+                            else
+                                r.clearFrames = *p.p.ip.value;
+                            m_clearSlot = act;
+                        }
+                        else
+                            r.clearFrames = *p.p.ip.value;
+                        break;
+                    }
+        }
+        else
+            m_clearSlot = -1;
+    }
     if(effective == SF_MANUAL && m_mode == SF_MANUAL && m_options.emitter.sourceFormat != StereoSource::Off)
     {
         // 3D: SubFrames follows the emitter rate (live, also when the display rate changes)
@@ -1060,6 +1577,151 @@ void Renderer::PhaseSample(double ageMs)
         m_phaseIgnoreUntil = now + (shift + 3) * C; // the frames of the move itself are not measured
         m_phaseWindowStart = m_phaseIgnoreUntil;
     }
+}
+
+static float HalfToFloat(uint16_t h)
+{
+    const uint32_t e = (h >> 10) & 31, m = h & 1023;
+    float          v = e == 0 ? std::ldexp((float)m, -24) : e == 31 ? 65504.0f : std::ldexp((float)(m | 1024), (int)e - 25);
+    return (h & 0x8000) ? -v : v;
+}
+
+// Auto source: every 1 s a captured picture is analysed (StereoDetect.h). Nothing readable (black, menu...) or unclear: nothing changes. When
+// a 3D format (SBS / TB / Checkerboard / Interlaced) is found, the 3D source format switches to it as if it was chosen by hand (the first detection of a
+// window is taken at once, a change of format needs two detections in a row). Another captured window starts again in 2D.
+void Renderer::DetectAutoFormat(ID3D11Texture2D* picture)
+{
+    if(g_autoNoReadback)
+        return;
+    auto&        em  = m_options.emitter;
+    const double now = NowMs();
+    const auto   win = m_options.captureWindow;
+    if(m_autoWin != win || now - (double)m_autoLastCall > 3000.0)
+    {
+        // another window, or the Auto source was off for a while: starts again
+        const bool other = m_autoWin != win && m_autoWin != nullptr;
+        m_autoWin        = win;
+        m_autoFirst      = true;
+        m_autoCand       = 0;
+        if(other && em.sourceFormat != StereoSource::Off)
+            PostMessage(m_options.outputWindow, WM_USER_AUTOSOURCE, 0, 0); // back to 2D until a 3D source is found in the new window
+    }
+    m_autoLastCall = (ULONGLONG)now;
+    auto* ctx      = m_renderContext.deviceContext.get();
+    // result of the analysis running in its own thread (the render thread never waits for it)
+    if(m_autoFut.valid())
+    {
+        if(m_autoFut.wait_for(std::chrono::seconds(0)) != std::future_status::ready)
+            return;
+        const auto res = m_autoFut.get();
+        if(m_autoMapped)
+        {
+            ctx->Unmap(m_autoStaging.get(), 0);
+            m_autoMapped = false;
+        }
+        const int  cur = (int)em.sourceFormat;
+        if(res.verdict == 0)
+            m_autoCand = 0; // unclear / black: the current format stays
+        else if(res.verdict == cur)
+        {
+            m_autoCand  = 0;
+            m_autoFirst = false;
+        }
+        else if(m_autoFirst || m_autoCand == res.verdict)
+        {
+            LsLog("Auto source: format %d detected", res.verdict);
+            PostMessage(m_options.outputWindow, WM_USER_AUTOSOURCE, (WPARAM)res.verdict, 0);
+            m_autoFirst = false;
+            m_autoCand  = 0;
+        }
+        else
+            m_autoCand = res.verdict;
+    }
+    if(m_autoPending)
+    {
+        D3D11_MAPPED_SUBRESOURCE ms {};
+        const HRESULT            hr = ctx->Map(m_autoStaging.get(), 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &ms);
+        if(hr == DXGI_ERROR_WAS_STILL_DRAWING)
+            return;
+        m_autoPending = false;
+        if(FAILED(hr))
+            return;
+        D3D11_TEXTURE2D_DESC d {};
+        m_autoStaging->GetDesc(&d);
+        const bool half  = d.Format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+        // the analysis thread reads the mapped copy itself (it stays mapped until the thread is done, then it is unmapped here): the
+        // render thread no longer copies the whole frame (several ms every second, a frame late: the glasses lost step for a moment)
+        m_autoMapped                = true;
+        const unsigned char* mapped = (const unsigned char*)ms.pData;
+        const size_t         pitch  = ms.RowPitch;
+        const int W = (int)d.Width, H = (int)d.Height;
+        m_autoFut = std::async(std::launch::async, [mapped, pitch, W, H, half]() {
+            const unsigned char* base = mapped;
+            return DetectStereo(W, H, [&](int x, int y) {
+                StereoDetectDetail::Rgb c {};
+                if(half)
+                {
+                    const uint16_t* p = (const uint16_t*)(base + (size_t)y * pitch + (size_t)x * 8);
+                    c.c[0]            = std::clamp(HalfToFloat(p[0]), 0.0f, 1.0f);
+                    c.c[1]            = std::clamp(HalfToFloat(p[1]), 0.0f, 1.0f);
+                    c.c[2]            = std::clamp(HalfToFloat(p[2]), 0.0f, 1.0f);
+                }
+                else
+                {
+                    const unsigned char* p = base + (size_t)y * pitch + (size_t)x * 4; // B G R A
+                    c.c[0]                 = p[2] * (1.0f / 255.0f);
+                    c.c[1]                 = p[1] * (1.0f / 255.0f);
+                    c.c[2]                 = p[0] * (1.0f / 255.0f);
+                }
+                return c;
+            });
+        });
+        return;
+    }
+    if(m_autoMidReady)
+    {
+        // second step, one picture later: the intermediate copy goes to the CPU readable texture
+        m_autoMidReady = false;
+        D3D11_TEXTURE2D_DESC md {};
+        m_autoMid->GetDesc(&md);
+        D3D11_TEXTURE2D_DESC s {};
+        if(m_autoStaging)
+            m_autoStaging->GetDesc(&s);
+        if(!m_autoStaging || s.Width != md.Width || s.Height != md.Height || s.Format != md.Format)
+        {
+            m_autoStaging = nullptr;
+            md.Usage          = D3D11_USAGE_STAGING;
+            md.BindFlags      = 0;
+            md.MiscFlags      = 0;
+            md.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+            if(FAILED(m_renderContext.device->CreateTexture2D(&md, nullptr, m_autoStaging.put())))
+                return;
+        }
+        ctx->CopyResource(m_autoStaging.get(), m_autoMid.get());
+        m_autoPending = true;
+        return;
+    }
+    if(!picture || (m_autoT0 != 0.0 && now - m_autoT0 < 1000.0))
+        return;
+    m_autoT0 = now;
+    // first step: a plain GPU copy of the captured picture (same size and format, no bind / misc flags)
+    D3D11_TEXTURE2D_DESC d {};
+    picture->GetDesc(&d);
+    D3D11_TEXTURE2D_DESC mdesc {};
+    if(m_autoMid)
+        m_autoMid->GetDesc(&mdesc);
+    if(!m_autoMid || mdesc.Width != d.Width || mdesc.Height != d.Height || mdesc.Format != d.Format)
+    {
+        m_autoMid = nullptr;
+        d.Usage          = D3D11_USAGE_DEFAULT;
+        d.BindFlags      = 0;
+        d.MiscFlags      = 0;
+        d.CPUAccessFlags = 0;
+        if(FAILED(m_renderContext.device->CreateTexture2D(&d, nullptr, m_autoMid.put())))
+            return;
+    }
+    ctx->CopyResource(m_autoMid.get(), picture);
+    m_autoMidReady = true;
 }
 
 bool Renderer::ConvertStereoInput(bool newFrame)
@@ -1495,6 +2157,7 @@ void Renderer::BufferedStep(const std::shared_ptr<CaptureBase>& capture)
         m_ringFree.push_back(m_ringQueue.front());
         m_ringQueue.pop_front();
     }
+    ID3D11Texture2D* autoPicture = nullptr; // the capture that arrives now (Auto source)
     if(!m_ringFree.empty())
     {
         const int idx      = m_ringFree.back();
@@ -1512,6 +2175,7 @@ void Renderer::BufferedStep(const std::shared_ptr<CaptureBase>& capture)
             if(idx < (int)m_ringTime.size())
                 m_ringTime[idx] = now;
             m_ringArrived = true;
+            autoPicture   = m_ring[idx].get();
             m_ringQueue.push_back(idx);
             while((int)m_ringQueue.size() > n + 1)
             {
@@ -1522,6 +2186,8 @@ void Renderer::BufferedStep(const std::shared_ptr<CaptureBase>& capture)
         else
             m_ringFree.push_back(idx);
     }
+    if(m_options.emitter.autoSource && m_options.StereoAllowed())
+        DetectAutoFormat(autoPicture);
 
     // 2. the shader needs a new frame
     if(!NewInputRequired())
@@ -1826,7 +2492,18 @@ void Renderer::CreateInputs()
         rawDesc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
         if(!m_options.crossAdapter)
             rawDesc.BindFlags |= D3D11_BIND_RENDER_TARGET; // (capture scaling)
-        THROW(m_renderContext.device->CreateTexture2D(&rawDesc, &data, m_stereoRaw.put()), "Unable to create 3D source texture");
+        std::vector<uint32_t>  rawInit;
+        D3D11_SUBRESOURCE_DATA rawData = data;
+        if(m_options.FullSbsActive())
+        {
+            // Full SBS: the captured picture is twice the screen width (both eyes at full size), the capture fits it in this texture
+            rawDesc.Width = rawDesc.Width * 2;
+            rawInit.assign((size_t)rawDesc.Width * rawDesc.Height * formatWidth, 0u);
+            rawData.pSysMem          = rawInit.data();
+            rawData.SysMemPitch      = rawDesc.Width * sizeof(uint32_t) * formatWidth;
+            rawData.SysMemSlicePitch = (UINT)((size_t)rawData.SysMemPitch * rawDesc.Height);
+        }
+        THROW(m_renderContext.device->CreateTexture2D(&rawDesc, &rawData, m_stereoRaw.put()), "Unable to create 3D source texture");
         THROW(m_renderContext.device->CreateShaderResourceView(m_stereoRaw.get(), nullptr, m_stereoRawView.put()), "Unable to create 3D source view");
         if(m_options.emitter.sourceFormat == StereoSource::AiDepth)
             CreateDepthResources();
@@ -1858,7 +2535,6 @@ void Renderer::Destroy()
     m_hudFailed                      = false;
     m_hudEmpty                       = false;
     m_hudArea                        = {};
-    m_hudLast                        = {};
     m_toneCopySrv                    = nullptr;
     m_toneCopy                       = nullptr;
     m_toneCb                         = nullptr;
@@ -1892,6 +2568,16 @@ void Renderer::DestroyInputs()
     m_stereoTargets.clear();
     m_stereoRawView = nullptr;
     m_stereoRaw     = nullptr;
+    if(m_autoFut.valid())
+        m_autoFut.wait(); // (the analysis thread may still read the mapped copy)
+    m_autoFut = {};
+    if(m_autoMapped && m_autoStaging)
+        m_renderContext.deviceContext->Unmap(m_autoStaging.get(), 0);
+    m_autoMapped    = false;
+    m_autoMid       = nullptr;
+    m_autoMidReady  = false;
+    m_autoStaging   = nullptr;
+    m_autoPending   = false;
     m_stereo.Destroy();
     m_stereoActive  = false;
     for(int i = 0; i < m_renderContext.inputTextureViews.size(); i++)

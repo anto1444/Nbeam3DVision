@@ -17,6 +17,10 @@ struct EmitterPanelContext
     double                   displayHz { 0 };   // measured output refresh
     int                      subFrames { 1 };   // output frames per content frame
     bool                     stereoBlocked { false }; // 3D is only available in Manual SubFrames mode
+    bool                     outputOnProcess { false }; // the output covers the captured game (Full SBS impossible then)
+    bool                     fullRestart { false };    // set by the panel: a complete restart of the renderer is needed (Full SBS toggled: the capture must start again)
+    bool                     gameCapture { true };    // a game is captured (not the desktop): Full SBS exists only then
+    bool                     queueBlocked { false };  // 3D needs at least 3 queued frames
     float                    fontSize { 16 };
     std::vector<std::string> status;            // EmitterManager::Status()
     std::vector<int>         comPorts;          // EnumerateComPorts()

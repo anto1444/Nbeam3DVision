@@ -311,7 +311,7 @@ bool CreateGraphics()
 
     static const char hlsl[] = R"HLSL(
 cbuffer Params : register(b0) { float4 a; float4 b; float4 c; float4 d; };
-// a: width, height, scroll (px), border (px)   b: layout (0 = 2D, 1 = side by side, 2 = top / bottom, 3 = checkerboard), -, tile w, tile h
+// a: width, height, scroll (px), border (px)   b: layout (0 = 2D, 1 = side by side, 2 = top / bottom, 3 = checkerboard, 4 = interlaced rows, 5 = interlaced columns), -, tile w, tile h
 // c: background colour   d: logo x, y, size, parallax (px)
 Texture2D<float4> car  : register(t0);
 Texture2D<float4> logo : register(t1);
@@ -338,6 +338,10 @@ float4 PScars(float4 pos : SV_Position) : SV_Target
     }
     else if(layout == 3)
         eye = (float)(((int)q.x + (int)q.y) & 1);
+    else if(layout == 4)
+        eye = (float)((int)q.y & 1);
+    else if(layout == 5)
+        eye = (float)((int)q.x & 1);
     float tw = b.z, th = b.w;
     int   row = (int)(q.y / th);
     float ly  = q.y - row * th;
@@ -438,7 +442,7 @@ void RenderFrame()
     {
         const float margin = h * 0.03f;
         const float v[16]  = { (float)w, (float)h, (float)scroll, (std::max)(4.0f, th * 0.035f),
-                               (float)std::clamp(t.p.layout, 0, 3), 0.0f, (float)tw, (float)th,
+                               (float)std::clamp(t.p.layout, 0, 5), 0.0f, (float)tw, (float)th,
                                t.p.bg[0], t.p.bg[1], t.p.bg[2], 0.0f,
                                margin, h - margin - logoSize, (float)logoSize, disparity };
         memcpy(mapped.pData, v, sizeof(v));

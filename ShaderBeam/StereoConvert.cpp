@@ -15,7 +15,7 @@ namespace ShaderBeam
 static const char kStereoHlsl[] = R"HLSL(
 cbuffer Params : register(b0)
 {
-    uint  mode;     // 1 = side by side, 2 = top and bottom, 3 = checkerboard, 4 = AI depth, 5 = downscale
+    uint  mode;     // 0 = as captured (Auto, nothing detected yet), 1 = side by side, 2 = top and bottom, 3 = checkerboard, 4 = AI depth, 5 = downscale
     uint  eye;      // 0 = left, 1 = right
     uint  width;
     uint  height;
@@ -100,6 +100,8 @@ float4 PSmain(VSOut i) : SV_Target
             return float4(0.0, 0.0, 0.0, 1.0);
         return src.SampleLevel(lin, duv, 0.0);
     }
+    if(mode == 0)
+        return src.SampleLevel(lin, i.uv, 0.0); // Auto, nothing detected yet: the 2D picture as it is
     // convergence (SBS / TB / Checkerboard): each eye is moved sideways, the uncovered edge is black
     float x = i.uv.x - shift;
     if(x < 0.0 || x > 1.0)
@@ -113,6 +115,20 @@ float4 PSmain(VSOut i) : SV_Target
     {
         float2 uv = float2(x, i.uv.y * 0.5 + 0.5 * eye);
         return src.SampleLevel(lin, uv, 0.0);
+    }
+    if(mode >= 6)
+    {
+        // interlaced: mode 6 = rows (left eye on even rows), mode 7 = columns (left eye on even columns); the missing lines of the
+        // requested eye are the average of the two neighbouring lines (which both belong to that eye)
+        int2 q = int2((int)(x * width), (int)i.pos.y);
+        int2 mx = int2(width - 1, height - 1);
+        int  par = mode == 6 ? q.y : q.x;
+        if((uint)(par & 1) == eye)
+            return src.Load(int3(q, 0));
+        int2 st = mode == 6 ? int2(0, 1) : int2(1, 0);
+        float4 u = src.Load(int3(clamp(q + st, int2(0, 0), mx), 0));
+        float4 v = src.Load(int3(clamp(q - st, int2(0, 0), mx), 0));
+        return (u + v) * 0.5;
     }
     // checkerboard: left eye on pixels with (x + y) even, right eye on odd; the missing pixels of the
     // requested eye are the average of the four neighbours (which all belong to that eye)
@@ -134,6 +150,19 @@ static void Compile(const char* entry, const char* profile, winrt::com_ptr<ID3DB
     HRESULT     hr = Helpers::CompileCached(kStereoHlsl, sizeof(kStereoHlsl) - 1, "StereoConvert", nullptr, entry, profile, D3DCOMPILE_OPTIMIZATION_LEVEL3, blob, errors);
     if(FAILED(hr))
         throw std::runtime_error(std::string("Unable to compile 3D source shader: ") + errors);
+}
+
+void StereoConverter::WarmCache()
+{
+    try
+    {
+        winrt::com_ptr<ID3DBlob> vs, ps;
+        Compile("VSmain", "vs_5_0", vs);
+        Compile("PSmain", "ps_5_0", ps);
+    }
+    catch(...)
+    {
+    }
 }
 
 void StereoConverter::Create(const winrt::com_ptr<ID3D11Device>& device)
@@ -215,7 +244,7 @@ void StereoConverter::Convert(ID3D11DeviceContext* ctx, ID3D11ShaderResourceView
     if(format == StereoSource::AiDepth && (!depth || !ai))
         return;
 
-    unsigned p[12] = { (unsigned)format, (unsigned)eye, width, height, 0, 0, 0, 0, 0, 0, 0, 0 };
+    unsigned p[12] = { (unsigned)format + ((int)format >= 5 ? 1u : 0u), (unsigned)eye, width, height, 0, 0, 0, 0, 0, 0, 0, 0 };
     if(format == StereoSource::AiDepth)
     {
         const float strength = ai->strength * 0.01f;

@@ -156,7 +156,7 @@ void ShaderBeam::SwitchProfile()
 void ShaderBeam::ApplyLinkDisplay()
 {
     const int n = (int)m_ui.m_displays.size();
-    if(m_options.linkShaderDisplayNo >= 0 && m_options.linkShaderDisplayNo < n)
+    if(m_options.linkShaderDisplayNo >= 0 && m_options.linkShaderDisplayNo < n && !m_options.outputAuto) // (output "Automatic": the output follows the game window)
         m_options.shaderDisplayNo = m_options.linkShaderDisplayNo;
     if(m_options.linkCaptureDisplayNo >= 0 && m_options.linkCaptureDisplayNo < n)
         m_options.captureDisplayNo = m_options.linkCaptureDisplayNo;
@@ -209,6 +209,7 @@ void ShaderBeam::DefaultOptions()
 
 void ShaderBeam::Start()
 {
+    const ULONGLONG startTick = GetTickCount64();
     RefreshAdapters(); // (a driver update replaces the graphics card objects)
     // no display (a TV switched off, a screen unplugged) or no graphics card listed: wait and try again every 2 s
     if(m_ui.m_displays.empty())
@@ -272,7 +273,9 @@ void ShaderBeam::Start()
             SetWindowPos(m_options.outputWindow, HWND_TOPMOST, pr.left, pr.top, pr.right - pr.left, pr.bottom - pr.top, SWP_FRAMECHANGED | SWP_NOACTIVATE);
         }
     }
-    m_options.swapChainBuffers = m_options.Tearing() ? 2 : (m_options.maxQueuedFrames ? m_options.maxQueuedFrames + 1 : 3);
+    m_options.queueAutoCur     = Options::QUEUE_AUTO_MIN; // (the auto queue starts again from its floor)
+    // Auto queue: the swap chain has the buffers of the longest queue, so the length can change live (SetMaximumFrameLatency) without a new swap chain
+    m_options.swapChainBuffers = m_options.Tearing() ? 2 : (m_options.queueAuto ? Options::QUEUE_AUTO_MAX + 1 : (m_options.maxQueuedFrames ? m_options.maxQueuedFrames + 1 : 3));
     m_options.format           = m_options.useHdr ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
     if(m_options.useHdr)
         m_options.hardwareSrgb = false;
@@ -310,6 +313,25 @@ void ShaderBeam::Start()
     }
     catch(std::exception& ex)
     {
+        // often a passing refusal of Windows (the swap chain cannot be made while the previous one, or the game window, is still being
+        // changed): tried again 3 times, 2 s apart, before the message (it used to close Nbeam at once)
+        static ULONGLONG s_failAt = 0;
+        static int       s_fails  = 0;
+        const ULONGLONG  t        = GetTickCount64();
+        s_fails                   = t - s_failAt < 30000 ? s_fails + 1 : 1;
+        s_failAt                  = t;
+        LsLog("renderer start failed (%d): %s", s_fails, ex.what());
+        if(s_fails <= 3)
+        {
+            try
+            {
+                m_renderer.Stop();
+            }
+            catch(...)
+            { }
+            SetTimer(m_options.outputWindow, TIMER_RETRY_START, 2000, nullptr);
+            return;
+        }
         MessageBoxA(m_options.outputWindow, ex.what(), SHADERBEAM_TITLE, MB_ICONERROR | MB_OK);
         PostMessage(m_options.outputWindow, WM_DESTROY, 0, 0);
         return;
@@ -348,6 +370,7 @@ void ShaderBeam::Start()
     SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS);
 
     m_active = true;
+    LsLog("effects started in %llu ms", (unsigned long long)(GetTickCount64() - startTick));
 }
 
 void ShaderBeam::Stop()

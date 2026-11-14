@@ -7,6 +7,9 @@ MIT License
 #include "DepthAI.h"
 #include "ort/onnxruntime_c_api.h"
 #include <chrono>
+#include <atomic>
+#include <mutex>
+#include <thread>
 
 namespace ShaderBeam
 {
@@ -61,11 +64,38 @@ std::vector<std::string> MissingAiFiles(const std::filesystem::path& dir)
     return missing;
 }
 
+// Looking at the disk can take a few ms (antivirus, network drive...): the render thread (HUD) only reads the last
+// answer. The first call (at the start of Nbeam) looks itself, the next ones refresh the answer in a thread of their own.
 std::vector<std::string> MissingAiFilesNextToExe()
 {
-    wchar_t path[MAX_PATH * 2] = {};
-    GetModuleFileNameW(nullptr, path, MAX_PATH * 2);
-    return MissingAiFiles(std::filesystem::path(path).parent_path());
+    static std::mutex                s_mutex;
+    static std::vector<std::string>  s_cache;
+    static bool                      s_known = false;
+    static std::atomic<bool>         s_busy { false };
+    static std::atomic<ULONGLONG>    s_at { 0 };
+
+    const auto look = []
+    {
+        wchar_t path[MAX_PATH * 2] = {};
+        GetModuleFileNameW(nullptr, path, MAX_PATH * 2);
+        std::vector<std::string> r = MissingAiFiles(std::filesystem::path(path).parent_path());
+        std::lock_guard<std::mutex> l(s_mutex);
+        s_cache = std::move(r);
+        s_known = true;
+        s_at    = GetTickCount64();
+    };
+
+    bool known;
+    {
+        std::lock_guard<std::mutex> l(s_mutex);
+        known = s_known;
+    }
+    if(!known)
+        look();
+    else if(GetTickCount64() - s_at > 1000 && !s_busy.exchange(true))
+        std::thread([look] { look(); s_busy = false; }).detach();
+    std::lock_guard<std::mutex> l(s_mutex);
+    return s_cache;
 }
 
 void DepthEstimator::Start(const std::filesystem::path& dir, int width, int height, bool useGpu)

@@ -9,6 +9,7 @@ MIT License
 
 #include "RenderThread.h"
 #include "Helpers.h"
+#include "Common.h"
 
 namespace ShaderBeam
 {
@@ -72,7 +73,24 @@ void RenderThread::Run()
         {
             // graphics card lost: a restart (new devices) is asked once, then the thread waits for it without using the CPU
             if(!restartAsked)
-                PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
+            {
+                // it can happen again at once on the new devices (black or flickering picture, restart every second): the more often it
+                // happens within 30 s, the longer the wait before the next restart (none, none, 2 s, 4 s ... 15 s)
+                static ULONGLONG s_lastLost  = 0;
+                static int       s_lostCount = 0;
+                const ULONGLONG  now         = GetTickCount64();
+                s_lostCount                  = (s_lastLost && now - s_lastLost < 30000) ? s_lostCount + 1 : 1;
+                s_lastLost                   = now;
+                const int waitMs             = s_lostCount <= 2 ? 0 : (std::min)(2000 * (s_lostCount - 2), 15000);
+                if(waitMs > 0)
+                {
+                    LsLog("graphics card lost again (%d times in a row): restart in %d ms", s_lostCount, waitMs);
+                    for(int t = 0; t < waitMs && !m_stop && !m_stopped; t += 50)
+                        Sleep(50);
+                }
+                if(!m_stop && !m_stopped)
+                    PostMessage(m_options.outputWindow, WM_USER_RESTART, NB_RESTART_TAG, 0);
+            }
             restartAsked = true;
             Sleep(50);
             continue;
@@ -93,6 +111,7 @@ void RenderThread::Run()
             }
             m_renderer.UpdateSubFramesMode();
             m_renderer.AdaptFrameBuffer();
+            m_renderer.AdaptQueue();
             if(!m_renderer.BufferActive())
                 m_renderer.BufferReset();
             if(m_renderer.Bypassing())

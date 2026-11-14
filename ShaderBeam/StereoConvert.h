@@ -14,6 +14,9 @@ namespace ShaderBeam
 class StereoConverter
 {
 public:
+    // compiles the 3D shaders into the disk cache (called once when Nbeam starts, off the render thread): a 3D change in a game no longer compiles anything
+    static void WarmCache();
+
     // device: render device; width/height: output size (== captured frame size)
     void Create(const winrt::com_ptr<ID3D11Device>& device);
     void Destroy();

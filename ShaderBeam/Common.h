@@ -10,6 +10,10 @@ MIT License
 #include "EmitterSettings.h"
 #include "SubFrameModes.h"
 #include <mutex>
+#include <atomic>
+#include <deque>
+#include <string>
+#include <vector>
 
 namespace ShaderBeam
 {
@@ -21,9 +25,13 @@ namespace ShaderBeam
 #define MAX_INPUTS 5
 
 #define WM_USER_RESTART (WM_USER)
+#define NB_STR2(x) #x
+#define NB_STR(x) NB_STR2(x)
+#define NB_RESTART_TAG ((WPARAM)(__FILE__ ":" NB_STR(__LINE__))) // (wParam of a restart: who asked for it, written to Nbeam_ls.log)
 #define WM_USER_BENCHMARK (WM_USER + 1)
 #define WM_USER_NOWINDOW (WM_USER + 2)
 #define WM_USER_EFFECTS (WM_USER + 4) // window mode: wParam 1 = activate the effects, 0 = deactivate, 2 = the window mode option changed
+#define WM_USER_AUTOSOURCE (WM_USER + 6) // Auto source found a 3D format: wParam = StereoSource (0 = back to 2D)
 #define WM_USER_GLASSESTEST (WM_USER + 5) // 3D panel: wParam = glasses test to show (1, 2), 0 = end it
 #define TIMER_RETRY_START 3 // window timer: the start failed (no display, Windows / graphics card error): try again
 
@@ -34,19 +42,18 @@ namespace ShaderBeam
 #define HOTKEY_EFFECTS 4 // shows / hides the effects (same as the HUD button Show / Hide)
 
 // adjustment hotkeys (decrease / increase pairs, one step per press)
-#define HOTKEY_DETECTION 5 // checks / unchecks the profile detections (all of them)
-#define HOTKEY_ADDEXE 6 // adds the program in the foreground to the profile detections
-#define HOTKEY_ADJUST_FIRST 7
-#define HOTKEY_SUBFRAMES_DEC 7
-#define HOTKEY_SUBFRAMES_INC 8
-#define HOTKEY_CLEAR_DEC 9
-#define HOTKEY_CLEAR_INC 10
-#define HOTKEY_SYNCOFFSET_DEC 11
-#define HOTKEY_SYNCOFFSET_INC 12
-#define HOTKEY_DURATION_DEC 13
-#define HOTKEY_DURATION_INC 14
+#define HOTKEY_ADDEXE 5 // adds the program in the foreground to the profile detections
+#define HOTKEY_ADJUST_FIRST 6
+#define HOTKEY_SUBFRAMES_DEC 6
+#define HOTKEY_SUBFRAMES_INC 7
+#define HOTKEY_CLEAR_DEC 8
+#define HOTKEY_CLEAR_INC 9
+#define HOTKEY_SYNCOFFSET_DEC 10
+#define HOTKEY_SYNCOFFSET_INC 11
+#define HOTKEY_DURATION_DEC 12
+#define HOTKEY_DURATION_INC 13
 
-#define HOTKEY_COUNT 15
+#define HOTKEY_COUNT 14
 
 //#define RGB_TEST
 
@@ -151,6 +158,7 @@ struct Options
         int   bannerCorner { 0 };    // 0 bottom left, 1 bottom right, 2 top right, 3 top left
         bool  showStats { false };   // banner of the HUD: RAM used, render latency (with the frame buffer) and late frames
         float scale { 1.0f };        // HUD size (dragging the corner of the HUD changes it), 0.6 .. 2.0
+        bool  autoScale { true };    // size follows the Windows display scale (100 % in Windows = normal size); off: the sizes below
         float scaleWin { 1.0f };     // size of the interface in the window of the window mode (separate from the HUD over the screen)
     } hud;
     bool charts { false };
@@ -160,9 +168,11 @@ struct Options
     int  captureDisplayNo { 0 };
     int  shaderDisplayNo { 0 };
     bool outputOnProcess { false }; // output "Process": the final image covers the window of the captured process, whatever its size
+    bool outputAuto { false };      // output "Automatic": a full screen / borderless maximized game -> the Windows main display; a smaller windowed game -> "Process"
     int  subFrames { 0 };        // effective value (derived; in Auto mode it follows the measured game frame rate)
     int  subFramesSetting { 0 }; // Manual mode value, 1..MAX_SUBFRAMES (0 in an old profile = pick display Hz / 60 once)
     int  subFramesMode { SF_MANUAL };
+    int  PickStereoDivisor(double gameFps) const; // Sync Auto: the n (display Hz / n) whose eye pair rate best fits the game frame rate
     int  StereoSubFrames() const;  // 3D active: SubFrames from the emitter rate (0 = none: 3D off, or Auto found no rate in 80-165 Hz)
     bool StereoLinked() const;     // SubFrames is driven by the emitter rate right now
     int  ManualSubFrames() const;  // what the Manual mode runs: the 3D value when 3D is active, else the typed value
@@ -193,7 +203,24 @@ struct Options
         }
         return false;
     }
-    bool StereoAllowed() const { return StereoManual() && StereoRateOk(); }
+    // experimental Full SBS (SBS only): needs a game capture and an output that does not cover the game (not "Process" output)
+    bool FullSbsAvailable() const { return captureWindow != 0 && !outputOnProcess && !processOutput; }
+    bool FullSbsActive() const { return emitter.sourceFormat == StereoSource::SideBySide && emitter.fullSbs && FullSbsAvailable(); }
+    bool Stereo3DWanted() const { return StereoManual() && StereoRateOk() && QueueAllows3D(); }
+    bool StereoAllowed() const { return Stereo3DWanted() && !emitter.fpsCapped && !emitter.fullSbsBad; } // (capped: the game runs too fast for stable 3D)
+    // game frame rate above which 3D is switched off for stability: half the highest emitter rate + 5 fps (480 Hz: 160 Hz -> 85 fps;
+    // 240 Hz: 120 Hz -> 65 fps); 0 when the display has no emitter rate
+    double StereoFpsLimit() const
+    {
+        for(int n = MIN_SUBFRAMES; n <= MAX_SUBFRAMES && vsyncRate > 1.0f; n++)
+        {
+            const double hz = (double)vsyncRate / n;
+            if(hz > 165.5)
+                continue;
+            return hz >= 79.5 ? hz * 0.5 + 5.0 : 0.0;
+        }
+        return 0.0;
+    }
     int  captureMethod { 0 };
     int  splitScreen { 0 };
     bool splitInvert { false }; // split-screen: the effect on the other half (right / bottom)
@@ -205,8 +232,10 @@ struct Options
     mutable int frameBufferStep { 1 }; // buffer: content frames (eye pairs in 3D) each game frame is shown for (game fps = a divisor of the content rate, SubFrames Manual)
     mutable int frameBufferAuto { 0 }; // the buffer the renderer currently uses (Frame buffer: 1 up to the value chosen; hybrid: 0 or 1)
     // the BFI sync really used: the phase lock and the hybrid are 2D only, in 3D they are hidden and work as None
-    // queued presentation frames: in 3D at least 3 (1, 2 and tearing are for 2D only; the value kept is the one chosen in 2D)
-    int  QueueSetting() const { return (emitter.sourceFormat != StereoSource::Off && (maxQueuedFrames == QUEUE_TEARING || (maxQueuedFrames >= 1 && maxQueuedFrames < 3))) ? 0 : maxQueuedFrames; }
+    // queued presentation frames; 3D needs at least 3 (0 = the default, which is 3): with 1, 2 or tearing allowed 3D is not available
+    // Auto queue: starts at 3 and goes up to 6 when frames are late (Renderer::AdaptQueue); QueueSetting() is the length in use
+    int  QueueSetting() const { return queueAuto ? queueAutoCur : maxQueuedFrames; }
+    bool QueueAllows3D() const { const int q = QueueSetting(); return q == 0 || (q >= 3 && q < QUEUE_TEARING); }
     int  BfiSyncMode() const { return emitter.sourceFormat != StereoSource::Off ? 2 : bfiSync; } // in 3D the frame buffer is always used
     int  BufferSetting() const { return BfiSyncMode() == 2 ? (std::min)((std::max)(frameBuffer, 1), 5) : BfiSyncMode() == 3 ? 1 : 0; } // the most the buffer may use (0 = none)
     bool FrameBufferIsAuto() const { return BufferSetting() > 0; } // the size is adapted by the renderer (Frame buffer and Hybrid)
@@ -216,11 +245,16 @@ struct Options
     mutable float captureGain { 1.0f };   // brightness gain of the captured image (1 = unchanged)
     mutable float captureGrey { 1.0f };   // grey level (gamma) of the captured image
     bool useHdr { true }; // HDR on by default; no UI option, set "useHdr" in a profile file to change
-    int  maxQueuedFrames { 0 }; // queued presentation frames: 0 = driver default, 1..14, QUEUE_TEARING = 0 frames, tearing allowed
+    int  maxQueuedFrames { 0 }; // queued presentation frames: 0 = driver default, 1..QUEUE_MAX, QUEUE_TEARING = 0 frames, tearing allowed
     static constexpr int QUEUE_TEARING = 15;
+    static constexpr int QUEUE_MAX     = 10; // longest queue that can be chosen (a profile saved with a longer one gets this one)
+    bool queueAuto { false };           // "Auto" queue (profile setting): the length adapts between QUEUE_AUTO_MIN and QUEUE_AUTO_MAX
+    mutable int queueAutoCur { 3 };     // the length in use while queueAuto
+    static constexpr int QUEUE_AUTO_MIN = 3, QUEUE_AUTO_MAX = 6;
     int  tearingLine { 0 };     // tearing control: where the flip happens in the refresh (0 = right after vblank, hidden at the top; 100 = bottom), profile setting
     bool Tearing() const { return QueueSetting() == QUEUE_TEARING; }
     bool beamRacing { false }; // tearing: the flip is timed on the real scanout position so the tear lands where the effect hides it; profile setting
+    bool drawPointer { false };   // "Draw a pointer" (profile, with Direct presentation): Nbeam draws a pointer while the real one moves (see UI.cpp)
     bool directPresent { false }; // "Direct presentation" (experimental, profile): the overlay is never a layered window, so Windows can show it
                                   // directly (independent flip / hardware plane) instead of composing it; no click-through (see SetClickThrough)
     volatile int   presentMode { -1 };       // measured: -1 unknown, 0 composed by Windows, 1 direct (hardware plane), 3 composition failure
@@ -234,15 +268,13 @@ struct Options
     {
         unsigned mods { 0 };
         unsigned vk { 0 };
-        unsigned pad { 0 }; // gamepad combination (Pad:: button bits), 0 = none
     };
     Hotkey hotkeys[HOTKEY_COUNT] = {
-        { MOD_CONTROL | MOD_SHIFT, 'B', 0x0030 }, // toggle UI (pad: Back + Start)
+        { MOD_CONTROL | MOD_SHIFT, 'B' }, // toggle UI
         { MOD_CONTROL | MOD_SHIFT, 'A' }, // restart
         { MOD_CONTROL | MOD_SHIFT, 'Q' }, // quit
         { MOD_CONTROL | MOD_SHIFT, 'E' }, // swap eyes
         { MOD_CONTROL | MOD_SHIFT, 'D' }, // show / hide the effects
-        { MOD_CONTROL | MOD_SHIFT, 'L' }, // profile detection on / off
         { MOD_CONTROL | MOD_SHIFT, 'P' }, // add the foreground program to the detections
         { MOD_CONTROL | MOD_SHIFT, VK_F1 },  // SubFrames -
         { MOD_CONTROL | MOD_SHIFT, VK_F2 },  // SubFrames +
@@ -258,7 +290,7 @@ struct Options
     // hotkeys that Windows refused to register (another program owns the combination) are polled instead, so they still work
     mutable bool hotkeyOk[HOTKEY_COUNT] {};
     bool         appHotkeys { false }; // the hotkeys were read from Nbeam.app.cfg (global): the profiles no longer change them
-    template<class Section> void ReadHotkeys(Section& hk, Section* gp);
+    template<class Section> void ReadHotkeys(Section& hk);
     bool         hotkeysSuspended { false }; // while a new key is being captured in the UI
     bool               RegisterHotkey(int id) const;
     void               UnregisterHotkey(int id) const;
@@ -284,14 +316,25 @@ struct Options
     volatile bool effectsSuspended { false }; // HUD button Show / Hide: all effects and the 3D emitter are off until Show is pressed (HUD shown or not)
     bool          startWithWindows { false };
     bool          minimizeToTray { true }; // the notification area icon always exists
+    bool          keepAudio { true };      // inaudible sound on the default audio device while Nbeam runs (keeps Dolby Atmos active), Nbeam.app.cfg
     bool          startMinimized { false };
     bool          runAsAdmin { false }; // "Run as administrator": at start Nbeam asks Windows (UAC) to start again with administrator rights
     bool          windowMode { true }; // window mode, always on: Nbeam opens as a normal window, the effects run only when activated or when a detected program runs
+    bool          saveLog { true }; // "Save the event log" (Application): off = no event or history of Nbeam is recorded, and the files are deleted
     bool          closeMinimizes { true }; // "Minimize instead of closing": the cross of the window minimizes it (to the notification area with that option)
     volatile bool motionTest { false };   // motion test running (the cars window, see CarTest.h, captured like a game); not saved
     int           ufoSpeed { 960 };       // motion test (Nbeam.app.cfg): speed of the cars, pixels per second (0 = still)
     int           carSize { 100 };        // ... size of the cars, % (100 = 3 rows; smaller = more cars)
     float         testBg[3] { 0.16f, 0.17f, 0.19f }; // ... background colour of the cells
+    bool          rtssAvailable { false }; // RTSS is installed on this PC (checked once at start): otherwise its automatic frame cap is greyed out
+    bool          dcAvailable { false };   // Display Commander (ReShade addon) is installed on this PC (checked once at start): otherwise its frame cap is greyed out
+    int           fpsCapDefault { 0 };     // "Auto fps cap" given to the programs added to the detections (0 none, 1 RTSS, 2 Display Commander), Nbeam.app.cfg
+    int           DefaultFpsCapMode() const { return (fpsCapDefault == 1 && rtssAvailable) || (fpsCapDefault == 2 && dcAvailable) || fpsCapDefault == 3 ? fpsCapDefault : 0; }
+    std::string   profileOnAdd;          // profile given to the programs added to the detections ("" = none), Nbeam.app.cfg
+    std::string   ProfileForNewProgram() const; // profileOnAdd if that profile still exists, otherwise ""
+    int           fpsLimitDefault { 0 };   // "Frame limit" given to the programs added to the detections (0 = no limit, up to 1000), Nbeam.app.cfg
+    int           rlFpsLimit { 0 };        // (old global ReLimiter frame limit: only read once to fill the frame limit of each program)
+    int           dcFpsLimit { 0 };        // (old global Display Commander frame limit: the same)
     volatile bool emitterPresent { true }; // a 3D emitter is recognized (NVIDIA driver loaded, or a COM port emitter set); red note in the bottom bar otherwise
     std::string   defaultProfile; // old "Default profile" (read once to make the desktop settings from it, then always empty)
     struct ProfileLink
@@ -300,8 +343,13 @@ struct Options
         std::string profile; // profile (.ini) loaded while that program runs
         int         delay { 0 }; // seconds the program must have been running before the profile is applied
         bool        enabled { true }; // unchecked = the link is ignored
+        std::string path;             // full path of the program the last time it was seen running (when "exe" is only a file name): where the frame limit is written before the game starts
         std::string screenId;         // screen (KnownMonitor::id) this profile is for; up to 3 links of the same program, each on a different screen
         int         hz { 0 };         // Windows refresh rate of that screen while the program runs (0 = no change); every screen of the program changes at detection
+        int         fpsCapMode { 0 }; // automatic game frame cap: 0 none, 1 RTSS (RivaTuner Statistics Server: half the 3D rate in 3D, the content rate with BFI / CRT, followed live),
+                                      // 2 Display Commander (fpsLimit written in the game's DisplayCommander.ini), 3 ReLimiter (fpsLimit written in the game's relimiter.ini)
+        int         fpsLimit { 0 };   // frame limit of this program on this screen for Display Commander / ReLimiter (0 = no limit, up to 1000): written when Nbeam starts
+                                      // and when its screen changes, for every program at once, outside the start of the game
     };
     std::vector<ProfileLink> profileLinks;
     // profileLinks is edited by the HUD (render thread) and read by the detections (main thread): both lock this. Lock order: this
@@ -328,6 +376,10 @@ struct Options
     int                       linkCaptureDisplayNo { -1 };
     void                      RefreshMonitors(bool keepHz);  // enumerates the connected screens and updates the remembered ones
     std::vector<KnownMonitor> MonitorsSnapshot() const;
+    // position of the screens in the list (Global settings: Screen 1, 2, 3...): the two screens exchange their places
+    void                      SwapKnownMonitors(const std::string& idA, const std::string& idB);
+    // forgets a screen that is not connected (false if it is connected or unknown)
+    bool                      RemoveKnownMonitor(const std::string& id);
     int                       DisplayNoForScreen(const std::string& id, const std::vector<DisplayInfo>& displays) const; // index in displays of a connected screen, -1 if none
     std::string               ScreenIdOfDisplay(unsigned displayNo, const std::vector<DisplayInfo>& displays) const;
     static std::vector<int>  DisplayRefreshRates(HMONITOR monitor); // rates (Hz) the display supports at its current resolution
@@ -340,6 +392,7 @@ struct Options
     static bool              IsElevated();     // this process runs with administrator rights
     void                     ApplyAutoStart() const; // adds / removes the Windows startup entry (current user)
     static bool              IsExeOnTaskbar(const std::string& pathOrName); // the program has a window shown on the taskbar (otherwise it counts as closed)
+    HWND                      TaskbarWindowOfExe(const std::string& pathOrName) const;  // the program's window shown on the taskbar (NULL if none)
     std::string               ScreenIdOfExeWindow(const std::string& pathOrName) const; // screen where the program's taskbar window is ("" if unknown)
     static void              PeekProfile(const std::string& file, bool& stereo); // 3D of a profile, without loading it
     int                      setWinRect[4] { 0, 0, 0, 0 }; // window mode: position and size of the window (left, top, right, bottom; 0 = never saved)
@@ -393,4 +446,12 @@ struct Options
 // Small trace of what happens around Lossless Scaling's layer (detections, restarts, raises of the overlay): Nbeam_ls.log next to the
 // exe, 256 KB at most. Only used to find out why a capture would start and stop in a loop.
 void LsLog(const char* fmt, ...);
+// last lines written to the log (formatted like in the file), `ms` milliseconds back: kept for the capture of the O key (see EmitterManager::DumpRecent)
+std::vector<std::string> LsLogRecent(int ms);
+// the O key (seen by the keyboard hook): QPC time of the press, taken by the glasses tracer at its next frame (0 = none)
+extern std::atomic<long long> g_desyncRequestQpc;
+// "Save the event log" (Application): off = nothing is recorded any more (log, O key capture, crash report, emitter reader log)
+extern std::atomic<bool> g_logEnabled;
+void DeleteEventLogs(); // deletes the files of the events: Nbeam_ls.log, Nbeam_desync.log, Nbeam_crash.txt, Nbeam_emitter_input.log
+void LsLogFlush(); // waits until every queued line is in the file (before leaving the process)
 } // namespace ShaderBeam

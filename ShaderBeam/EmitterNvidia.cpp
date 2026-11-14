@@ -30,6 +30,8 @@ MIT License
 
 namespace ShaderBeam
 {
+extern std::atomic<bool> g_logEnabled; // "Save the event log" (Common.h)
+
 
 // GUID_DEVINTERFACE_USB_DEVICE
 static const GUID kUsbDeviceGuid = { 0xa5dcbf10, 0x6530, 0x11d2, { 0x90, 0x1f, 0x00, 0xc0, 0x4f, 0xb9, 0x51, 0xed } };
@@ -133,7 +135,7 @@ static void KeyLog(const std::string& text)
         enabled = GetFileAttributesW((dir + L"Nbeam_emitter_probe.txt").c_str()) != INVALID_FILE_ATTRIBUTES ? 1 : 0;
         path    = dir + L"Nbeam_emitter_input.log";
     }
-    if(!enabled)
+    if(!enabled || !g_logEnabled)
         return;
     FILE* f = nullptr;
     if(_wfopen_s(&f, path.c_str(), L"ab") == 0 && f)
@@ -397,6 +399,13 @@ class NvidiaEmitter : public IEmitter
     // at most every 50 ms so that dragging a slider does not flood the USB pipe.
     void ReprogramIfChanged()
     {
+        NvidiaConfig& nv = m_s->nvidia;
+        if(nv.openApplyDeferred)
+        {
+            if(nv.openDurationUs == nv.openNudged)
+                return; // a value of the offset correction: sent in the first black frame, see ApplyTimings()
+            nv.openApplyDeferred = false; // the user changed it meanwhile: sent at once
+        }
         const Nv::Timings t = CurrentTimings();
         auto differs = [](float a, float b) { return std::fabs(a - b) > 0.001f; };
         if(!differs(t.syncRateHz, m_programmed.syncRateHz) && !differs(t.openDurationUs, m_programmed.openDurationUs))
@@ -414,6 +423,14 @@ class NvidiaEmitter : public IEmitter
 
 public:
     const char* Name() const override { return "NVIDIA 3D Vision"; }
+
+    void ApplyTimings() override
+    {
+        if(!m_s)
+            return;
+        m_s->nvidia.openApplyDeferred = false;
+        ReprogramIfChanged();
+    }
 
     bool Init(StereoEmitterSettings& s, const EmitterEnv& env, std::string& status) override
     {

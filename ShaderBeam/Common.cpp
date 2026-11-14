@@ -10,6 +10,9 @@
 #include <cstdarg>
 #include <cstdio>
 #include <mutex>
+#include <deque>
+#include <condition_variable>
+#include <thread>
 #include <map>
 #include <sstream>
 #include "ini.h"
@@ -17,6 +20,84 @@
 #include "EmitterIni.h"
 #include <tlhelp32.h>
 #include <dwmapi.h>
+
+// Settings files are written by a thread of their own: a click in the HUD that saves (Nbeam.app.cfg or the profile) no longer blocks the
+// render thread while the file is written (up to ~20 ms: the BFI / 3D flashed and the glasses lost step on some clicks). Writes of the
+// same file are merged (only the newest is written). Reading a settings file first waits for the writes still pending.
+namespace
+{
+struct IniWriter
+{
+    std::mutex                                        m;
+    std::condition_variable                           cv;
+    std::map<std::wstring, mINI::INIStructure>        pending;
+    int                                               busy { 0 };
+    bool                                              stop { false };
+    std::thread                                       t;
+    IniWriter()
+    {
+        t = std::thread([this]() {
+            for(;;)
+            {
+                std::map<std::wstring, mINI::INIStructure> work;
+                {
+                    std::unique_lock<std::mutex> l(m);
+                    cv.wait(l, [&] { return stop || !pending.empty(); });
+                    if(pending.empty())
+                        return; // (stop)
+                    work.swap(pending);
+                    busy++;
+                }
+                for(auto& w : work)
+                {
+                    try
+                    {
+                        mINI::INIFile f(std::filesystem::path(w.first));
+                        f.write(w.second);
+                    }
+                    catch(...)
+                    { }
+                }
+                {
+                    std::lock_guard<std::mutex> l(m);
+                    busy--;
+                }
+                cv.notify_all();
+            }
+        });
+    }
+    ~IniWriter()
+    {
+        {
+            std::lock_guard<std::mutex> l(m);
+            stop = true;
+        }
+        cv.notify_all();
+        if(t.joinable())
+            t.join(); // (what is pending is written first)
+    }
+};
+IniWriter& Writer()
+{
+    static IniWriter w;
+    return w;
+}
+void WriteIniAsync(const std::filesystem::path& p, const mINI::INIStructure& ini)
+{
+    auto& w = Writer();
+    {
+        std::lock_guard<std::mutex> l(w.m);
+        w.pending[p.wstring()] = ini;
+    }
+    w.cv.notify_all();
+}
+void FlushIniWrites()
+{
+    auto&                        w = Writer();
+    std::unique_lock<std::mutex> l(w.m);
+    w.cv.wait_for(l, std::chrono::seconds(3), [&] { return w.pending.empty() && w.busy == 0; });
+}
+} // namespace
 
 #define LOAD_BOOL(ini, var) var = ini.has(#var) ? ini.get(#var) == "1" : var;
 #define LOAD_INT(ini, var) var = ini.has(#var) ? std::stoi(ini.get(#var)) : var;
@@ -115,6 +196,15 @@ BOOL CALLBACK FindProc(HWND hWnd, LPARAM lParam)
 }
 } // namespace
 
+// the profile given to a program added to the detections ("Profile when a program is added" of the global settings), if it still exists
+std::string Options::ProfileForNewProgram() const
+{
+    std::error_code ec;
+    if(profileOnAdd.empty() || !std::filesystem::exists(ProfilesDir() / profileOnAdd, ec))
+        return std::string();
+    return profileOnAdd;
+}
+
 std::string Options::NormalizeExeName(const std::string& text)
 {
     std::string t = text;
@@ -136,51 +226,186 @@ bool Options::ProcessRect(RECT& r) const
 {
     if(!outputOnProcess || !captureWindow || !IsWindow(captureWindow) || IsIconic(captureWindow))
         return false;
-    if(DwmGetWindowAttribute(captureWindow, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(RECT)) != S_OK && !GetWindowRect(captureWindow, &r))
+    // the game only: the client area of its window (the title bar and the borders stay visible and usable, and are not captured)
+    RECT  cr {};
+    POINT o { 0, 0 };
+    if(GetClientRect(captureWindow, &cr) && ClientToScreen(captureWindow, &o) && cr.right >= 64 && cr.bottom >= 64)
+        r = RECT { o.x, o.y, o.x + cr.right, o.y + cr.bottom };
+    else if(DwmGetWindowAttribute(captureWindow, DWMWA_EXTENDED_FRAME_BOUNDS, &r, sizeof(RECT)) != S_OK && !GetWindowRect(captureWindow, &r))
         return false;
     return r.right - r.left >= 64 && r.bottom - r.top >= 64;
 }
 
+namespace
+{
+// The log is written by a thread of its own: callers (the render thread included) only format
+// the text and queue it. Opening the file, flushing it and looking up the foreground program
+// (OpenProcess) can take several milliseconds, which would delay a frame.
+struct LsLogLine
+{
+    SYSTEMTIME st;
+    HWND       fg;
+    char       msg[1000];
+};
+struct LsLogState
+{
+    std::mutex               mtx;
+    std::condition_variable  cv;
+    std::vector<LsLogLine>   queue;
+    std::thread              worker;
+    bool                     stop = false;
+};
+
+LsLogState& LsLogGet();
+
+void LsLogWriter(LsLogState* st)
+{
+    FILE* f       = nullptr;
+    long  written = 0;
+    for(;;)
+    {
+        std::vector<LsLogLine> batch;
+        bool                   last = false;
+        {
+            std::unique_lock<std::mutex> lock(st->mtx);
+            st->cv.wait(lock, [st] { return st->stop || !st->queue.empty(); });
+            batch.swap(st->queue);
+            last = st->stop;
+        }
+        for(const LsLogLine& l : batch)
+        {
+            if(written > 256 * 1024 || !g_logEnabled)
+                break;
+            if(!f)
+            {
+                wchar_t path[MAX_PATH * 2] = {};
+                GetModuleFileNameW(nullptr, path, MAX_PATH * 2);
+                std::wstring p(path);
+                const auto   slash = p.find_last_of(L"\\/");
+                p                  = (slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1)) + L"Nbeam_ls.log";
+                if(_wfopen_s(&f, p.c_str(), L"ab") != 0)
+                    f = nullptr;
+                if(!f)
+                {
+                    written = 1 << 30; // cannot write here: never try again
+                    break;
+                }
+            }
+            // the program in front, to see who has the focus
+            char fgName[64] = "-";
+            if(l.fg)
+            {
+                const std::string n = Options::ProcessNameOfWindow(l.fg);
+                if(!n.empty())
+                    snprintf(fgName, sizeof(fgName), "%s", n.c_str());
+            }
+            written += fprintf(f, "%02d:%02d:%02d.%03d [fg=%s] %s\r\n", l.st.wHour, l.st.wMinute, l.st.wSecond, l.st.wMilliseconds, fgName, l.msg);
+        }
+        if(f)
+        {
+            fclose(f); // (closed after each batch: the file can be deleted at any time, see DeleteEventLogs)
+            f = nullptr;
+        }
+        if(last)
+            return;
+    }
+}
+
+void LsLogStop()
+{
+    LsLogState& s = LsLogGet();
+    {
+        std::lock_guard<std::mutex> lock(s.mtx);
+        s.stop = true;
+    }
+    s.cv.notify_all();
+    if(s.worker.joinable())
+        s.worker.join(); // the last lines (a restart, a crash report) reach the file
+}
+
+LsLogState& LsLogGet()
+{
+    static LsLogState* s = []
+    {
+        auto* p   = new LsLogState();
+        p->worker = std::thread(LsLogWriter, p);
+        std::atexit(LsLogStop);
+        return p;
+    }();
+    return *s;
+}
+} // namespace
+
+void LsLogFlush()
+{
+    LsLogStop();
+}
+
+std::atomic<long long> g_desyncRequestQpc { 0 };
+std::atomic<bool>      g_logEnabled { true };
+
+
+namespace
+{
+std::mutex                                  s_recentMtx;
+std::deque<std::pair<ULONGLONG, std::string>> s_recent; // (tick, line)
+}
+
+
+void DeleteEventLogs()
+{
+    {
+        LsLogState&                 st = LsLogGet();
+        std::lock_guard<std::mutex> l(st.mtx);
+        st.queue.clear();
+    }
+    {
+        std::lock_guard<std::mutex> l(s_recentMtx);
+        s_recent.clear();
+    }
+    for(const wchar_t* name : { L"Nbeam_ls.log", L"Nbeam_desync.log", L"Nbeam_crash.txt", L"Nbeam_emitter_input.log" })
+        DeleteFileW((Options::ExeDir() / name).c_str());
+}
+
+std::vector<std::string> LsLogRecent(int ms)
+{
+    std::vector<std::string> out;
+    const ULONGLONG          now = GetTickCount64();
+    std::lock_guard<std::mutex> l(s_recentMtx);
+    for(const auto& r : s_recent)
+        if(now - r.first <= (ULONGLONG)ms)
+            out.push_back(r.second);
+    return out;
+}
+
 void LsLog(const char* fmt, ...)
 {
-    static std::mutex mtx;
-    static FILE*      f       = nullptr;
-    static long       written = 0;
-    std::lock_guard<std::mutex> lock(mtx);
-    if(written > 256 * 1024)
+    if(!g_logEnabled)
         return;
-    if(!f)
-    {
-        wchar_t path[MAX_PATH * 2] = {};
-        GetModuleFileNameW(nullptr, path, MAX_PATH * 2);
-        std::wstring p(path);
-        const auto   slash = p.find_last_of(L"\\/");
-        p                  = (slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1)) + L"Nbeam_ls.log";
-        if(_wfopen_s(&f, p.c_str(), L"ab") != 0)
-            f = nullptr;
-        if(!f)
-        {
-            written = 1 << 30; // cannot write here: never try again
-            return;
-        }
-    }
-    SYSTEMTIME st;
-    GetLocalTime(&st);
-    // the program in front, to see who has the focus
-    char fgName[64] = "-";
-    if(HWND fg = GetForegroundWindow())
-    {
-        const std::string n = Options::ProcessNameOfWindow(fg);
-        if(!n.empty())
-            snprintf(fgName, sizeof(fgName), "%s", n.c_str());
-    }
-    char    msg[400];
+    LsLogLine l;
+    GetLocalTime(&l.st);
+    l.fg = GetForegroundWindow();
     va_list ap;
     va_start(ap, fmt);
-    vsnprintf(msg, sizeof(msg), fmt, ap);
+    vsnprintf(l.msg, sizeof(l.msg), fmt, ap);
     va_end(ap);
-    written += fprintf(f, "%02d:%02d:%02d.%03d [fg=%s] %s\r\n", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, fgName, msg);
-    fflush(f);
+    {
+        char head[32];
+        snprintf(head, sizeof(head), "%02d:%02d:%02d.%03d ", l.st.wHour, l.st.wMinute, l.st.wSecond, l.st.wMilliseconds);
+        const ULONGLONG             now = GetTickCount64();
+        std::lock_guard<std::mutex> rl(s_recentMtx);
+        s_recent.emplace_back(now, std::string(head) + l.msg);
+        while(!s_recent.empty() && now - s_recent.front().first > 6000)
+            s_recent.pop_front();
+    }
+    LsLogState& s = LsLogGet();
+    {
+        std::lock_guard<std::mutex> lock(s.mtx);
+        if(s.stop || s.queue.size() > 2000)
+            return;
+        s.queue.push_back(l);
+    }
+    s.cv.notify_one();
 }
 
 bool Options::IsScalerExe(const std::string& pathOrName)
@@ -302,7 +527,6 @@ const char* Options::HotkeyActionName(int id)
     case HOTKEY_QUIT: return "Quit";
     case HOTKEY_SWAPEYES: return "Swap eyes";
     case HOTKEY_EFFECTS: return "Show/Hide effects";
-    case HOTKEY_DETECTION: return "Profile detection on/off";
     case HOTKEY_ADDEXE: return "Add the program to the profiles";
     case HOTKEY_SUBFRAMES_DEC: return "SubFrames -";
     case HOTKEY_SUBFRAMES_INC: return "SubFrames +";
@@ -550,8 +774,8 @@ nvopendurationus=5785.000000
     profileFile = DESKTOP_SETTINGS; // Nbeam always starts on the desktop settings
 }
 
-// [hotkeys] "mods,vk" ("0,0" = no shortcut) and [gamepad] button bits, keyed by the action name
-template<class Section> void Options::ReadHotkeys(Section& hk, Section* gp)
+// [hotkeys] "mods,vk" ("0,0" = no shortcut), keyed by the action name
+template<class Section> void Options::ReadHotkeys(Section& hk)
 {
     for(int id = 0; id < HOTKEY_COUNT; id++)
     {
@@ -564,18 +788,6 @@ template<class Section> void Options::ReadHotkeys(Section& hk, Section* gp)
             hotkeys[id].vk   = v;
         }
     }
-    if(gp)
-        for(int id = 0; id < HOTKEY_COUNT; id++)
-        {
-            if(!gp->has(HotkeyActionName(id)))
-                continue;
-            try
-            {
-                hotkeys[id].pad = (unsigned)std::stoul(gp->get(HotkeyActionName(id))) & 0x3F3FFu;
-            }
-            catch(...)
-            { }
-        }
     // the HUD and the effects must always be reachable
     Options defaults;
     for(int id : { HOTKEY_TOGGLEUI, HOTKEY_EFFECTS })
@@ -592,6 +804,7 @@ void Options::LoadApp()
     {
         mINI::INIFile      file(ExeDir() / APP_FILE);
         mINI::INIStructure ini;
+        FlushIniWrites();
         if(!file.read(ini))
             return;
         if(ini.has("app"))
@@ -599,8 +812,22 @@ void Options::LoadApp()
             auto& a = ini["app"];
             LOAD_BOOL(a, startWithWindows)
             LOAD_BOOL(a, startMinimized)
+            LOAD_BOOL(a, keepAudio)
             LOAD_BOOL(a, runAsAdmin)
             LOAD_BOOL(a, closeMinimizes)
+            LOAD_BOOL(a, saveLog)
+            g_logEnabled = saveLog;
+            if(!saveLog)
+                DeleteEventLogs(); // (a log left by an older start)
+            LOAD_INT(a, fpsCapDefault)
+            fpsCapDefault = std::clamp(fpsCapDefault, 0, 3);
+            LOAD_INT(a, rlFpsLimit)
+            rlFpsLimit = rlFpsLimit == 0 ? 0 : std::clamp(rlFpsLimit, 30, 1000);
+            LOAD_INT(a, dcFpsLimit)
+            dcFpsLimit = std::clamp(dcFpsLimit, 0, 1000);
+            fpsLimitDefault = dcFpsLimit ? dcFpsLimit : rlFpsLimit; // (before the unified frame limit)
+            LOAD_INT(a, fpsLimitDefault)
+            fpsLimitDefault = std::clamp(fpsLimitDefault, 0, 1000);
             LOAD_INT(a, ufoSpeed)
             ufoSpeed = std::clamp(ufoSpeed, 0, 7680);
             LOAD_INT(a, carSize)
@@ -613,6 +840,8 @@ void Options::LoadApp()
                     for(int i = 0; i < 3; i++)
                         testBg[i] = std::clamp(c[i], 0.0f, 1.0f);
             }
+            if(a.has("profileOnAdd"))
+                profileOnAdd = a.get("profileOnAdd");
             if(a.has("defaultProfile"))
                 defaultProfile = a.get("defaultProfile");
             if(a.has("setWin"))
@@ -654,6 +883,9 @@ void Options::LoadApp()
             hud.showStats = ss > 0.5f;
             f("scale", hud.scale, 0.6f, 2.0f);
             f("scaleWin", hud.scaleWin, 0.6f, 2.0f);
+            float as = hud.autoScale ? 1.0f : 0.0f;
+            f("autoScale", as, 0.0f, 1.0f);
+            hud.autoScale = as > 0.5f;
         }
         std::lock_guard<std::recursive_mutex> linksLock(linksMutex);
         profileLinks.clear();
@@ -667,17 +899,25 @@ void Options::LoadApp()
                 link.delay = std::clamp(atoi(l.get("delay").c_str()), 0, 600);
             if(l.has("enabled"))
                 link.enabled = l.get("enabled") != "0";
+            link.path     = l.has("lastpath") ? l.get("lastpath") : "";
             link.screenId = l.has("screen") ? l.get("screen") : "";
             if(l.has("hz"))
                 link.hz = std::clamp(atoi(l.get("hz").c_str()), 0, 1000);
+            if(l.has("fpscapmode"))
+                link.fpsCapMode = std::clamp(atoi(l.get("fpscapmode").c_str()), 0, 3);
+            else if(l.has("fpscapon"))
+                link.fpsCapMode = l.get("fpscapon") == "1" ? 1 : 0; // (the first version: a checkbox, RTSS)
+            if(l.has("fpslimit"))
+                link.fpsLimit = std::clamp(atoi(l.get("fpslimit").c_str()), 0, 1000);
+            else
+                link.fpsLimit = link.fpsCapMode == 3 ? rlFpsLimit : link.fpsCapMode == 2 ? dcFpsLimit : fpsLimitDefault; // (before the unified frame limit)
             profileLinks.push_back(link);
         }
         if(ini.has("hotkeys"))
         {
             // global hotkeys (the same whatever the profile, also while a detected program runs)
             auto hk = ini.get("hotkeys");
-            auto gp = ini.get("gamepad");
-            ReadHotkeys(hk, ini.has("gamepad") ? &gp : nullptr);
+            ReadHotkeys(hk);
             appHotkeys = true;
         }
         knownMonitors.clear();
@@ -708,22 +948,27 @@ void Options::LoadApp()
     { }
 }
 
+
 void Options::SaveApp() const
 {
     std::lock_guard<std::recursive_mutex> linksLock(linksMutex); // the detections are written below
     try
     {
-        mINI::INIFile      file(ExeDir() / APP_FILE);
         mINI::INIStructure ini;
         auto&              a = ini["app"];
         SAVE_BOOL(a, startWithWindows)
         SAVE_BOOL(a, startMinimized)
+        SAVE_BOOL(a, keepAudio)
         SAVE_BOOL(a, runAsAdmin)
         SAVE_BOOL(a, closeMinimizes)
+        SAVE_BOOL(a, saveLog)
+        SAVE_INT(a, fpsCapDefault)
+        SAVE_INT(a, fpsLimitDefault)
         SAVE_INT(a, ufoSpeed)
         SAVE_INT(a, carSize)
         a["testBg"] = std::to_string(testBg[0]) + "," + std::to_string(testBg[1]) + "," + std::to_string(testBg[2]);
         a["defaultProfile"] = defaultProfile;
+        a["profileOnAdd"]   = profileOnAdd;
         a["hzSwitchMs"] = std::to_string((int)hzSwitchMs);
         if(setWinRect[2] - setWinRect[0] > 100)
         {
@@ -746,17 +991,12 @@ void Options::SaveApp() const
         h["showStats"]     = hud.showStats ? "1" : "0";
         h["scale"]         = std::to_string(hud.scale);
         h["scaleWin"]      = std::to_string(hud.scaleWin);
+        h["autoScale"]     = hud.autoScale ? "1" : "0";
         {
-            // one section at a time: creating a section moves the others in memory, so a reference kept to "hotkeys" while "gamepad"
-            // is created points to freed memory (that crashed Nbeam on every save of the application settings)
+            // (a reference to a section is kept only while no other section is created: creating one moves the others in memory)
             auto& hk = ini["hotkeys"];
             for(int id = 0; id < HOTKEY_COUNT; id++)
                 hk[HotkeyActionName(id)] = std::to_string(hotkeys[id].mods) + "," + std::to_string(hotkeys[id].vk);
-        }
-        {
-            auto& gp = ini["gamepad"];
-            for(int id = 0; id < HOTKEY_COUNT; id++)
-                gp[HotkeyActionName(id)] = std::to_string(hotkeys[id].pad);
         }
         for(size_t i = 0; i < profileLinks.size() && i < 64; i++)
         {
@@ -765,8 +1005,11 @@ void Options::SaveApp() const
             l["profile"]  = profileLinks[i].profile;
             l["delay"]    = std::to_string(profileLinks[i].delay);
             l["enabled"]   = profileLinks[i].enabled ? "1" : "0";
+            l["lastpath"]  = profileLinks[i].path;
             l["screen"]    = profileLinks[i].screenId;
             l["hz"]        = std::to_string(profileLinks[i].hz);
+            l["fpscapmode"] = std::to_string(profileLinks[i].fpsCapMode);
+            l["fpslimit"]   = std::to_string(profileLinks[i].fpsLimit);
         }
         {
             std::lock_guard<std::mutex> lock(MonitorsMutex());
@@ -782,7 +1025,7 @@ void Options::SaveApp() const
                 m["rates"] = rates;
             }
         }
-        file.write(ini);
+        WriteIniAsync(ExeDir() / APP_FILE, ini);
     }
     catch(...)
     { }
@@ -967,6 +1210,25 @@ std::vector<Options::KnownMonitor> Options::MonitorsSnapshot() const
     return knownMonitors;
 }
 
+void Options::SwapKnownMonitors(const std::string& idA, const std::string& idB)
+{
+    std::lock_guard<std::mutex> lock(MonitorsMutex());
+    auto a = std::find_if(knownMonitors.begin(), knownMonitors.end(), [&](const KnownMonitor& m) { return m.id == idA; });
+    auto b = std::find_if(knownMonitors.begin(), knownMonitors.end(), [&](const KnownMonitor& m) { return m.id == idB; });
+    if(a != knownMonitors.end() && b != knownMonitors.end() && a != b)
+        std::iter_swap(a, b);
+}
+
+bool Options::RemoveKnownMonitor(const std::string& id)
+{
+    std::lock_guard<std::mutex> lock(MonitorsMutex());
+    auto k = std::find_if(knownMonitors.begin(), knownMonitors.end(), [&](const KnownMonitor& m) { return m.id == id; });
+    if(k == knownMonitors.end() || k->connected)
+        return false;
+    knownMonitors.erase(k);
+    return true;
+}
+
 static std::string DisplayGdi(const std::vector<DisplayInfo>& displays, size_t i)
 {
     MONITORINFOEXW mi = {};
@@ -1017,6 +1279,7 @@ bool Options::AppRunAsAdmin()
     {
         mINI::INIFile      file(ExeDir() / APP_FILE);
         mINI::INIStructure ini;
+        FlushIniWrites();
         if(!file.read(ini) || !ini.has("app") || !ini["app"].has("runAsAdmin"))
             return false;
         const std::string v = ini["app"]["runAsAdmin"];
@@ -1276,6 +1539,18 @@ std::string Options::ScreenIdOfExeWindow(const std::string& pathOrName) const
     return "";
 }
 
+// The window of the program that is shown on the taskbar (NULL when there is none)
+HWND Options::TaskbarWindowOfExe(const std::string& pathOrName) const
+{
+    std::vector<DWORD> pids;
+    MatchingPids(pathOrName, pids);
+    if(pids.empty() || IsScalerExe(pathOrName))
+        return NULL;
+    TaskbarProbe probe { &pids, false, nullptr };
+    EnumWindows(TaskbarWindowProc, (LPARAM)&probe);
+    return probe.found ? probe.hwnd : NULL;
+}
+
 // Refresh rate and 3D of a profile file, read without loading it (the profile is not applied yet)
 void Options::PeekProfile(const std::string& file, bool& stereo)
 {
@@ -1284,12 +1559,15 @@ void Options::PeekProfile(const std::string& file, bool& stereo)
     {
         mINI::INIFile      f(ProfilesDir() / file);
         mINI::INIStructure ini;
+        FlushIniWrites();
         if(!f.read(ini))
             return;
         if(ini.has("emitter") && ini.get("emitter").has("sourceFormat"))
         {
             const int src = atoi(ini.get("emitter").get("sourceFormat").c_str());
-            stereo        = src >= 1 && src <= 4;
+            stereo        = src >= 1 && src <= 6;
+            if(ini.get("emitter").has("autoSource") && atoi(ini.get("emitter").get("autoSource").c_str()) == 1)
+                stereo = true;
         }
     }
     catch(...)
@@ -1312,29 +1590,93 @@ void Options::RememberProfile() const
 // 240 -> 120, 144 -> 144, 100 -> 100). The display rate is the one in use: with a refresh rate set in the profile configuration, Nbeam
 // restarts once that rate is applied (3D is held off meanwhile), so the choice is made for it; out of that range
 // SubFrames is left alone and the emitter is switched off.
+// Sync Auto: the highest emitter rate is used at first; then the game frame rate picks the rate among the divisors of the display rate:
+// the lowest rate whose eye pairs (half the emitter rate) are a whole multiple of the game fps, i.e. as few repeats as possible
+// (480 Hz display: 60 fps -> 120 Hz, 40 fps -> 80 Hz; 24 fps -> 96 Hz, two pairs per game frame, as 48 Hz is under the 80 Hz minimum).
+// The highest rate stays when none fits; the current one stays when it fits as well (no flapping).
+int Options::PickStereoDivisor(double fps) const
+{
+    if(fps < 1.0 || vsyncRate <= 1.0f)
+        return 0;
+    struct Cand
+    {
+        int n;
+        int mult; // eye pairs per game frame (0 = does not fit)
+    };
+    Cand cand[32];
+    int  count = 0;
+    int  first = 0;
+    for(int n = MIN_SUBFRAMES; n <= MAX_SUBFRAMES && count < 32; n++)
+    {
+        const double hz = (double)vsyncRate / n;
+        if(hz > 165.5)
+            continue;
+        if(hz < 79.5)
+            break;
+        if(!first)
+            first = n;
+        const double ratio = hz * 0.5 / fps;
+        int          mult  = 0;
+        if(ratio >= 0.94)
+        {
+            const double r = std::round(ratio);
+            if(std::fabs(ratio - r) / r <= 0.06)
+                mult = (int)r;
+        }
+        cand[count++] = { n, mult };
+    }
+    if(count == 0)
+        return 0;
+    int pick = 0;
+    int best = 0;
+    for(int i = 0; i < count; i++)
+        if(cand[i].mult > 0 && (best == 0 || cand[i].mult < best)) // ascending n = descending rate: a tie goes to the highest rate
+        {
+            best = cand[i].mult;
+            pick = cand[i].n;
+        }
+    if(pick == 0)
+        return first;
+    const int cur = emitter.autoDivisor > 0 ? emitter.autoDivisor : first;
+    for(int i = 0; i < count; i++)
+        if(cand[i].n == cur && cand[i].mult == best)
+            pick = cur;
+    return pick;
+}
+
 int Options::StereoSubFrames() const
 {
     emitter.rateBlocked = false;
     if(emitter.sourceFormat == StereoSource::Off || emitter.hold || vsyncRate <= 1.0f)
         return 0;
+    int n = 0;
     if(emitter.syncAuto)
     {
         int best = 0;
-        for(int n = MIN_SUBFRAMES; n <= MAX_SUBFRAMES; n++)
+        for(int k = MIN_SUBFRAMES; k <= MAX_SUBFRAMES; k++)
         {
-            const double hz = vsyncRate / n;
+            const double hz = vsyncRate / k;
             if(hz > 165.0 + 0.5)
                 continue; // too fast for the glasses
             if(hz >= 80.0 - 0.5)
-                best = n; // the first one that fits: the highest rate
+                best = k; // the first one that fits: the highest rate
             break;
         }
         emitter.rateBlocked = best == 0;
-        return best;
+        n                   = best;
+        const int a         = emitter.autoDivisor;
+        if(best > 0 && a > best && a <= MAX_SUBFRAMES && (double)vsyncRate / a >= 79.5)
+            n = a; // the rate picked from the game frame rate
     }
-    if(emitter.syncRateHz < 1.0f)
-        return 0;
-    return std::clamp((int)roundf(vsyncRate / emitter.syncRateHz), (int)MIN_SUBFRAMES, (int)MAX_SUBFRAMES);
+    else
+    {
+        if(emitter.syncRateHz < 1.0f)
+            return 0;
+        n = std::clamp((int)roundf(vsyncRate / emitter.syncRateHz), (int)MIN_SUBFRAMES, (int)MAX_SUBFRAMES);
+    }
+    if(n > 0)
+        emitter.ActivateTiming((int)std::lround((double)vsyncRate / n)); // the glasses timing of this rate
+    return n;
 }
 
 bool Options::StereoLinked() const
@@ -1359,7 +1701,6 @@ void Options::Save(const ShaderManager& shaderManager) const
 {
     try
     {
-        mINI::INIFile      file(ProfilesDir() / profileFile);
         mINI::INIStructure ini;
 
         if(!rememberSettings)
@@ -1382,6 +1723,7 @@ void Options::Save(const ShaderManager& shaderManager) const
             s["shaderScreen"]  = !shaderScreenId.empty() ? shaderScreenId : (shaderDisplayNo >= 0 && (size_t)shaderDisplayNo < displayIds.size() ? displayIds[shaderDisplayNo] : std::string());
             s["captureScreen"] = captureDisplayNo >= 0 && (size_t)captureDisplayNo < displayIds.size() && !displayIds[captureDisplayNo].empty() ? displayIds[captureDisplayNo] : captureScreenId;
             SAVE_BOOL(s, outputOnProcess)
+            SAVE_BOOL(s, outputAuto)
             SAVE_INT(s, captureMethod)
             SAVE_INT(s, splitScreen)
             SAVE_BOOL(s, splitInvert)
@@ -1389,9 +1731,11 @@ void Options::Save(const ShaderManager& shaderManager) const
             SAVE_INT(s, frameBuffer)
             SAVE_BOOL(s, useHdr)
             SAVE_INT(s, maxQueuedFrames)
+            SAVE_BOOL(s, queueAuto)
             SAVE_INT(s, tearingLine)
             SAVE_BOOL(s, beamRacing)
             SAVE_BOOL(s, directPresent)
+            SAVE_BOOL(s, drawPointer)
             SAVE_INT(s, beamLead)
             SAVE_INT(s, subFramesSetting)
             SAVE_INT(s, subFramesMode)
@@ -1421,12 +1765,9 @@ void Options::Save(const ShaderManager& shaderManager) const
             auto& hk = ini["hotkeys"];
             for(int id = 0; id < HOTKEY_COUNT; id++)
                 hk[HotkeyActionName(id)] = std::to_string(hotkeys[id].mods) + "," + std::to_string(hotkeys[id].vk);
-            auto& gp = ini["gamepad"];
-            for(int id = 0; id < HOTKEY_COUNT; id++)
-                gp[HotkeyActionName(id)] = std::to_string(hotkeys[id].pad);
         }
 
-        file.write(ini);
+        WriteIniAsync(ProfilesDir() / profileFile, ini);
     }
     catch(...)
     { }
@@ -1439,6 +1780,7 @@ void Options::Load(ShaderManager& shaderManager)
         mINI::INIFile      file(ProfilesDir() / profileFile);
         mINI::INIStructure ini;
 
+        FlushIniWrites();
         file.read(ini);
         if(ini.has("settings"))
         {
@@ -1459,6 +1801,8 @@ void Options::Load(ShaderManager& shaderManager)
                 shaderScreenId  = s.has("shaderScreen") ? s.get("shaderScreen") : std::string();
                 captureScreenId = s.has("captureScreen") ? s.get("captureScreen") : std::string();
                 LOAD_BOOL(s, outputOnProcess)
+                outputAuto = false;
+                LOAD_BOOL(s, outputAuto)
                 LOAD_INT(s, captureMethod)
                 LOAD_INT(s, splitScreen)
                 LOAD_BOOL(s, splitInvert)
@@ -1470,12 +1814,16 @@ void Options::Load(ShaderManager& shaderManager)
                 LOAD_BOOL(s, useHdr)
                 LOAD_INT(s, maxQueuedFrames)
                 maxQueuedFrames = std::clamp(maxQueuedFrames, 0, QUEUE_TEARING);
+                if(maxQueuedFrames > QUEUE_MAX && maxQueuedFrames != QUEUE_TEARING)
+                    maxQueuedFrames = QUEUE_MAX;
                 if(maxQueuedFrames == 3)
                     maxQueuedFrames = 0; // 3 is the default now (shown as "3 (default)")
+                LOAD_BOOL(s, queueAuto)
                 LOAD_INT(s, tearingLine)
                 tearingLine = std::clamp(tearingLine, 0, 100);
                 LOAD_BOOL(s, beamRacing)
                 LOAD_BOOL(s, directPresent)
+                LOAD_BOOL(s, drawPointer)
                 LOAD_INT(s, beamLead)
                 beamLead = std::clamp(beamLead, 0, 20);
                 LOAD_INT(s, subFramesSetting)
@@ -1509,8 +1857,7 @@ void Options::Load(ShaderManager& shaderManager)
                 {
                     // old settings: the hotkeys were kept in the profiles; from now on they live in Nbeam.app.cfg
                     auto hk = ini.get("hotkeys");
-                    auto gp = ini.get("gamepad");
-                    ReadHotkeys(hk, ini.has("gamepad") ? &gp : nullptr);
+                    ReadHotkeys(hk);
                 }
             }
 

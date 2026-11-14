@@ -7,21 +7,30 @@ MIT License
 
 #include "stdafx.h"
 #include "resource.h"
+#include "FrameLimiter.h"
 
 #include "ShaderBeam.h"
 #include "Lang.h"
 #include "DepthAI.h"
+#include "StereoConvert.h"
 #include "Gamepad.h"
 #include "Helpers.h"
 #include "CarTest.h"
+#include "HudFont.h"
 #include <shellapi.h>
 #include <commctrl.h>
 // common controls 6 (task dialog with a clickable link for the emitter warning)
 #pragma comment(linker, "/manifestdependency:\"type='win32' name='Microsoft.Windows.Common-Controls' version='6.0.0.0' processorArchitecture='*' publicKeyToken='6595b64144ccf1df' language='*'\"")
 #include <map>
+#include <set>
 #include <shobjidl.h>
 #include <dbghelp.h>
 #include <csignal>
+#include <deque>
+#include <fstream>
+#include <thread>
+#include <atomic>
+#include <ctime>
 #include <exception>
 #pragma comment(lib, "dbghelp.lib")
 
@@ -46,6 +55,7 @@ static bool                              s_effectsOn    = false; // window mode:
 static bool                              s_effectsByLink = false; // ... activated by a profile detection (stopped when its program closes)
 static bool                              s_setShow      = true;  // the window is shown when the effects stop (false: kept in the notification area)
 static bool                              s_setActivate  = true;  // ... and gets the focus
+static bool                              s_setReduce    = false; // the effects stopped by the button over a game: the window comes back reduced (notification area or minimized), not in front of the game
 static bool                              s_hudAfterStart = false; // window mode turned off: the HUD over the screen is shown after the start
 // motion test (3D panel, Test): saucers over the whole display instead of the desktop; ended by unchecking it, the Windows key or Escape
 static bool                              s_testOn          = false;
@@ -105,7 +115,7 @@ static void WriteCrashStack(FILE* f, CONTEXT ctx)
 
 static FILE* OpenCrashLog(const char* what, unsigned code)
 {
-    if(InterlockedExchange(&s_crashLogged, 1))
+    if(!::ShaderBeam::g_logEnabled || InterlockedExchange(&s_crashLogged, 1))
         return nullptr;
     FILE* f = nullptr;
     try
@@ -118,7 +128,7 @@ static FILE* OpenCrashLog(const char* what, unsigned code)
         return nullptr;
     SYSTEMTIME t;
     GetLocalTime(&t);
-    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 2.4.1  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
+    fprintf(f, "=== %04d-%02d-%02d %02d:%02d:%02d  Nbeam 3.0.0  %s 0x%08X  thread %lu (%s)\n", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond, what, code,
             GetCurrentThreadId(), GetCurrentThreadId() == s_mainThreadId ? "main" : "other (render / emitter / AI)");
     return f;
 }
@@ -228,10 +238,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance, _In_opt_ HINSTANCE hPrevInstance
 {
     UNREFERENCED_PARAMETER(hPrevInstance);
     InstallCrashLog(); // Nbeam_crash.txt next to the exe if Nbeam crashes
+    std::thread([] { ::ShaderBeam::MissingAiFilesNextToExe(); ::ShaderBeam::StereoConverter::WarmCache(); }).detach(); // AI files and 3D shaders looked at / compiled once, off the render thread
     // the motion test: a process of its own, started by Nbeam (no single instance check, nothing else of Nbeam)
     if(lpCmdLine && wcsstr(lpCmdLine, L"/cartest"))
         return ::ShaderBeam::RunCarTest(hInstance, lpCmdLine);
     s_startHidden = lpCmdLine && wcsstr(lpCmdLine, L"/tray") != nullptr;
+    // started by the watchdog (a complete restart): waits until the previous Nbeam has left (it holds the single instance), 20 s at most
+    if(lpCmdLine && wcsstr(lpCmdLine, L"/noreadback"))
+        ::ShaderBeam::g_autoNoReadback = true; // the previous Nbeam lost the graphics card with the 3D Auto picture analysis
+    if(lpCmdLine)
+        if(const wchar_t* after = wcsstr(lpCmdLine, L"/restartafter:"))
+            if(const DWORD oldPid = wcstoul(after + 14, nullptr, 10))
+                if(HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, oldPid))
+                {
+                    WaitForSingleObject(h, 20000);
+                    CloseHandle(h);
+                }
 
     // "Run as administrator": starts again through Windows (UAC) with administrator rights, before the single instance check (this process leaves).
     // If the confirmation is refused Nbeam simply goes on without the rights.
@@ -723,7 +745,8 @@ static void ProcessFollowPoll(HWND hWnd)
         if(now - diffSince > 400)
         {
             diffSince = 0;
-            PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+            ::ShaderBeam::LsLog("output 'Process': the game area changed from %ux%u to %ldx%ld, restart", o.outputWidth, o.outputHeight, (long)w, (long)h);
+            PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
         }
         return;
     }
@@ -733,6 +756,351 @@ static void ProcessFollowPoll(HWND hWnd)
     GetWindowRect(hWnd, &cur);
     if(cur.left != r.left || cur.top != r.top)
         SetWindowPos(hWnd, HWND_TOPMOST, r.left, r.top, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE);
+}
+
+// Output "Automatic": the game window decides. Full screen or borderless maximized (it covers its screen) -> the output on the Windows main
+// display; a window smaller than its screen -> the output "Process" over the game; no game -> the Windows main display. The new state must
+// last 1.5 s (no switch while the game changes its mode), and a switch restarts the renderer (as choosing it in the HUD does).
+static void OutputAutoPoll(HWND hWnd)
+{
+    auto&            o         = s_shaderBeam.m_options;
+    static int       want      = -1; // 0 main display, 1 over the game
+    static ULONGLONG wantSince = 0, lastSwitch = 0;
+    if(!o.outputAuto || !s_appReady || s_quitting || s_standby || s_testOn || o.processResizing)
+    {
+        want = -1;
+        return;
+    }
+    int  state = 0;
+    HWND w     = o.captureWindow;
+    if(w && IsWindow(w) && !IsIconic(w) && IsWindowVisible(w) && !::ShaderBeam::Options::IsScalerExe(o.captureProcess))
+    {
+        RECT        r {};
+        MONITORINFO mi {};
+        mi.cbSize = sizeof(mi);
+        if(GetWindowRect(w, &r) && GetMonitorInfoW(MonitorFromWindow(w, MONITOR_DEFAULTTONEAREST), &mi))
+        {
+            const RECT& m     = mi.rcMonitor;
+            const bool  cover = r.left <= m.left + 2 && r.top <= m.top + 2 && r.right >= m.right - 2 && r.bottom >= m.bottom - 2;
+            state             = cover ? 0 : 1;
+        }
+    }
+    int mainNo = -1;
+    {
+        const HMONITOR primary = MonitorFromPoint(POINT { 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+        for(const auto& d : s_shaderBeam.m_ui.m_displays)
+            if(d.monitor == primary)
+                mainNo = (int)d.no;
+    }
+    const bool now = state == 1 ? o.outputOnProcess : (!o.outputOnProcess && (mainNo < 0 || o.shaderDisplayNo == mainNo));
+    const ULONGLONG t = GetTickCount64();
+    if(now)
+    {
+        want = -1;
+        return;
+    }
+    if(state != want)
+    {
+        want      = state;
+        wantSince = t;
+        return;
+    }
+    if(t - wantSince < 1500 || t - lastSwitch < 3000)
+        return;
+    lastSwitch = t;
+    want       = -1;
+    o.outputOnProcess = state == 1;
+    if(state == 0 && mainNo >= 0)
+        o.shaderDisplayNo = mainNo;
+    o.shaderScreenId.clear();
+    ::ShaderBeam::LsLog("output automatic: %s", state == 1 ? "over the game (windowed)" : "Windows main display (full screen / no game)");
+    PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
+}
+
+// Nbeam starts again completely (a new process, then this one leaves): used by the watchdog when the graphics card keeps being lost, the
+// renderer restarts in a loop or nothing is shown any more. At most 3 times in 10 minutes (the times are kept in Nbeam_selfrestart.txt next to
+// the exe), so a problem that comes back at once cannot make Nbeam restart for ever. The new Nbeam starts hidden (/tray) once this one is gone
+// (/restartafter:<pid>) and takes the running program again by itself.
+static ULONGLONG s_selfRestartAt = 0;
+static bool      SelfRestart(HWND hWnd, const char* why)
+{
+    if(s_quitting || s_selfRestartAt)
+        return false;
+    const auto        path = ::ShaderBeam::Options::ExeDir() / L"Nbeam_selfrestart.txt";
+    const long long   now  = (long long)time(nullptr);
+    std::vector<long long> times;
+    {
+        std::ifstream in(path);
+        long long     t = 0;
+        while(in >> t)
+            if(now >= t && now - t < 600)
+                times.push_back(t);
+    }
+    if(times.size() >= 3)
+    {
+        ::ShaderBeam::LsLog("full restart refused (already 3 in the last 10 minutes): %s", why);
+        return false;
+    }
+    times.push_back(now);
+    {
+        std::ofstream out(path, std::ios::trunc);
+        for(long long t : times)
+            out << t << "\n";
+    }
+    ::ShaderBeam::LsLog("full restart of Nbeam: %s", why);
+    wchar_t exe[MAX_PATH * 2] = {};
+    GetModuleFileNameW(nullptr, exe, MAX_PATH * 2);
+    std::wstring       cmd = L"\"" + std::wstring(exe) + L"\" /tray /restartafter:" + std::to_wstring(GetCurrentProcessId()) + (::ShaderBeam::g_autoNoReadback ? L" /noreadback" : L"");
+    STARTUPINFOW       si {};
+    si.cb = sizeof(si);
+    PROCESS_INFORMATION pi {};
+    if(!CreateProcessW(exe, &cmd[0], nullptr, nullptr, FALSE, 0, nullptr, nullptr, &si, &pi))
+    {
+        ::ShaderBeam::LsLog("full restart impossible: Windows error %lu", GetLastError());
+        return false;
+    }
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    s_selfRestartAt = GetTickCount64();
+    PostMessage(hWnd, WM_DESTROY, 0, 0); // (the same way out as the Quit of the tray menu)
+    std::thread([]() {
+        Sleep(8000); // if Nbeam does not leave by itself, it is ended so that the new one can start
+        ::ShaderBeam::LsLogFlush();
+        ExitProcess(0);
+    }).detach();
+    return true;
+}
+
+// Watchdog, once a second: the graphics card lost 3 times in 2 minutes, or (while effects are showing) no picture presented for 15 s, restarts
+// Nbeam completely. The 3D / BFI renderer restarts alone for a first loss; a loop of them or a black screen needs a clean start.
+static void WatchdogPoll(HWND hWnd)
+{
+    auto&                         o = s_shaderBeam.m_options;
+    static std::deque<ULONGLONG>  lost;
+    static int                    seen     = 0;
+    static ULONGLONG              lastLoss = 0;
+    static ULONGLONG              lastPoll = 0;
+    const ULONGLONG               now      = GetTickCount64();
+    const bool                    slept    = lastPoll && now - lastPoll > 5000; // (the PC was asleep or frozen: nothing to judge for now)
+    lastPoll                               = now;
+    if(!s_appReady || s_quitting || slept)
+        return;
+    const int total = ::ShaderBeam::g_deviceLostTotal.load();
+    for(; seen < total; seen++)
+    {
+        lost.push_back(now);
+        lastLoss = now;
+    }
+    while(!lost.empty() && now - lost.front() > 120000)
+        lost.pop_front();
+    if(lost.size() >= 3)
+    {
+        lost.clear();
+        SelfRestart(hWnd, "the graphics card was lost 3 times in 2 minutes");
+        return;
+    }
+    const ULONGLONG ok = ::ShaderBeam::g_lastPresentOk.load();
+    if(ok && s_shaderBeam.m_active && !s_standby && !s_testOn && !o.effectsSuspended && !o.processUnfocused && !o.motionTest && !o.emitter.hold && o.captureWindow && IsWindow(o.captureWindow) &&
+       now - lastLoss > 40000 && now - ok > 15000)
+    {
+        ::ShaderBeam::g_lastPresentOk = now; // (not judged again at once)
+        SelfRestart(hWnd, "no picture shown for 15 s (black screen)");
+    }
+}
+
+// Automatic game frame cap of the detected program (its detection, "Auto fps cap" = RTSS), through the frame limit of the program in RTSS:
+// 3D on: half the 3D rate (the limit of the banner); BFI / CRT: the content rate (screen Hz / SubFrames); no effect: no cap. Followed once a
+// second (a change of profile or mode changes the cap). RTSS is started minimized when the program is detected and it is not running. The
+// previous RTSS limit comes back when the program closes, when the option is unchecked or when Nbeam quits. A failure is tried again every 5 s.
+static int s_activeLink = -1; // index of the detection that is active (ProfileLinkPoll), -1 = none
+static ULONGLONG s_noWindowRestartAt = 0; // the window of the program closed: one restart at the end of the program (the detection ends), or at this time if it still runs
+
+// Screen id (KnownMonitor::id) of the Windows main display ("" = not known yet)
+static std::string PrimaryScreenId()
+{
+    const HMONITOR    mon = MonitorFromPoint(POINT { 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFOEXW    mi {};
+    mi.cbSize = sizeof(mi);
+    if(!mon || !GetMonitorInfoW(mon, &mi))
+        return "";
+    char gdi[64] = {};
+    WideCharToMultiByte(CP_UTF8, 0, mi.szDevice, -1, gdi, (int)sizeof(gdi) - 1, nullptr, nullptr);
+    const auto mons = s_shaderBeam.m_options.MonitorsSnapshot();
+    for(const auto& m : mons)
+        if(m.connected && _stricmp(m.gdi.c_str(), gdi) == 0)
+            return m.id;
+    for(const auto& m : mons)
+        if(m.connected && m.primary)
+            return m.id;
+    return "";
+}
+
+static void FpsCapPoll()
+{
+    auto&            o       = s_shaderBeam.m_options;
+    static HWND      lastWnd = NULL;
+    static int       lastCap = 0;
+    static bool      applied = false;
+    static bool      started = false; // RTSS was started by Nbeam for this detection (once)
+    static ULONGLONG lastTry = 0;
+    int              cap     = 0;
+    HWND             wnd     = NULL;
+    if(s_appReady && !s_quitting && !s_testOn && o.rtssAvailable && !o.captureProcess.empty() && o.captureWindow && IsWindow(o.captureWindow))
+    {
+        std::lock_guard<std::recursive_mutex> lock(o.linksMutex);
+        std::vector<const ::ShaderBeam::Options::ProfileLink*> order; // the detection that is active (its screen) first, then the other ones of the program
+        if(s_activeLink >= 0 && s_activeLink < (int)o.profileLinks.size())
+            order.push_back(&o.profileLinks[s_activeLink]);
+        for(const auto& l : o.profileLinks)
+            order.push_back(&l);
+        for(const auto* lp : order)
+            if(lp->enabled && ::ShaderBeam::Options::NormalizeExeName(lp->exe) == o.captureProcess)
+            {
+                const auto& l = *lp;
+                if(l.fpsCapMode == 1)
+                {
+                    wnd = o.captureWindow;
+                    if(o.emitter.sourceFormat != ::ShaderBeam::StereoSource::Off && o.Stereo3DWanted())
+                    {
+                        const double limit = o.StereoFpsLimit(); // (half the 3D rate + 5 fps of margin)
+                        cap                = limit > 5.0 ? (int)std::lround(limit - 5.0) : 0;
+                    }
+                    else if(o.subFrames > 1 && o.vsyncRate > 1.0f && !o.effectsSuspended)
+                        cap = (int)std::lround((double)o.vsyncRate / o.subFrames);
+                    cap = cap > 0 ? std::clamp(cap, 20, 500) : 0;
+                }
+                break; // (the active detection of the program decides: the one of its screen)
+            }
+    }
+    if(!wnd)
+        started = false;
+    const ULONGLONG now = GetTickCount64();
+    if(wnd == lastWnd && cap == lastCap && (cap == 0 || applied || now - lastTry < 5000))
+        return;
+    const bool changed = wnd != lastWnd || cap != lastCap;
+    lastWnd = wnd;
+    lastCap = cap;
+    lastTry = now;
+    auto& limiter = ::ShaderBeam::GetFrameLimiter();
+    if(cap > 0 && !::ShaderBeam::RtssRunning() && !started)
+    {
+        started = true;
+        ::ShaderBeam::LsLog("frame cap: RTSS is not running, started minimized: %d", (int)::ShaderBeam::StartRtssMinimized());
+        lastTry = now; // (it needs a few seconds before its profiles can be written: tried again in 5 s)
+        applied = false;
+        return;
+    }
+    const std::string before = limiter.Status();
+    if(cap > 0)
+        limiter.Update(wnd, (double)cap);
+    else
+        limiter.Release();
+    const std::string status = limiter.Status();
+    applied                  = status.rfind("RTSS:", 0) == 0;
+    if(changed || status != before)
+        ::ShaderBeam::LsLog("frame cap: %s", status.c_str());
+}
+
+// Automatic game frame cap through a ReShade addon that reads its frame limit from a settings file next to the game only when the game starts:
+// Display Commander ("Auto fps cap" = Display Commander, DisplayCommander.ini) or ReLimiter ("Auto fps cap" = ReLimiter, relimiter.ini).
+// Each program has a frame limit per screen. Nbeam writes the limits of EVERY program at once, outside the start of the games: when Nbeam starts,
+// when the Windows main display changes (the limit of the main display), when a limit or a choice changes, and after a game has closed (the addon saves
+// its own settings at exit). Only an existing settings file is rewritten: a game without it is ignored. Nothing is injected or hooked.
+static void DcCapPoll()
+{
+    auto&                o       = s_shaderBeam.m_options;
+    static unsigned long pid     = 0; // program with Display Commander / ReLimiter that is running (its closing writes everything again)
+    static std::string   lastSig;     // what was written the last time (screen + program + addon + limit): another value writes everything again
+    static ULONGLONG     again   = 0; // a second pass after a game closed (in case the addon was still saving its file)
+    if(!s_appReady || s_quitting || s_testOn)
+        return;
+    const ULONGLONG now = GetTickCount64();
+    // the program of the detection that is running now: its full path is kept for the writing (when "exe" is only a file name)
+    if(!o.captureProcess.empty() && o.captureWindow && IsWindow(o.captureWindow))
+    {
+        bool addon = false;
+        {
+            std::lock_guard<std::recursive_mutex> lock(o.linksMutex);
+            for(const auto& l : o.profileLinks)
+                addon = addon || (l.enabled && (l.fpsCapMode == 2 || l.fpsCapMode == 3) && ::ShaderBeam::Options::NormalizeExeName(l.exe) == o.captureProcess);
+        }
+        unsigned long id = 0;
+        if(addon && !pid)
+        {
+            const auto p = ::ShaderBeam::ProgramPathOfWindow(o.captureWindow, &id);
+            if(id && !p.empty())
+            {
+                pid = id;
+                char utf[MAX_PATH * 3] = {};
+                WideCharToMultiByte(CP_UTF8, 0, p.c_str(), (int)p.size(), utf, (int)sizeof(utf) - 1, nullptr, nullptr);
+                bool saved = false;
+                {
+                    std::lock_guard<std::recursive_mutex> lock(o.linksMutex);
+                    for(auto& l : o.profileLinks)
+                        if(::ShaderBeam::Options::NormalizeExeName(l.exe) == o.captureProcess && l.path != utf)
+                        {
+                            l.path = utf;
+                            saved  = true;
+                        }
+                }
+                if(saved)
+                    o.SaveApp();
+            }
+        }
+    }
+    if(pid && !::ShaderBeam::ProgramRunning(pid))
+    {
+        pid = 0;
+        lastSig.clear(); // the game closed: everything is written again now, and once more in 3 s
+        again = now + 3000;
+    }
+    if(again && now >= again)
+    {
+        again = 0;
+        lastSig.clear();
+    }
+    // the limit of each program: its detection on the Windows main display (or its detection without a screen). When the main display changes,
+    // every settings file is written again with the limits of the new main display
+    const std::string screen = PrimaryScreenId();
+    struct Item
+    {
+        std::string key, path;
+        int         mode, limit;
+        bool        onScreen;
+    };
+    std::vector<Item> items;
+    {
+        std::lock_guard<std::recursive_mutex> lock(o.linksMutex);
+        for(const auto& l : o.profileLinks)
+        {
+            if(!l.enabled || (l.fpsCapMode != 2 && l.fpsCapMode != 3) || (!l.screenId.empty() && l.screenId != screen))
+                continue;
+            const bool        full = l.exe.find('\\') != std::string::npos || l.exe.find('/') != std::string::npos;
+            const std::string p    = full ? l.exe : l.path;
+            if(p.empty())
+                continue;
+            const std::string key = ::ShaderBeam::Options::NormalizeExeName(l.exe);
+            const bool        on  = !l.screenId.empty();
+            auto              f   = std::find_if(items.begin(), items.end(), [&](const Item& it) { return it.key == key; });
+            if(f == items.end())
+                items.push_back({ key, p, l.fpsCapMode, l.fpsLimit, on });
+            else if(on && !f->onScreen)
+                *f = { key, p, l.fpsCapMode, l.fpsLimit, on }; // (the link of this screen wins over the one without a screen)
+        }
+    }
+    std::string sig = screen;
+    for(const auto& it : items)
+        sig += "|" + it.path + "#" + std::to_string(it.mode) + "#" + std::to_string(it.limit);
+    if(sig == lastSig)
+        return;
+    lastSig = sig;
+    for(const auto& it : items)
+    {
+        bool               ok   = false;
+        const std::wstring wp   = WideOf(it.path.c_str());
+        const auto         text = it.mode == 3 ? ::ShaderBeam::RlWriteLimit(wp, it.limit, ok) : ::ShaderBeam::DcWriteLimit(wp, it.limit, ok);
+        ::ShaderBeam::LsLog("frame cap (written for every program): %s", text.c_str());
+    }
 }
 
 // Capture Process (.exe): as soon as the program runs its window is captured (twice in a row, once a second)
@@ -768,7 +1136,7 @@ static void ProcessAppearPoll(HWND hWnd)
     seen            = 0;
     o.captureWindow = w;
     ::ShaderBeam::Options::BringToForeground(w); // the program that was just detected comes to the front
-    PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+    PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
 }
 
 //
@@ -865,7 +1233,10 @@ BOOL InitInstance(HINSTANCE hInstance, int nCmdShow)
     SetTimer(hWnd, 1, 1000, NULL);
     SetTimer(hWnd, 2, 15, NULL); // hotkey fallback (see HotkeyPoll)
     StartKeyboardHook(hWnd);     // hotkeys over games that read the keyboard in exclusive mode
+    s_shaderBeam.m_options.rtssAvailable = ::ShaderBeam::RtssInstalled(); // once at start: the automatic frame cap by RTSS is greyed out without RTSS
+    s_shaderBeam.m_options.dcAvailable   = ::ShaderBeam::DcInstalled();   // (same for Display Commander)
     s_appReady = true;
+    ::ShaderBeam::AudioKeepAliveSet(s_shaderBeam.m_options.keepAudio); // inaudible sound: keeps Dolby Atmos active
     ::ShaderBeam::NvidiaKeysService(true); // wheel and button of the NVIDIA emitter, also without 3D
     return TRUE;
 }
@@ -971,6 +1342,20 @@ static void HookKey(HWND hWnd, unsigned vk, unsigned mods)
     auto& o = s_shaderBeam.m_options;
     if(!s_appReady || o.hotkeysSuspended)
         return;
+    // O (no modifier, the key is not taken away from the game): the last 3 seconds of the glasses timing are written to Nbeam_desync.log
+    // by the glasses tracer, to see exactly when a small desynchronisation happens
+    if(vk == 'O' && mods == 0 && s_shaderBeam.m_active)
+    {
+        static ULONGLONG s_lastO = 0;
+        const ULONGLONG  tick    = GetTickCount64();
+        if(tick - s_lastO > 500)
+        {
+            s_lastO = tick;
+            LARGE_INTEGER q;
+            QueryPerformanceCounter(&q);
+            ::ShaderBeam::g_desyncRequestQpc = q.QuadPart;
+        }
+    }
     for(int id = 0; id < HOTKEY_COUNT; id++)
     {
         const auto& hk = o.hotkeys[id];
@@ -1089,58 +1474,16 @@ static void AdjustPoll()
     }
 }
 
-// Gamepad shortcuts (XInput): every action can have a button combination. Edge triggered; when several combinations are held,
-// the one that contains the others wins (Back+Start does not also fire an action bound to Back alone).
-static void PadPoll(HWND hWnd)
+// The wheel and the button of the NVIDIA emitter only drive the 3D mini menu (UI::MenuInput)
+static void EmitterInputPoll()
 {
-    auto& o = s_shaderBeam.m_options;
-    ::ShaderBeam::Pad::Poll();
-    // The wheel and the button of the NVIDIA emitter only drive the 3D mini menu (UI::MenuInput)
-    {
-        auto& em = ::ShaderBeam::Pad::Emitter();
-        const int wheel  = em.menuWheel.exchange(0);
-        const int held   = em.menuHeld.exchange(0);
-        const int clicks = em.menuClicks.exchange(0);
-        if(s_appReady && !o.hotkeysSuspended && (wheel || held || clicks))
-            s_shaderBeam.m_ui.MenuInput(clicks, wheel, held);
-    }
-    if(!s_appReady || o.hotkeysSuspended)
-        return;
-    static bool down[HOTKEY_COUNT] {};
-    const unsigned b = ::ShaderBeam::Pad::Buttons();
-    bool           held[HOTKEY_COUNT] {};
-    for(int id = 0; id < HOTKEY_COUNT; id++)
-    {
-        const unsigned m = o.hotkeys[id].pad;
-        held[id] = m && (b & m) == m;
-    }
-    for(int id = 0; id < HOTKEY_COUNT; id++)
-    {
-        if(!held[id])
-            continue;
-        for(int other = 0; other < HOTKEY_COUNT; other++)
-            if(other != id && held[other] && (o.hotkeys[other].pad & o.hotkeys[id].pad) == o.hotkeys[id].pad && o.hotkeys[other].pad != o.hotkeys[id].pad)
-                held[id] = false; // a larger combination containing this one is held
-    }
-    for(int id = 0; id < HOTKEY_COUNT; id++)
-    {
-        if(!held[id])
-        {
-            down[id] = false;
-            continue;
-        }
-        if(down[id])
-            continue; // holding does nothing: one step per press
-        down[id] = true;
-        if(id >= HOTKEY_ADJUST_FIRST)
-        {
-            const int kind = (id - HOTKEY_ADJUST_FIRST) / 2;
-            const int dir  = ((id - HOTKEY_ADJUST_FIRST) % 2) ? 1 : -1;
-            AdjustApply(kind, dir, kind >= 2 ? 100 : 1);
-        }
-        else
-            PostMessage(hWnd, WM_HOTKEY, id, 0);
-    }
+    auto&     o      = s_shaderBeam.m_options;
+    auto&     em     = ::ShaderBeam::Pad::Emitter();
+    const int wheel  = em.menuWheel.exchange(0);
+    const int held   = em.menuHeld.exchange(0);
+    const int clicks = em.menuClicks.exchange(0);
+    if(s_appReady && !o.hotkeysSuspended && (wheel || held || clicks))
+        s_shaderBeam.m_ui.MenuInput(clicks, wheel, held);
 }
 
 // ---- Window mode ----------------------------------------------------------------------------------------------------
@@ -1265,7 +1608,7 @@ static void RenderSettings()
         if(GetTickCount64() - s_lostAsked > 3000)
         {
             s_lostAsked = GetTickCount64();
-            PostMessage(s_shaderBeam.m_options.outputWindow, WM_USER_RESTART, 0, 0);
+            PostMessage(s_shaderBeam.m_options.outputWindow, WM_USER_RESTART, NB_RESTART_TAG, 0);
         }
         return true;
     };
@@ -1345,6 +1688,22 @@ static void RunOrStandby(HWND hWnd)
             SetTimer(hWnd, TIMER_RETRY_START, 2000, nullptr); // no display / graphics card yet: try again
             return;
         }
+        if(s_setReduce)
+        {
+            // the effects were stopped by the button over a game: Nbeam reduces itself instead of coming back in front of the game
+            s_setReduce = false;
+            s_setShow   = false;
+            if(o.minimizeToTray)
+            {
+                HideSettings();
+                UpdateTrayIcon(hWnd);
+                s_inTray = true;
+            }
+            else if(s_setWnd)
+                ShowWindow(s_setWnd, SW_SHOWMINNOACTIVE);
+            s_setActivate = false;
+            return;
+        }
         if(s_setShow)
             ShowSettings(s_setActivate);
         s_setActivate = false;
@@ -1392,9 +1751,10 @@ static ::ShaderBeam::CarTestParams TestParams()
 {
     const auto&                   o = s_shaderBeam.m_options;
     ::ShaderBeam::CarTestParams   p;
-    const auto                    f = o.emitter.sourceFormat;
+    // (Auto source with no 3D yet: the cars are drawn side by side, which the Auto source then detects)
+    const auto                    f = o.emitter.autoSource && o.emitter.sourceFormat == ::ShaderBeam::StereoSource::Off ? ::ShaderBeam::StereoSource::SideBySide : o.emitter.sourceFormat;
     if(o.StereoAllowed())
-        p.layout = f == ::ShaderBeam::StereoSource::SideBySide ? 1 : f == ::ShaderBeam::StereoSource::TopBottom ? 2 : f == ::ShaderBeam::StereoSource::Checkerboard ? 3 : 0;
+        p.layout = f == ::ShaderBeam::StereoSource::SideBySide ? 1 : f == ::ShaderBeam::StereoSource::TopBottom ? 2 : f == ::ShaderBeam::StereoSource::Checkerboard ? 3 : f == ::ShaderBeam::StereoSource::InterlacedH ? 4 : f == ::ShaderBeam::StereoSource::InterlacedV ? 5 : 0;
     p.speed     = std::clamp(o.ufoSpeed, 0, 7680);
     p.carSize   = std::clamp(o.carSize, 25, 200);
     for(int i = 0; i < 3; i++)
@@ -1468,7 +1828,7 @@ static void StartMotionTest(HWND hWnd)
         {
             o.pendingProfile = profile;
             s_quietUntil     = GetTickCount64() + 3000;
-            PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+            PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
         }
         return;
     }
@@ -1543,7 +1903,7 @@ static void StartMotionTest(HWND hWnd)
     }
     s_hudAfterStart = tune; // a profile to adjust: the HUD is shown over the cars
     s_quietUntil    = GetTickCount64() + 3000;
-    PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+    PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
 }
 
 static void EndMotionTest(HWND hWnd)
@@ -1566,7 +1926,7 @@ static void EndMotionTest(HWND hWnd)
     if(s_testFromStandby)
         SetEffectsOn(hWnd, false, true); // back to the window
     else
-        PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+        PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
 }
 
 // motion test: the Windows key or Escape ends it, and so does the end of the test window (Escape in it); its settings follow the HUD,
@@ -1585,6 +1945,131 @@ static void TestPoll(HWND hWnd)
         SendTestParams();
 }
 
+// Notice shown on the screen while the effects are off (window mode: the overlay is stopped, so its banner cannot be drawn): a small window
+// on top of everything, drawn exactly as the banner of the overlay (same Inter fonts and sizes, black box, "Nbeam" in the accent colour, the
+// text below in light grey, same margins and corner), for 3 s. It takes no click and no focus.
+static HWND         s_toastWnd = NULL;
+static HFONT        s_toastTitleFont = NULL, s_toastTextFont = NULL;
+static std::wstring s_toastText;
+static int          s_toastUnit = 16;
+
+static LRESULT CALLBACK ToastWndProc(HWND w, UINT message, WPARAM wParam, LPARAM lParam)
+{
+    switch(message)
+    {
+    case WM_PAINT: {
+        PAINTSTRUCT ps;
+        HDC         dc = BeginPaint(w, &ps);
+        RECT        rc {};
+        GetClientRect(w, &rc);
+        FillRect(dc, &rc, (HBRUSH)GetStockObject(BLACK_BRUSH));
+        SetBkMode(dc, TRANSPARENT);
+        const auto& h = s_shaderBeam.m_options.hud;
+        const int   f = s_toastUnit;
+        HGDIOBJ     old = SelectObject(dc, s_toastTitleFont);
+        SetTextColor(dc, RGB((int)(h.r * 255), (int)(h.g * 255), (int)(h.b * 255)));
+        TextOutW(dc, 2 * f, f, L"Nbeam", 5);
+        SelectObject(dc, s_toastTextFont);
+        SetTextColor(dc, RGB(215, 215, 215));
+        TextOutW(dc, 2 * f, 4 * f, s_toastText.c_str(), (int)s_toastText.size());
+        SelectObject(dc, old);
+        EndPaint(w, &ps);
+        return 0;
+    }
+    case WM_TIMER:
+        KillTimer(w, 1);
+        ShowWindow(w, SW_HIDE);
+        return 0;
+    case WM_NCHITTEST:
+        return HTTRANSPARENT;
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    }
+    return DefWindowProc(w, message, wParam, lParam);
+}
+
+static void ShowToast(const std::string& text)
+{
+    const HINSTANCE inst = GetModuleHandleW(NULL);
+    if(!s_toastWnd)
+    {
+        WNDCLASSEXW wc {};
+        wc.cbSize        = sizeof(wc);
+        wc.lpfnWndProc   = ToastWndProc;
+        wc.hInstance     = inst;
+        wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
+        wc.lpszClassName = L"Nbeam3DVisionNotice";
+        RegisterClassExW(&wc);
+        s_toastWnd = CreateWindowExW(WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT | WS_EX_LAYERED, wc.lpszClassName, L"", WS_POPUP, 0, 0, 10, 10, NULL, NULL, inst, NULL);
+        if(!s_toastWnd)
+            return;
+        SetLayeredWindowAttributes(s_toastWnd, 0, 255, LWA_ALPHA);
+    }
+    // on the main screen of Windows, at the corner chosen for the banner; sizes follow the scale of that screen (16 px at 100 %)
+    HMONITOR    mon = MonitorFromPoint(POINT { 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+    MONITORINFO mi { sizeof(mi) };
+    GetMonitorInfoW(mon, &mi);
+    UINT dx = 96, dy = 96;
+    using GetDpiForMonitorFn = HRESULT(WINAPI*)(HMONITOR, int, UINT*, UINT*);
+    if(HMODULE sh = LoadLibraryW(L"shcore.dll"))
+    {
+        if(auto fn = (GetDpiForMonitorFn)GetProcAddress(sh, "GetDpiForMonitor"))
+            fn(mon, 0, &dx, &dy);
+        FreeLibrary(sh);
+    }
+    // the size of the banner text: 16 px at 100 % (HUD size, or the Windows scale of the screen with "Auto HUD size")
+    const auto& hud = s_shaderBeam.m_options.hud;
+    const float sc  = hud.autoScale ? (float)dx / 96.0f : std::clamp(hud.scale, 0.6f, 2.0f);
+    const int   f   = (std::max)(8, (int)roundf(16.0f * sc));
+    s_toastUnit     = f;
+    // the fonts of the HUD (Inter Medium for the text, Inter Bold for the title), taken from the exe, for this process only
+    static bool fontsAdded = false;
+    if(!fontsAdded)
+    {
+        DWORD n = 0;
+        AddFontMemResourceEx((void*)HudFontMedium_data, HudFontMedium_size, nullptr, &n);
+        AddFontMemResourceEx((void*)HudFontBold_data, HudFontBold_size, nullptr, &n);
+        fontsAdded = true;
+    }
+    if(s_toastTitleFont)
+        DeleteObject(s_toastTitleFont);
+    if(s_toastTextFont)
+        DeleteObject(s_toastTextFont);
+    // (a positive height = the height of the line, as the font sizes of the HUD)
+    s_toastTitleFont = CreateFontW(3 * f, 0, 0, 0, FW_BOLD, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Inter");
+    s_toastTextFont  = CreateFontW(f, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET, OUT_TT_ONLY_PRECIS, CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Inter Medium");
+    const int n = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), nullptr, 0);
+    s_toastText.assign((size_t)(std::max)(n, 0), L'\0');
+    if(n > 0)
+        MultiByteToWideChar(CP_UTF8, 0, text.c_str(), (int)text.size(), s_toastText.data(), n);
+    HDC     dc  = GetDC(s_toastWnd);
+    SIZE    st {}, sx {};
+    HGDIOBJ old = SelectObject(dc, s_toastTitleFont);
+    GetTextExtentPoint32W(dc, L"Nbeam", 5, &st);
+    SelectObject(dc, s_toastTextFont);
+    GetTextExtentPoint32W(dc, s_toastText.c_str(), (int)s_toastText.size(), &sx);
+    SelectObject(dc, old);
+    ReleaseDC(s_toastWnd, dc);
+    const int   bw     = (int)(std::max)(st.cx, sx.cx) + 4 * f;
+    const int   bh     = (int)(f * 6.4f);
+    const RECT& r      = mi.rcMonitor;
+    const int   corner = s_shaderBeam.m_options.hud.bannerCorner; // 0 bottom left, 1 bottom right, 2 top right, 3 top left
+    const int   x      = (corner == 1 || corner == 2) ? r.right - f - bw : r.left + f;
+    const int   y      = (corner == 2 || corner == 3) ? r.top + f : r.bottom - f - bh;
+    SetWindowPos(s_toastWnd, HWND_TOPMOST, x, y, bw, bh, SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    InvalidateRect(s_toastWnd, nullptr, TRUE);
+    UpdateWindow(s_toastWnd);
+    SetTimer(s_toastWnd, 1, 3000, nullptr); // (the duration of the note of the banner)
+}
+
+// a short notice: in the banner of the overlay, or, while the effects are off (the overlay is stopped), in the notice window
+static void Notify(const std::string& text)
+{
+    s_shaderBeam.m_ui.ShowNote(text);
+    if(s_standby)
+        ShowToast(text);
+}
+
 // window mode: effects on / off (button, hotkey, notification area menu)
 static void SetEffectsOn(HWND hWnd, bool on, bool showWindow)
 {
@@ -1595,7 +2080,7 @@ static void SetEffectsOn(HWND hWnd, bool on, bool showWindow)
         s_setShow     = s_setShow || showWindow;
         s_setActivate = showWindow;
     }
-    PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+    PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
 }
 
 static LRESULT CALLBACK SettingsWndProc(HWND w, UINT message, WPARAM wParam, LPARAM lParam)
@@ -1748,7 +2233,7 @@ static bool ChangeRefreshRate(HWND hWnd, HMONITOR mon, int hz)
     if(o.emitter.sourceFormat != ::ShaderBeam::StereoSource::Off && !o.emitter.hold)
     {
         o.emitter.hold = true;
-        SendMessage(hWnd, WM_USER_RESTART, 0, 0); // renderer without 3D right before the black screen
+        SendMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0); // renderer without 3D right before the black screen
     }
     const ULONGLONG t0 = GetTickCount64();
     s_ownChangeUntil   = t0 + 15000;
@@ -1765,6 +2250,7 @@ static bool ChangeRefreshRate(HWND hWnd, HMONITOR mon, int hz)
     s_ownChangeUntil = now + 3000;
     // 3D (and the renderer for the new rate) come back: average duration of the change - time already spent + 0.25 s
     s_restartAt = now + (ULONGLONG)((std::max)(0.0, o.hzSwitchMs - d) + 250.0);
+    ::ShaderBeam::LsLog("refresh rate set to %d Hz (%s): the change took %d ms, the renderer comes back in %d ms (average change %d ms)", hz, ok ? "ok" : "failed", (int)d, (int)(s_restartAt - now), (int)o.hzSwitchMs);
     return ok;
 }
 
@@ -1816,14 +2302,14 @@ static void RefreshRatePoll(HWND hWnd)
     {
         holdSince      = 0;
         o.emitter.hold = false;
-        PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+        PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
     }
     const bool active = !s_hzTargets.empty() && o.captureWindow && IsWindow(o.captureWindow);
     if(s_restartAt && GetTickCount64() >= s_restartAt)
     {
         s_restartAt    = 0;
         o.emitter.hold = false; // 3D comes back
-        PostMessage(hWnd, WM_USER_RESTART, 0, 0); // vsync rate / sub frames follow the new refresh rates
+        PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0); // vsync rate / sub frames follow the new refresh rates
         return;
     }
     if(s_restartAt)
@@ -1851,7 +2337,7 @@ static void RefreshRatePoll(HWND hWnd)
         if(!anyPending && o.emitter.hold && !s_restartAt)
         {
             o.emitter.hold = false; // already at the wanted rates: nothing to wait for
-            PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+            PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
         }
     }
     else if(!s_hzSaved.empty())
@@ -1920,7 +2406,117 @@ static void DisplayChangePoll(HWND hWnd)
     // a screen was connected / disconnected or changed mode: Nbeam restarts minimized (the HUD does not open on the new layout)
     ReduceHud(hWnd);
     s_quietUntil = GetTickCount64() + 3000;
-    PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+    PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
+}
+
+// A program that is detected is only taken once its picture moves: two checks one second apart that both show movement (the capture must not
+// start on a banner or a loading screen of the game). The window is read as DWM shows it, as a small grid; nothing is sent to the program.
+// While the window cannot be read, or nothing moves (a still menu, a graphics configuration window), nothing is applied and the check goes on.
+static bool GrabGrid(HWND w, std::vector<unsigned char>& out)
+{
+    RECT r {};
+    if(!w || !IsWindow(w) || IsIconic(w) || !GetWindowRect(w, &r))
+        return false;
+    const int ww = r.right - r.left, wh = r.bottom - r.top;
+    if(ww < 64 || wh < 64)
+        return false;
+    constexpr int GW = 64, GH = 36;
+    HDC           scr = GetDC(NULL);
+    HDC           big = CreateCompatibleDC(scr);
+    HDC           sm  = CreateCompatibleDC(scr);
+    HBITMAP       bb  = CreateCompatibleBitmap(scr, ww, wh);
+    BITMAPINFO    bi {};
+    bi.bmiHeader.biSize        = sizeof(bi.bmiHeader);
+    bi.bmiHeader.biWidth       = GW;
+    bi.bmiHeader.biHeight      = -GH;
+    bi.bmiHeader.biPlanes      = 1;
+    bi.bmiHeader.biBitCount    = 32;
+    bi.bmiHeader.biCompression = BI_RGB;
+    void*   bits = nullptr;
+    HBITMAP sb   = CreateDIBSection(scr, &bi, DIB_RGB_COLORS, &bits, NULL, 0);
+    bool    ok   = false;
+    if(bb && sb && bits)
+    {
+        HGDIOBJ ob = SelectObject(big, bb), os = SelectObject(sm, sb);
+        ok         = PrintWindow(w, big, 2 /*PW_RENDERFULLCONTENT*/) != 0;
+        if(!ok)
+            ok = BitBlt(big, 0, 0, ww, wh, scr, r.left, r.top, SRCCOPY) != 0; // (what is on the screen at that place)
+        if(ok)
+        {
+            SetStretchBltMode(sm, HALFTONE);
+            SetBrushOrgEx(sm, 0, 0, nullptr);
+            ok = StretchBlt(sm, 0, 0, GW, GH, big, 0, 0, ww, wh, SRCCOPY) != 0;
+        }
+        if(ok)
+        {
+            out.assign((unsigned char*)bits, (unsigned char*)bits + GW * GH * 4);
+            GdiFlush();
+        }
+        SelectObject(big, ob);
+        SelectObject(sm, os);
+    }
+    if(bb)
+        DeleteObject(bb);
+    if(sb)
+        DeleteObject(sb);
+    DeleteDC(big);
+    DeleteDC(sm);
+    ReleaseDC(NULL, scr);
+    return ok;
+}
+
+static bool ProgramAlive(const std::string& exe)
+{
+    auto&                       o = s_shaderBeam.m_options;
+    static std::string          key;
+    static std::vector<unsigned char> prev;
+    static int                  good  = 0;
+    static ULONGLONG            last  = 0;
+    const std::string           k     = ::ShaderBeam::Options::NormalizeExeName(exe);
+    const ULONGLONG             now   = GetTickCount64();
+    if(k != key)
+    {
+        key = k;
+        prev.clear();
+        good  = 0;
+        last  = 0;
+    }
+    if(last && now - last < 800)
+        return false; // (one check per second)
+    last = now;
+    HWND                       w = o.TaskbarWindowOfExe(exe);
+    std::vector<unsigned char> cur;
+    if(!w || !GrabGrid(w, cur))
+    {
+        // hidden, minimized or not readable (yet): nothing is applied, the program is checked again
+        prev.clear();
+        good  = 0;
+        return false;
+    }
+    bool moved = false;
+    if(prev.size() == cur.size())
+    {
+        int changed = 0;
+        for(size_t i = 0; i + 3 < cur.size(); i += 4)
+        {
+            const int d = abs((int)cur[i] - (int)prev[i]) + abs((int)cur[i + 1] - (int)prev[i + 1]) + abs((int)cur[i + 2] - (int)prev[i + 2]);
+            if(d > 18)
+                changed++;
+        }
+        moved = changed * 100 >= (int)(cur.size() / 4); // at least 1 % of the grid changed
+    }
+    prev = std::move(cur);
+    if(moved)
+        good++;
+    else
+        good = 0;
+    if(good >= 2)
+    {
+        ::ShaderBeam::LsLog("detection %s: the picture moves (2 checks), the program is taken", k.c_str());
+        key.clear();
+        return true;
+    }
+    return false;
 }
 
 // Profile links: when a linked program is running its profile is loaded (the same restart as choosing it in the HUD); when it
@@ -1955,6 +2551,8 @@ static void ProfileLinkPoll(HWND hWnd)
             const auto& l = links[i];
             if(!l.enabled || l.profile.empty())
                 continue;
+            if(!l.screenId.empty() && !std::any_of(mons.begin(), mons.end(), [&](const ::ShaderBeam::Options::KnownMonitor& m) { return m.id == l.screenId && m.connected; }))
+                continue; // the screen of this detection is not connected: its settings are ignored until it is back
             const std::string key = ::ShaderBeam::Options::NormalizeExeName(l.exe);
             if(key.empty() || (!group.empty() && key != group))
                 continue;
@@ -1978,7 +2576,7 @@ static void ProfileLinkPoll(HWND hWnd)
             int score = 1; // no screen chosen (old detection): works on any screen
             if(!l.screenId.empty())
             {
-                score = 0;
+                score = 1;
                 for(const auto& m : mons)
                     if(m.id == l.screenId && m.connected)
                         score = m.primary ? 3 : 2;
@@ -1992,6 +2590,11 @@ static void ProfileLinkPoll(HWND hWnd)
             }
         }
     }
+    // the program keeps its active detection while it runs (and while it is still checked): no switch from one screen to another
+    if(match >= 0 && active >= 0 && match != active && active < (int)links.size() && links[active].enabled && !links[active].profile.empty() &&
+       (links[active].screenId.empty() || HzMonitor(links[active].screenId)) &&
+       ::ShaderBeam::Options::NormalizeExeName(links[active].exe) == ::ShaderBeam::Options::NormalizeExeName(links[match].exe))
+        match = active;
     if(match >= 0)
     {
         if(match == active)
@@ -2006,7 +2609,7 @@ static void ProfileLinkPoll(HWND hWnd)
                 {
                     o.pendingProfile = now;
                     s_quietUntil     = GetTickCount64() + 3000;
-                    PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+                    PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
                 }
             }
             return;
@@ -2019,6 +2622,8 @@ static void ProfileLinkPoll(HWND hWnd)
         }
         if(GetTickCount64() - candidateSince < (ULONGLONG)links[match].delay * 1000ULL)
             return; // activation delay of the link
+        if(!::ShaderBeam::Options::IsScalerExe(links[match].exe) && !ProgramAlive(links[match].exe))
+            return; // the program is taken once its picture moves
         const std::string target = links[match].profile;
         if(!std::filesystem::exists(::ShaderBeam::Options::ProfilesDir() / target))
             return;
@@ -2035,6 +2640,7 @@ static void ProfileLinkPoll(HWND hWnd)
             o.linkCaptureDisplayNo = dn;
         }
         active        = match;
+        s_activeLink  = match;
         activeProfile = target;
         candidate     = -1;
         if(target != o.profileFile)
@@ -2057,13 +2663,14 @@ static void ProfileLinkPoll(HWND hWnd)
         if(o.captureWindow)
             ::ShaderBeam::Options::BringToForeground(o.captureWindow); // the detected program comes to the front
         {
-            // refresh rates of the detections of this program (one per screen): every screen changes; 3D only starts after the change
+            // refresh rate of the active detection only (the one of the screen that is used): the other screens of the program are left alone;
+            // "Current Hz" = no change. 3D only starts after the change
             s_hzTargets.clear();
-            const std::string key = ::ShaderBeam::Options::NormalizeExeName(links[match].exe);
-            int               n   = 0;
-            for(const auto& l : links)
-                if(l.enabled && l.hz > 0 && !l.screenId.empty() && ::ShaderBeam::Options::NormalizeExeName(l.exe) == key && ++n <= ::ShaderBeam::Options::MAX_LINKS_PER_EXE)
+            {
+                const auto& l = links[match];
+                if(l.enabled && l.hz > 0 && !l.screenId.empty() && HzMonitor(l.screenId))
                     s_hzTargets.push_back({ l.screenId, l.hz });
+            }
             bool stereo = false;
             ::ShaderBeam::Options::PeekProfile(target, stereo);
             if(stereo && o.captureWindow)
@@ -2075,7 +2682,7 @@ static void ProfileLinkPoll(HWND hWnd)
                             o.emitter.hold = true;
                     }
         }
-        PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+        PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
     }
     else
     {
@@ -2083,6 +2690,8 @@ static void ProfileLinkPoll(HWND hWnd)
         if(active >= 0)
         {
             active       = -1;
+            s_activeLink = -1;
+            s_noWindowRestartAt = 0;
             activeProfile.clear();
             s_linkActive = false;
             if(s_effectsByLink)
@@ -2113,11 +2722,11 @@ static void ProfileLinkPoll(HWND hWnd)
                 bool stereo = false;
                 ::ShaderBeam::Options::PeekProfile(back, stereo);
                 o.emitter.hold = stereo;
-                SendMessage(hWnd, WM_USER_RESTART, 0, 0);
+                SendMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
                 RestoreRefreshRate(hWnd);
             }
             else
-                PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+                PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
         }
     }
 }
@@ -2187,7 +2796,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     o.effectsSuspended = !o.effectsSuspended; // same as the HUD button Show / Hide
             }
             else if(cmd == TRAY_CMD_RESTART)
-                PostMessage(hWnd, WM_USER_RESTART, 0, 0); // same as the Restart button of the HUD
+                PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0); // same as the Restart button of the HUD
             else if(cmd == TRAY_CMD_QUIT)
                 PostMessage(hWnd, WM_DESTROY, 0, 0);
         }
@@ -2212,10 +2821,49 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             SetCursor(NULL);
             return TRUE;
         }
-        if(message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_RBUTTONDOWN || message == WM_RBUTTONUP || message == WM_MBUTTONDOWN ||
-           message == WM_MBUTTONUP || message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDBLCLK || message == WM_MOUSEWHEEL || message == WM_XBUTTONDOWN ||
-           message == WM_XBUTTONUP)
-            return 0;
+        // The mouse messages the game would have received without the overlay (the in-game overlay of ReShade, menus that do not read the raw
+        // mouse) are sent to it with the position over its own window: the overlay is the window under the pointer, so they would be lost.
+        const bool mouseButton = message == WM_LBUTTONDOWN || message == WM_LBUTTONUP || message == WM_RBUTTONDOWN || message == WM_RBUTTONUP ||
+                                 message == WM_MBUTTONDOWN || message == WM_MBUTTONUP || message == WM_LBUTTONDBLCLK || message == WM_RBUTTONDBLCLK ||
+                                 message == WM_MBUTTONDBLCLK || message == WM_XBUTTONDOWN || message == WM_XBUTTONUP || message == WM_XBUTTONDBLCLK;
+        if(mouseButton || message == WM_MOUSEMOVE || message == WM_MOUSEWHEEL)
+        {
+            HWND game = (HWND)s_shaderBeam.m_options.captureWindow;
+            if(!game)
+                game = GetForegroundWindow();
+            if(game && game != hWnd && IsWindow(game) && !IsIconic(game))
+            {
+                if(message == WM_MOUSEWHEEL)
+                {
+                    PostMessage(game, message, wParam, lParam); // (the position of the wheel message is already in screen coordinates)
+                }
+                else
+                {
+                    POINT p { (int)(short)LOWORD(lParam), (int)(short)HIWORD(lParam) };
+                    ClientToScreen(hWnd, &p);
+                    ScreenToClient(game, &p);
+                    SetLastError(0);
+                    const BOOL  posted = PostMessage(game, message, wParam, MAKELPARAM((short)p.x, (short)p.y));
+                    const DWORD err    = posted ? 0 : GetLastError();
+                    // the first clicks and every refused one (a game running with more rights than Nbeam refuses the messages) are written to the log
+                    static int s_fwdLogged = 0, s_fwdFailed = 0;
+                    if(mouseButton && (s_fwdLogged < 8 || (!posted && s_fwdFailed < 20)))
+                    {
+                        char cls[64] = {};
+                        GetClassNameA(game, cls, (int)sizeof(cls));
+                        DWORD pid = 0;
+                        GetWindowThreadProcessId(game, &pid);
+                        ::ShaderBeam::LsLog("click sent to the game: message 0x%X, window %p (class '%s', process %lu) at %d,%d, %s (error %lu)", (unsigned)message, (void*)game, cls,
+                              (unsigned long)pid, (int)p.x, (int)p.y, posted ? "accepted" : "refused by Windows", (unsigned long)err);
+                        s_fwdLogged++;
+                        if(!posted)
+                            s_fwdFailed++;
+                    }
+                }
+            }
+            if(mouseButton || message == WM_MOUSEWHEEL)
+                return 0;
+        }
     }
     if(message == WM_LBUTTONDOWN && !s_shaderBeam.m_ui.MouseRequired())
     {
@@ -2247,7 +2895,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if(s_appReady)
         {
             s_shaderBeam.m_options.RefreshMonitors(!s_hzSaved.empty()); // a screen was connected / disconnected or changed mode
-            if(GetTickCount64() > s_ownChangeUntil)
+            // only a real change of the screens (layout, resolution, rate) restarts: a game window resized by Full SBS can also send this
+            // message, and restoring it sends it again (restart loop between a Full SBS profile and another one)
+            static std::string s_lastLayout;
+            std::string        layout;
+            EnumDisplayMonitors(nullptr, nullptr, [](HMONITOR m, HDC, LPRECT, LPARAM p) -> BOOL {
+                MONITORINFOEXW mi {};
+                mi.cbSize = sizeof(mi);
+                DEVMODEW dm {};
+                dm.dmSize = sizeof(dm);
+                if(GetMonitorInfoW(m, &mi) && EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+                    *(std::string*)p += std::to_string(mi.rcMonitor.left) + "," + std::to_string(mi.rcMonitor.top) + "," + std::to_string(dm.dmPelsWidth) + "x" +
+                                        std::to_string(dm.dmPelsHeight) + "@" + std::to_string(dm.dmDisplayFrequency) + ";";
+                return TRUE;
+            }, (LPARAM)&layout);
+            const bool same = layout == s_lastLayout;
+            s_lastLayout    = layout;
+            if(same)
+                ::ShaderBeam::LsLog("display change ignored (same screens)");
+            else if(GetTickCount64() > s_ownChangeUntil)
                 s_displayChangeAt = GetTickCount64(); // not a refresh rate change of Nbeam: safety restart
         }
         return DefWindowProc(hWnd, message, wParam, lParam);
@@ -2264,7 +2930,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             if(!s_quitting)
             {
                 s_refreshDisplays = true; // the display list is read again
-                PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+                PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
             }
             break;
         }
@@ -2274,7 +2940,7 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 TaskbarButton(hWnd, !s_tbShown); // with the tray option the taskbar button only exists while the HUD is visible
             HotkeyPoll(hWnd);
             AdjustPoll();
-            PadPoll(hWnd);
+            EmitterInputPoll();
             TestPoll(hWnd);
             KeepAboveScalerWindow(hWnd);
             ProcessFocusPoll(hWnd);
@@ -2311,6 +2977,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         LowRatePoll(hWnd);
         s_shaderBeam.m_ui.UpdateCaptureTone(true);
         ProcessAppearPoll(hWnd);
+        FpsCapPoll();
+        DcCapPoll();
+        if(s_noWindowRestartAt && GetTickCount64() >= s_noWindowRestartAt)
+        {
+            s_noWindowRestartAt = 0;
+            PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0); // the program closed its window but still runs
+        }
+        OutputAutoPoll(hWnd);
+        WatchdogPoll(hWnd);
         if(s_shaderBeam.m_options.ui)
             s_shaderBeam.UpdateVsyncRate();
         break;
@@ -2318,7 +2993,37 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
     case WM_USER_RESTART: {
         if(s_quitting)
             break; // a restart still queued while Nbeam closes: ignored
-        ::ShaderBeam::LsLog("restart (process='%s' window=%p standby=%d)", s_shaderBeam.m_options.captureProcess.c_str(), (void*)s_shaderBeam.m_options.captureWindow, (int)s_standby);
+        ::ShaderBeam::LsLog("restart (process='%s' window=%p standby=%d) by %s", s_shaderBeam.m_options.captureProcess.c_str(), (void*)s_shaderBeam.m_options.captureWindow, (int)s_standby, wParam ? (const char*)wParam : "?");
+        {
+            // the screens (names, refresh rates) are read again at each restart, in a thread of their own (a slow reading that disturbs the
+            // graphics driver: never while the effects run, never on the render thread). Nbeam start reads them too.
+            static std::atomic<bool> s_monBusy { false };
+            if(!s_monBusy.exchange(true))
+            {
+                bool keepHz = false; // a detection changes the refresh rate of a screen while its program runs
+                std::lock_guard<std::recursive_mutex> linksLock(s_shaderBeam.m_options.linksMutex);
+                for(const auto& l : s_shaderBeam.m_options.profileLinks)
+                    keepHz = keepHz || (l.hz > 0 && l.enabled && s_shaderBeam.m_options.captureWindow && IsWindow(s_shaderBeam.m_options.captureWindow));
+                std::thread([keepHz]() {
+                    s_shaderBeam.m_options.RefreshMonitors(keepHz);
+                    s_monBusy = false;
+                }).detach();
+            }
+        }
+        {
+            // restarts in a loop (8 in 20 s): not a normal use, Nbeam starts again completely
+            static std::deque<ULONGLONG> s_restartTimes;
+            const ULONGLONG              t = GetTickCount64();
+            s_restartTimes.push_back(t);
+            while(!s_restartTimes.empty() && t - s_restartTimes.front() > 20000)
+                s_restartTimes.pop_front();
+            if(s_restartTimes.size() >= 8)
+            {
+                s_restartTimes.clear();
+                if(SelfRestart(hWnd, "the renderer restarted 8 times in 20 s"))
+                    break;
+            }
+        }
         KillTimer(hWnd, TIMER_RETRY_START);
         s_shaderBeam.Stop();
         if(s_refreshDisplays)
@@ -2347,6 +3052,20 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             s_shaderBeam.RunBenchmark();
         break;
     }
+    case WM_USER_AUTOSOURCE: {
+        // Auto source found a 3D format (or the window changed: 0 = 2D): the 3D source format changes as if it was chosen by hand
+        auto& o = s_shaderBeam.m_options;
+        auto& e = o.emitter;
+        if(e.autoSource && (wParam <= 3 || wParam == 5 || wParam == 6) && (int)e.sourceFormat != (int)wParam)
+        {
+            e.sourceFormat = (::ShaderBeam::StereoSource)wParam;
+            o.liveReload   = true;
+            // the HUD must know the format the 3D now runs with: otherwise choosing Off afterwards (Auto source unchecked) was seen as "no
+            // change of format", only the emitters were stopped, and the picture stayed frozen (3D still built for the detected format)
+            s_shaderBeam.m_ui.SourceRebuilt(e.sourceFormat);
+        }
+        break;
+    }
     case WM_USER_GLASSESTEST: {
         // motion test: 1 = start (or adjust another profile, Options::testProfile), 0 = end
         if(wParam == 0)
@@ -2373,10 +3092,18 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                 s_effectsByLink = false;
                 s_hudAfterStart = s_standby; // from the window: the HUD over the screen takes over
             }
-            PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+            PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
         }
         else if(o.windowMode)
-            SetEffectsOn(hWnd, wParam == 1, true);
+        {
+            if(wParam == 1)
+                SetEffectsOn(hWnd, true, true);
+            else
+            {
+                s_setReduce = true; // the button over the game: the window stays reduced
+                SetEffectsOn(hWnd, false, false);
+            }
+        }
         break;
     }
     case WM_USER_LLKEY:
@@ -2386,7 +3113,15 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if(::ShaderBeam::Options::IsScalerExe(s_shaderBeam.m_options.captureProcess))
             ::ShaderBeam::LsLog("captured layer window closed");
         s_shaderBeam.m_options.captureWindow = s_shaderBeam.m_options.captureProcess.empty() ? NULL : s_shaderBeam.m_options.FindCaptureWindow(); // another window of the same program, or the display
-        PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+        if(s_linkActive && !s_shaderBeam.m_options.captureProcess.empty() && !s_shaderBeam.m_options.captureWindow)
+        {
+            // the game closes: a single restart, the one of the end of its detection (desktop settings back), instead of one for the display
+            // capture and a second one 2 s later. The program leaves the taskbar: the desktop mode comes back (if it still has no window after 10 s the restart is done then).
+            s_noWindowRestartAt = GetTickCount64() + 10000;
+            ProfileLinkPoll(hWnd);
+            break;
+        }
+        PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
         break;
     }
     case WM_HOTKEY: {
@@ -2398,24 +3133,12 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
             PostMessage(hWnd, WM_DESTROY, 0, 0); // same as Quit in the notification area menu
             break;
         case HOTKEY_RESTART:
-            PostMessage(hWnd, WM_USER_RESTART, 0, 0);
+            PostMessage(hWnd, WM_USER_RESTART, NB_RESTART_TAG, 0);
             break;
         case HOTKEY_SWAPEYES:
             s_shaderBeam.m_options.emitter.swapEyes = !s_shaderBeam.m_options.emitter.swapEyes;
             s_shaderBeam.m_ui.RequestSave();
             break;
-        case HOTKEY_DETECTION: {
-            // one hotkey for every detection: if one is checked they are all unchecked, otherwise all checked
-            std::lock_guard<std::recursive_mutex> linksLock(s_shaderBeam.m_options.linksMutex);
-            auto& o   = s_shaderBeam.m_options;
-            bool  any = false;
-            for(const auto& l : o.profileLinks)
-                any = any || l.enabled;
-            for(auto& l : o.profileLinks)
-                l.enabled = !any;
-            o.SaveApp();
-            break;
-        }
         case HOTKEY_ADDEXE: {
             // the program in the foreground (not Nbeam, not the Windows shell) is added to the profile detections
             if(s_testOn)
@@ -2446,22 +3169,25 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
                     name.clear();
             if(name.empty())
             {
-                s_shaderBeam.m_ui.ShowNote(::ShaderBeam::Tr("No program in the foreground to add"));
+                Notify(::ShaderBeam::Tr("No program in the foreground to add"));
                 break;
             }
             bool known = false;
             for(const auto& l : o.profileLinks)
                 known = known || ::ShaderBeam::Options::NormalizeExeName(l.exe) == name;
             if(known)
-                s_shaderBeam.m_ui.ShowNote(name + " " + ::ShaderBeam::Tr("is already in the list"));
+                Notify(name + " " + ::ShaderBeam::Tr("is already in the list"));
             else if(o.profileLinks.size() < 64)
             {
                 ::ShaderBeam::Options::ProfileLink nl;
                 nl.exe      = name;
                 nl.screenId = o.ScreenIdOfDisplay(o.shaderDisplayNo, s_shaderBeam.m_ui.m_displays);
+                nl.fpsCapMode = o.DefaultFpsCapMode();
+                nl.fpsLimit   = o.fpsLimitDefault;
+                nl.profile    = o.ProfileForNewProgram();
                 o.profileLinks.push_back(nl);
                 o.SaveApp();
-                s_shaderBeam.m_ui.ShowNote(name + " " + ::ShaderBeam::Tr("added to the profile detections"));
+                Notify(name + " " + ::ShaderBeam::Tr("added to the profile detections"));
             }
             break;
         }
@@ -2537,6 +3263,8 @@ LRESULT CALLBACK WndProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
         if(s_quitting)
             break;
         s_quitting = true;
+        ::ShaderBeam::AudioKeepAliveSet(false);
+        ::ShaderBeam::GetFrameLimiter().Release(); // (the game gets its RTSS frame limit back)
         s_testOn   = false;
         CloseTestProcess(); // the cars window closes with Nbeam
         StopKeyboardHook();

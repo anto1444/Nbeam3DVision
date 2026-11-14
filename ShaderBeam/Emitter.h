@@ -57,6 +57,7 @@ public:
     virtual void DrawOverlay(const EmitterFrame&) { }
     // hardware emitters signal here (emitter sync thread, already offset in time). Must be fast.
     virtual void Sync(Eye) { }
+    virtual void ApplyTimings() { } // sync thread: take a timing change that was held back (offset correction)
     // environment changed live (SubFrames); emitters caching the sync rate must refresh
     virtual void OnEnvChanged(const EmitterEnv&) { }
 };

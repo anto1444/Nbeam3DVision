@@ -33,7 +33,6 @@ public:
 
     void SetError(const char* message);
     void SetBenchmark(const BenchmarkResult& result);
-    void AddWindow(HWND hWnd);
     bool RenderRequired() const;
     // automatic save of the active profile: asked by the HUD (render thread) or a hotkey, done once a second by the main thread
     void RequestSave() { m_saveRequested = true; }
@@ -44,12 +43,13 @@ public:
     std::timed_mutex m_imguiMutex;
     void             CancelHotkeyCapture(); // a shortcut capture left open (HUD hidden, other tab): the hotkeys work again
     bool Toggle();
+    void CloseMenu();
+    void SourceRebuilt(StereoSource s) { m_lastSource = s; } // the 3D source changed outside the HUD (Auto source) and the 3D was rebuilt with it // closes the 3D mini menu (the HUD and the mini menu are never shown together)
     // 3D mini menu driven by the NVIDIA emitter: a click opens it / moves down, the wheel changes the highlighted setting
     void MenuInput(int clicks, int wheel, int held);
-    bool MenuOpen() const { return m_menuOpen; }
     // Window mode: the HUD fills a normal window of its own (settings made there while the effects are off)
     void SetWindowMode(bool on) { m_windowMode = on; }
-    bool WindowMode() const { return m_windowMode; }
+    float  EffScale();                                                       // size actually used: follows the Windows scale (auto) or the chosen size
     float& HudScale() { return m_windowMode ? m_options.hud.scaleWin : m_options.hud.scale; } // separate sizes: window / HUD over the screen
 
     float m_inputFPS { 0 };
@@ -82,13 +82,17 @@ public:
     void UpdateCaptureTone(bool refreshHdr = false); // black / grey level of the capture; neutral unless Windows HDR is on
     void ShowBanner(); // "3D emitter on" banner for 3 seconds (when 3D is active)
     void ShowNote(const std::string& text); // one-line banner for 3 seconds
-    bool HudMoving() const; // a HUD window is being dragged
+    // tracer of the HUD clicks (Nbeam_ls.log): last click in the HUD, longest waits for the HUD lock
+    ULONGLONG   LastClick() const { return m_lastClick; }
+    const char* LastClickName() const { return m_lastClickName; }
+    void        TakeLockWaits(double* render = nullptr, double* window = nullptr);
     bool HudBounds(RECT& r) const; // area covered by the HUD windows drawn last (pixels); false = nothing drawn
     void ShowAdjustBanner(int kind); // banner with the current values, 3 seconds from the last change (kind = which one changed)
 private:
     bool BannerActive() const;
     bool Banner3d() const;       // 3D active: the banner is the Nbeam 3D Vision one
-    bool BannerFx() const;       // BFI / CRT active (more than one subframe), no window mode
+    bool BannerFx() const;
+    bool Capped3d() const;       // BFI / CRT active (more than one subframe), no window mode
     bool StatsBannerOn() const;  // Show stats: the banner stays on
     void SetApplyRequired();
     void ApplyPendingChanges();
@@ -105,11 +109,13 @@ private:
         HWND captureWindow;
         int  shaderDisplayNo;
         bool outputOnProcess;
+        bool outputAuto;
         int  subFramesMode;
         bool hardwareSrgb;
         int  captureMethod;
         int  splitScreen;
         int  maxQueuedFrames;
+        bool queueAuto;
         bool useHdr;
     } m_pending;
 
@@ -138,8 +144,12 @@ private:
     int                m_menuPendingVal { 0 };
     unsigned long long m_menuLastHeld { 0 };
     std::atomic<bool>  m_menuOpen { false };
+    std::atomic<ULONGLONG>   m_lastClick { 0 };
+    const char* volatile     m_lastClickName { "" };
+    std::atomic<int>         m_waitRenderUs { 0 }, m_waitInputUs { 0 };
     volatile unsigned long long m_menuUntil { 0 };
     int                m_menuIndex { 0 };
+    int                m_menuEdit { -1 };       // line selected by a click (its value is adjusted with the wheel, a click confirms), -1 = none
     void               RenderMenu();
     unsigned long long m_bannerUntil { 0 }; // tick count until which the "3D emitter on" banner is shown
     EmitterPanelContext m_emitterPanel;

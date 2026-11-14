@@ -1,6 +1,6 @@
 # Nbeam 3D Vision
 
-**Version 2.4.1 — par anto1444, 2026**
+**Version 3.0.0 — par anto1444, 2026**
 
 <p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision - NVIDIA 3D Vision glasses, BFI and CRT beam simulator overlay for Windows" width="420"></p>
 
@@ -44,14 +44,13 @@ Au tout premier lancement (quand le dossier `Profils` est créé), Nbeam affiche
 
 1. Placez `Nbeam3DVision.exe` dans un dossier où il peut écrire.
 2. Lancez-le : le dossier `Profils\` est créé, avec le profil d'exemple `Defaut.ini` et les réglages du bureau `Bureau.cfg`.
-3. Dans la fenêtre de Nbeam, choisissez l'**écran de sortie** (votre écran rapide) et le nombre de **sous-images**.
+3. Dans la fenêtre de Nbeam, choisissez l'**écran de sortie** (votre écran rapide) et le nombre de **sous-images**. Le choix **Automatique** suit le jeu : en plein écran ou sans bordure maximisé, la sortie va sur l'écran principal de Windows ; dans une fenêtre plus petite que l'écran, elle passe par-dessus le jeu (sortie « Processus »). Le changement se fait 1,5 s après que le jeu a changé de mode.
 4. Cliquez sur **Activer les effets**, ou ajoutez votre jeu dans la configuration du profil : les effets démarreront tout seuls à son lancement.
 
 Principe : Nbeam **capture** l'écran ou la fenêtre d'un programme, applique l'effet puis **réaffiche** l'image en plein écran au rythme de l'écran de sortie. Les **sous-images** sont le nombre d'images affichées pour chaque image du contenu : sur 240 Hz, 4 sous-images = un contenu à 60 images/s.
 
 ## Conseils
 
-- **Pour de meilleurs réglages 3D, privilégiez toujours les raccourcis clavier ou le mini menu de l'émetteur** (molette et bouton) plutôt que le HUD à la souris : le pointeur visible peut provoquer une désynchronisation temporaire de la 3D.
 - Branchez un seul écran, ou faites tourner Nbeam sur le plus rapide.
 - Plafonnez le jeu à la valeur « FPS contenu » du HUD.
 - Si l'image saccade, augmentez la file d'images ou choisissez Hybride ou Tampon d'image dans Synchro BFI.
@@ -82,8 +81,6 @@ Reproduit le balayage d'un tube cathodique : l'image est « dessinée » ligne p
 - **Gain vs flou** : compromis luminosité / flou. 1 = luminosité inchangée ; plus bas = moins de flou sur les zones sombres, au prix de la luminosité.
 - **Gamma** : le gamma de votre écran (évite les bandes horizontales).
 - **Direction du balayage**, **Mode ralenti** (pour observer la simulation), **Anti-rétention LCD** (évite la rétention d'image sur LCD), **Niveau de noir** (ce qui est plus sombre devient un noir pur ; utile sur OLED et en HDR).
-
-> **Images en file à 0 (tearing) : déconseillé avec le BFI et le CRT.** La déchirure peut couper une image claire ou noire en deux et provoquer des bandes ou un scintillement irrégulier. Gardez une valeur de file de 1 ou plus, ou placez la ligne de tearing tout en haut de l'image (masquée) avec le contrôle du tearing.
 
 ### Présentation directe (expérimental)
 
@@ -118,7 +115,7 @@ Imaginez un métro qui passe à heure fixe : si vous arrivez juste après son d�
 
 Le tampon garde **quelques images du jeu d'avance**, comme une petite réserve : si le jeu a un raté, Nbeam pioche dans la réserve et l'image reste fluide. En échange, l'image arrive un peu plus tard.
 
-- La valeur choisie (**1 à 5**) est un **maximum** : Nbeam commence avec 1 image et n'en ajoute que si le jeu en a vraiment besoin. Il change d'une image à la fois, au plus toutes les 2 secondes, et redescend quand le jeu se calme.
+- La valeur choisie (**1 à 5**) est un **maximum** : Nbeam commence avec 1 image et n'en ajoute que si le jeu en a vraiment besoin. Il change d'une image à la fois, au plus toutes les secondes, et redescend quand le jeu se calme.
 - La taille utilisée et la latence ajoutée sont affichées à côté du curseur.
 - Bonus : si le jeu tourne à la moitié, au tiers ou au quart de la cadence du BFI (par exemple 60 i/s pour 120), chaque image est montrée le même nombre de fois, bien régulièrement.
 
@@ -140,10 +137,12 @@ Case à cocher sous le menu (2D, programme capturé ; masquée en 3D). Nbeam **m
 
 ## 3D active
 
-- **Formats** : côte à côte (SBS), haut/bas (TB), damier, ou **2D vers 3D (IA)**.
+- **Formats** : côte à côte (SBS), haut/bas (TB), damier, ou **2D vers 3D (IA)**. Sous le format, l'interrupteur **Source auto** (utilisable quel que soit le rendu affiché) laisse Nbeam détecter la source, par une technique de détection automatique par algorithme : rien ne change tant qu'une source 3D différente n'est pas repérée, puis le format passe tout seul sur SBS, TB ou damier et suit l'image si elle change ; le format ne peut pas être changé à la main tant qu'il est coché, décoché il reste tel quel. Le format SBS a une case **SBS complet (expérimental)** : cochée, Nbeam redimensionne automatiquement la fenêtre du jeu (sans bordure) à deux fois la largeur de l'écran (3840x1080 sur un écran 1080p, 5120x1440 sur un 1440p…) et la remet comme avant à la décoche ; chaque moitié est un œil affiché entier, sans écrasement. Le jeu doit accepter la taille (fenêtré ou sans bordure, pas plein écran exclusif) et dessiner lui-même les deux yeux. Disponible uniquement en capture de jeu, avec une sortie qui ne recouvre pas le jeu (pas la sortie Process) ; si le jeu refuse la taille, la 3D se coupe avec un message « impossible ». Sur le bureau, la limite de fps de la 3D et la synchro auto de l'émetteur ne s'appliquent pas (elles ne servent qu'en capture de jeu).
 - La bascule des yeux se fait à Hz de l'écran ÷ sous-images ; chaque œil reçoit la moitié. En 3D, les sous-images sont **liées à la fréquence de l'émetteur** (480 Hz et émetteur à 120 Hz → 4). La case **Auto** de la synchronisation choisit la fréquence de l'émetteur **la plus haute entre 80 et 165 Hz** (Hz de l'écran ÷ n : 480 Hz → 160 Hz, 360 Hz → 120 Hz, 240 Hz → 120 Hz, 100 Hz → 100 Hz), d'après la fréquence d'écran utilisée, y compris celle réglée dans la configuration du profil (hors de cette plage, rien ne se passe et l'émetteur reste éteint).
 - **Synchro des lunettes automatique** : les lunettes suivent les vrais rafraîchissements de l'écran (statistiques DXGI) dès que Windows les fournit, sinon la synchronisation classique prend le relais ; une ligne sous « Inverser les yeux » indique le mode utilisé. Le **Sync Offset** est toujours compté depuis l'affichage réel de l'image : changer les images en file ou de mode de synchro ne le dérègle pas. Une image envoyée en retard (surcharge, chargement du jeu) est remise sur le rythme régulier de l'écran, les lunettes ne se décalent plus.
 - Réglez d'abord **Sync Offset** (valeurs négatives uniquement, de 0 à moins une période d'œil), puis **Open Duration**, en regardant l'image à travers les lunettes, **avec les raccourcis clavier** (le HUD affiché fausse le rythme).
+- **Correction de l'offset** (au-dessus de Inverser les yeux) : à chaque micro-désynchronisation (l'écran décale une image, la grille des images saute ou Windows arrête de composer l'image), Nbeam modifie la durée d'ouverture de 1 µs, une fois en dessous de la valeur réglée puis une fois sur la valeur réglée, ce qui fait redémarrer l'offset de l'émetteur ; seule la valeur réglée est enregistrée. Avec le BFI ou le CRT, la correction se fait dans la première image noire. Au plus deux fois par seconde. **Attention : ce paramètre peut créer de légers scintillements ; si vous y êtes sensible, désactivez-le et augmentez les images en file.**
+- **Suivi d'événements** : Nbeam note ses événements dans `Nbeam_ls.log` ; la touche **O** (3D active) enregistre les 3 dernières secondes du timing des lunettes dans `Nbeam_desync.log`. Une option de l'Application permet de le désactiver.
 - Le **tearing** (option des images en file, 0 = tearing autorisé) donne la latence la plus basse en 2D ; le **contrôle du tearing** place la ligne de déchirure (0 = tout en haut, masquée).
 - **Beam racing** (avec les images en file à 0) : Nbeam lit la position réelle du balayage de l'écran et n'envoie l'image que là où la déchirure ne se voit pas. BFI et image simple : juste avant le retour vertical (aucune déchirure visible). CRT Beam Simulator (balayage haut-bas ou bas-haut) : aussi au-dessus des bandes allumées, pour une latence plus basse. L'**avance du tearing** compense le délai d'envoi (augmentez-la si une déchirure apparaît en haut de l'image). Occupe un cœur du processeur ; nécessite un écran dont la position de balayage est lisible et rien par-dessus la fenêtre de Nbeam. Fonction expérimentale. **Inactif en 3D** : les lunettes gardent la synchronisation classique.
 
@@ -172,13 +171,17 @@ Les raccourcis sont les mêmes pour tous les profils : changer de profil ne les 
 
 Un mini menu, uniquement piloté par l'émetteur NVIDIA, s'affiche à côté de la bannière 3D (au-dessus si la bannière est en bas de l'écran, en dessous si elle est en haut), pendant la même durée que la bannière.
 
-- **Molette** : ouvre le menu puis monte / descend dans la liste (moins sensible que les réglages : 3 crans par ligne).
-- **Bouton maintenu + molette** : change la valeur de la ligne en surbrillance. Les réglages sont appliqués tout de suite, sauf le **mode 3D** et la **résolution IA** (lourds) : leur choix s'affiche avec un « > » et n'est appliqué qu'en **rappuyant sur le bouton** pour confirmer (comme pour la navigation, 3 crans de molette par choix).
-- **Clic** : ferme le menu.
+- **Molette** : ouvre le menu puis monte / descend dans la liste (3 crans par ligne).
+- **Clic** : sélectionne le réglage en surbrillance (affiché entre « < > »). **Molette** : règle sa valeur (en direct pour le timing des lunettes, la convergence, etc.). **Clic** : valide. Pour le mode 3D, la fréquence de l'émetteur, la résolution IA et le profil, le nouveau choix n'est appliqué qu'à la validation.
+- La dernière ligne, **Fermer le menu**, ferme le menu (il se ferme aussi tout seul à la fin de la durée de la bannière).
 
 Réglages proposés : mode 3D, **fréquence de l'émetteur**, convergence, résolution IA, force de la profondeur, lissage, anti-halo (2D vers 3D IA), décalage de synchro, durée d'ouverture, inverser les yeux, **ajouter le programme aux profils** et **profil du programme**. Le mode 3D, la fréquence de l'émetteur, la résolution IA et le profil sont confirmés en rappuyant sur le bouton. La cadence de la profondeur suit le taux de rafraîchissement 3D (selon ce que le PC peut faire) et l'IA utilise toujours le GPU (DirectML), sans réglage à faire.
 
 **80 Hz minimum** : Nbeam refuse de démarrer si l'écran de sortie est sous 79 Hz (message d'erreur), et se ferme avec ce même message si l'écran passe sous 79 Hz pendant l'exécution, sauf si un autre écran connecté est compatible. Les profils ne proposent plus d'écran ni de fréquence sous 80 Hz. La **fréquence de synchro** de l'émetteur est une liste déroulante des fréquences (Hz écran ÷ n, de 80 à 165 Hz, affichées avec 3 décimales). Le **lissage** de la profondeur va jusqu'à 100 % : au-delà de 50 %, l'image du jeu est retenue pour suivre la carte (il faut le tampon de carte).
+
+**Synchro auto de l'émetteur** : cochée, l'émetteur démarre sur la fréquence la plus haute possible, puis, à l'intervalle choisi (0,5 à 2 s), suit le taux d'images du jeu : il prend la fréquence la plus basse dont les paires d'yeux sont un multiple entier des fps du jeu (écran 480 Hz : 60 fps = 120 Hz, 40 fps = 80 Hz, 24 fps = 96 Hz). Il faut un très haut taux de rafraîchissement (240 Hz et plus) pour avoir plusieurs fréquences ; avec une seule, la case est masquée. Le décalage de synchro, la durée d'ouverture et les images claires (Clear Frames) sont **mémorisés pour chaque fréquence** : réglez-les sur chaque fréquence utilisée. **Limite de sécurité** : si le jeu dépasse la moitié de la fréquence la plus haute + 5 fps (480 Hz : 85 fps ; 240 Hz : 65 fps), la 3D et l'émetteur sont coupés avec un message sur la bannière, puis reviennent sous la limite. **Un appui sur le bouton de l'émetteur**, menu fermé, ajoute le programme en cours aux profils.
+
+**Images en file** (jusqu'à 10) : sous 3, la 3D n'est pas disponible.
 
 **Afficher / Masquer les effets** : le bouton du bas du HUD, le raccourci et le menu de l'icône de notification coupent **tous les effets et l'émetteur 3D** (l'image s'affiche telle quelle, pour comparer). Ils restent coupés, HUD ouvert ou fermé, jusqu'à « Afficher ». Ouvrir le HUD ne coupe plus les effets. Dans la fenêtre de Nbeam, ils activent / désactivent les effets (voir Mode fenêtre).
 
@@ -201,20 +204,20 @@ Un **profil** est un fichier `.ini` du dossier `Profils\` qui mémorise tous les
 
 Tout ce qui concerne les profils se trouve dans la section **Configuration du profil** (catégorie Profils), en deux onglets, à la manière du panneau d'un pilote graphique, précédés de la section **Gérer les profils** :
 
-- **Paramètres du programme** : la liste des programmes à gauche, et à droite le tableau des réglages du programme choisi (Activé, délai d'activation, puis pour chaque écran son profil et sa fréquence) ;
+- **Paramètres du programme** : la liste des programmes à gauche, et à droite le tableau des réglages du programme choisi (Activé, Plafond d'images auto, délai d'activation, profil, puis pour chaque écran sa fréquence) ;
 - **Paramètres globaux** : le même tableau, appliqué à tous les programmes d'un coup ;
 - **Gérer les profils** (au-dessus des onglets) : les réglages actifs, le profil à régler, renommer, supprimer et créer un profil.
 
-**Onglet Paramètres du programme :** chaque programme (`.exe`) est associé à un profil. Choisissez le programme dans la liste de gauche (par ordre alphabétique ; un programme désactivé est grisé), ou ajoutez-en un avec **Écrire un nouveau processus** (on tape son nom en haut à droite), **Ajouter un nouveau processus** (liste des programmes ouverts) ou, depuis le programme lui-même, le raccourci **Ajouter le programme aux profils** (Ctrl+Maj+P par défaut). Dans le tableau de droite, cochez **Activé**, puis choisissez le profil et la fréquence de chaque écran (**Ajouter un écran** pour un autre écran, **Supprimer le programme** pour le retirer). Ensuite :
+**Onglet Paramètres du programme :** chaque programme (`.exe`) est associé à un profil. Choisissez le programme dans la liste de gauche (par ordre alphabétique ; un programme désactivé est grisé), ou ajoutez-en un avec **Écrire un nouveau processus** (on tape son nom en haut à droite), **Ajouter un nouveau processus** (liste des programmes ouverts) ou, depuis le programme lui-même, le raccourci **Ajouter le programme aux profils** (Ctrl+Maj+P par défaut). Dans le tableau de droite, cochez **Activé**, choisissez le **Plafond d'images auto** (voir plus bas) et le profil, puis la fréquence de chaque écran (**Ajouter un écran** pour un autre écran, **Supprimer le programme** pour le retirer). Ensuite :
 
 - quand le programme est détecté (fenêtre visible dans la barre des tâches, après un délai réglable), son profil est chargé, il est capturé et le HUD se réduit ;
 - à sa fermeture, les **réglages du bureau** reviennent ; un profil réaffiche les effets s'ils avaient été masqués sur le bureau ;
 - pendant qu'il tourne, changer son profil dans la configuration **l'applique tout de suite** (les réglages en cours sont d'abord enregistrés dans l'ancien profil) ;
 - tant qu'un programme détecté tourne, les réglages des profils (Profil à régler, Créer un profil) sont **masqués** et un message indique le programme et le profil utilisé ; ils reviennent à sa fermeture ;
-- un même programme peut avoir jusqu'à 3 profils, un par écran ; celui de l'écran où se trouve sa fenêtre est choisi ;
-- chaque écran peut avoir son propre **taux de rafraîchissement**, appliqué pendant la capture puis rétabli ;
+- un programme a **un seul profil**, le même pour tous ses écrans (3 écrans au maximum, même déconnectés) ;
+- chaque écran peut avoir son propre **taux de rafraîchissement**, appliqué pendant la capture puis rétabli (les autres écrans servent seulement à changer leur taux au démarrage du programme) ;
 - un programme peut être désactivé (case **Activé**) sans être supprimé ;
-- l'onglet **Paramètres globaux** règle une valeur pour tous les programmes d'un coup (case, délai, profil et fréquence de chaque écran ; « (mixte) » quand ils diffèrent) ; chaque programme reste modifiable ensuite.
+- l'onglet **Paramètres globaux** règle une valeur pour tous les programmes d'un coup (case, délai, profil et fréquence de chaque écran ; « (mixte) » quand ils diffèrent) ; chaque programme reste modifiable ensuite. Dans les réglages généraux (section Application), **Plafond d'images auto** donne le choix par défaut des programmes que vous ajoutez, et **Limite d'images Display Commander** règle la limite écrite pour Display Commander.
 
 **Section Gérer les profils :**
 
@@ -236,9 +239,19 @@ Tout ce qui concerne les profils se trouve dans la section **Configuration du pr
 
 **Latence minimale** : mettez les images en file à « 0 (tearing autorisé) » et réglez le contrôle du tearing pour cacher la déchirure en haut de l'image.
 
+### Plafond d'images automatique (expérimental)
+
+La 3D coupe si le jeu dépasse la limite d'images affichée dans la bannière ; avec le BFI ou le CRT, un jeu régulier à la cadence du contenu donne la meilleure image. Le choix **Plafond d'images auto** de chaque programme (**Aucun**, **RTSS** ou **Display Commander**) règle cette limite à votre place tant que le programme est détecté. Un choix est grisé, avec la raison au survol, si le logiciel n'est pas installé sur le PC. Nbeam ne s'injecte jamais dans le jeu.
+
+- **RTSS** (RivaTuner Statistics Server) : en 3D, la moitié du taux 3D (par exemple 60 fps pour une 3D à 120 Hz) ; avec le BFI ou le CRT, la cadence du contenu (Hz de l'écran / sous-images) ; sans effet, pas de plafond. La limite suit les changements en direct. Nbeam lance RTSS réduit s'il ne tourne pas, ne change que la limite du programme dans RTSS et la rétablit quand le programme se ferme ou que Nbeam quitte.
+- **Display Commander** / **ReLimiter** (addons ReShade) : chaque programme a, pour chaque écran, sa case Activé, son plafond d'images auto, son délai d'activation et sa **limite d'images** (0 = sans limite, jusqu'à 1000 fps ; ReLimiter : au moins 30), réglable dans sa détection ou pour tous dans les paramètres globaux. Nbeam l'écrit dans le `DisplayCommander.ini` (clé `FpsLimiter.TargetFps`) ou le `relimiter.ini` (clé `target_fps`) à côté de l'exe, **pour tous les programmes à la fois et en dehors du lancement des jeux** : au démarrage de Nbeam, quand l'écran principal de Windows change (ce sont les limites de l'écran principal qui sont écrites), quand une limite ou un choix change, et après la fermeture d'un jeu (l'addon réenregistre ses réglages en quittant). L'addon lit la limite au démarrage du jeu : elle est donc prête avant. Un jeu sans ce fichier `.ini` est ignoré. Nbeam a besoin du chemin du jeu : chemin complet saisi, ou chemin retenu à sa première détection. La limite ne suit pas les changements de mode 3D ou BFI.
+
+### Redémarrage complet de sécurité
+
+Si la carte graphique est perdue 3 fois en 2 minutes, si le rendu redémarre 8 fois en 20 secondes, ou si aucune image n'est affichée pendant 15 secondes alors que les effets sont actifs (écran noir), Nbeam se relance entièrement tout seul, réduit dans la zone de notification, et reprend le programme en cours. Au plus 3 relancements en 10 minutes (les heures sont dans `Nbeam_selfrestart.txt`) : au-delà, Nbeam le note dans son journal et ne relance plus. Le journal (`Nbeam_ls.log`) note à chaque perte de la carte la mémoire vidéo, le format 3D et l'état de la lecture d'image de la 3D Auto.
+
 ## Problèmes connus
 
-- **Désynchronisation temporaire quand la souris est visible.** Pour régler la 3D, préférez les raccourcis clavier ou le mini menu de l'émetteur.
 - **Lossless Scaling (LSFG) capturé : le pointeur de la souris n'est pas visible dans le HUD.** Le HUD reste utilisable (les clics marchent), mais il faut viser sans voir le pointeur. Le clavier reste au jeu tant que Lossless Scaling est capturé : arrêtez la mise à l'échelle pour taper du texte dans le HUD.
 
 ## Crédits et remerciements

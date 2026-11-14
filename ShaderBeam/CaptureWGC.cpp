@@ -55,6 +55,8 @@ void CaptureWGC::InternalStart()
     if(m_options.gpuThreadPriority)
         m_captureDevice->SetGPUThreadPriority(m_options.gpuThreadPriority | 0x40000000);
 
+    m_poolSize = contentSize;
+
     m_session = m_framePool.CreateCaptureSession(item);
 
     if(CanDisableBorder())
@@ -117,6 +119,20 @@ bool CaptureWGC::InternalPoll(const winrt::com_ptr<ID3D11Texture2D>& outputTextu
         auto size      = frame.ContentSize();
         auto timestamp = frame.SystemRelativeTime();
         m_watcher.FrameReceived(Helpers::QPCToTicks(timestamp.count()));
+        if(size.Width != m_poolSize.Width || size.Height != m_poolSize.Height)
+        {
+            // the captured window changed size (e.g. resized to twice the width for Full SBS): the pool buffers keep their old size and Windows would
+            // squeeze the new picture into them, so the pool is made again at the new size (this frame is the squeezed one: skipped)
+            try
+            {
+                auto format = m_options.useHdr ? winrt::Windows::Graphics::DirectX::DirectXPixelFormat::R16G16B16A16Float : winrt::Windows::Graphics::DirectX::DirectXPixelFormat::B8G8R8A8UIntNormalized;
+                m_framePool.Recreate(CreateDirect3DDevice(m_captureDevice.get()), format, m_options.wgcBuffers, size);
+                m_poolSize = size;
+            }
+            catch(...)
+            { }
+            return false;
+        }
         {
             // age of this frame now (SystemRelativeTime: the performance counter, in 100 ns units), for the BFI phase lock
             LARGE_INTEGER now, freq;
@@ -125,10 +141,44 @@ bool CaptureWGC::InternalPoll(const winrt::com_ptr<ID3D11Texture2D>& outputTextu
             const double nowHns = (double)now.QuadPart * 1.0e7 / (double)freq.QuadPart;
             m_lastFrameAgeMs    = (nowHns - (double)timestamp.count()) / 1.0e4;
         }
-        CopyToOutput(texture, size.Width, size.Height, outputTexture);
+        // window capture: only the game (the client area of its window), without the title bar, the borders and the shadow, so that nothing
+        // shifts or squeezes the picture (a 3D format would be split in the wrong place)
+        int cx = 0, cy = 0, cw = size.Width, ch = size.Height;
+        if(m_captureWindow)
+            ClientPart(size.Width, size.Height, cx, cy, cw, ch);
+        CopyToOutput(texture, cw, ch, outputTexture, cx, cy);
         return true;
     }
     return false;
+}
+
+// the client area of the captured window inside the frame (the frame covers the visible window: DWM extended frame bounds). Read again every
+// 100 ms or when the frame size changes; while the window and the frame do not have the same size (during a resize) the whole frame is used.
+void CaptureWGC::ClientPart(int W, int H, int& x, int& y, int& w, int& h)
+{
+    const ULONGLONG now = GetTickCount64();
+    if(W != m_cropFrameW || H != m_cropFrameH || now - m_cropAt >= 100)
+    {
+        m_cropAt     = now;
+        m_cropFrameW = W;
+        m_cropFrameH = H;
+        m_cropOk     = false;
+        RECT  efb {}, cr {};
+        POINT o { 0, 0 };
+        if(DwmGetWindowAttribute(m_captureWindow, DWMWA_EXTENDED_FRAME_BOUNDS, &efb, sizeof(efb)) == S_OK && GetClientRect(m_captureWindow, &cr) &&
+           ClientToScreen(m_captureWindow, &o) && abs((efb.right - efb.left) - W) <= 2 && abs((efb.bottom - efb.top) - H) <= 2)
+        {
+            int cx = (std::max)(0, (int)(o.x - efb.left)), cy = (std::max)(0, (int)(o.y - efb.top));
+            int cw = (std::min)((int)cr.right, W - cx), ch = (std::min)((int)cr.bottom, H - cy);
+            if(cw >= 64 && ch >= 64)
+            {
+                m_crop[0] = cx, m_crop[1] = cy, m_crop[2] = cw, m_crop[3] = ch;
+                m_cropOk  = true;
+            }
+        }
+    }
+    if(m_cropOk)
+        x = m_crop[0], y = m_crop[1], w = m_crop[2], h = m_crop[3];
 }
 
 template <typename T>

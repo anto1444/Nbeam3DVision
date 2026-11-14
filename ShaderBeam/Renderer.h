@@ -16,6 +16,8 @@ MIT License
 #include "StereoConvert.h"
 #include "DepthAI.h"
 #include <chrono>
+#include <future>
+#include "StereoDetect.h"
 #include <deque>
 
 namespace ShaderBeam
@@ -40,13 +42,16 @@ public:
     bool                                   NewInputRequired() const;
     void                                   BufferReset() { if(m_ringPrimed || !m_ringQueue.empty()) DestroyRing(); } // buffer not in use: nothing stale is kept
     float                                  PhaseShortCycleGain() const; // brightness of a cycle one refresh shorter (Simple BFI)
+    void                                   AdaptQueue();        // Auto queue length (Queued Frames = Auto): one frame more when frames are late, one less after a long calm
+    void                                   ApplyQueueNow();     // the queue length in use is applied live (frame latency) and announced to the glasses timing
+    int                                    QueueFramesNow() const;
     void                                   AdaptFrameBuffer(); // adapted buffer size (Frame buffer and Hybrid), called every loop of the render thread
     int                                    FrameBufferLimit() const; // ring size: 5 frames, or more with the map buffer (as many frames as fit in about 512 MB, up to 30)
     bool                                   MapSync() const; // 2D to 3D (AI) with "Map buffer": each image waits for its own depth map
     bool                                   BufferActive() const; // anti-stutter buffer in use (Options::frameBuffer)
     void                                   BufferedStep(const std::shared_ptr<CaptureBase>& capture); // replaces PollCapture while the buffer is active
     void                                   RollInput(bool newFrame);
-    bool                                   ConvertStereoInput(bool newFrame); // SBS/TB/Checkerboard -> one eye, call after capture Poll and before RollInput; returns newFrame
+    bool                                   ConvertStereoInput(bool newFrame); // SBS/TB/Checkerboard/Interlaced -> one eye, call after capture Poll and before RollInput; returns newFrame
     void                                   PhaseSample(double ageMs); // BFI phase lock: age of the new game frame when the cycle took it
 
 
@@ -134,6 +139,26 @@ private:
     // SubFrames modes
     int             m_mode { SF_MANUAL }; // effective mode for this run (Options::EffectiveSubFramesMode at Start)
     AutoSubFrames   m_auto;
+    double             m_syncAutoT0 { 0 };  // 3D Sync Auto: start of the 3 s measure of the game frame rate
+    unsigned long long m_syncAutoN0 { 0 };
+    double             m_capT0 { 0 };       // 3D frame rate cap: start of the 1 s measure
+    unsigned long long m_capN0 { 0 };
+    // Auto 3D format: the captured frame is read back every 2 s (copy now, read at the next call: no GPU stall)
+    winrt::com_ptr<ID3D11Texture2D> m_autoStaging;
+    bool               m_autoPending { false };
+    bool               m_autoMapped { false }; // the CPU copy stays mapped while the analysis thread reads it (unmapped once it is done)
+    winrt::com_ptr<ID3D11Texture2D> m_autoMid; // GPU copy of the 3D source (the readback copies it one picture later, never straight from the capture texture)
+    bool               m_autoMidReady { false };
+    std::future<StereoDetectResult> m_autoFut;
+    double             m_autoT0 { 0.0 };
+    HWND               m_autoWin { nullptr }; // captured window the Auto source works for
+    bool               m_autoFirst { true };  // no detection yet for this window: the first one is taken at once
+    ULONGLONG          m_autoLastCall { 0 };
+    int                m_autoCand { 0 };      // format seen by the last detection, waiting for a second one before it replaces the current one
+    void               DetectAutoFormat(ID3D11Texture2D* picture); // Auto source: picture = the capture that just arrived (nullptr: only follows the analysis in progress)
+    int                m_capOk { 0 };       // consecutive measures under the cap (3D comes back after 2)
+    int                m_capHigh { 0 };
+    int                m_clearSlot { -1 };  // rate whose Clear Frames the BFI parameter shows
     bool            m_bypass { false };            // low fps with "Disable BFI": the image is shown as it is
     float           m_uniformGain { 1.0f };        // Auto + Uniform brightness: picture brightness multiplier (see UpdateSubFramesMode)
 
@@ -170,6 +195,14 @@ private:
     bool                                    m_psValid { false };
     UINT                                    m_psPresentCount { 0 }, m_psRefreshCount { 0 };
     long long                               m_psGlitches { 0 };
+    long long                               m_psGlitchBig { 0 };      // of those, frames that lost 3 refreshes or more (a single lost refresh is not counted: nothing can avoid it)
+    long long                               m_psGlitchEvents { 0 };   // frames that did not come at one per refresh (Auto queue)
+    int                                     m_queueEnv { 3 };         // queue length the glasses timing knows
+    long long                               m_qEventsSeen { 0 };
+    std::chrono::steady_clock::time_point   m_qStart {}, m_qLastChange {}, m_qCalmSince {};
+    long long                               m_qBigSeen { 0 };
+    std::deque<std::chrono::steady_clock::time_point> m_qSmall; // recent single lost refreshes (3 within 20 s count as a problem)
+    std::deque<std::chrono::steady_clock::time_point> m_qRises; // recent rises of the Auto queue (a game that keeps needing more keeps it longer)
     double                                  m_psStart { 0.0 };
     bool                                    m_tearing { false };      // swap chain created with tearing allowed (Options::Tearing)
     winrt::com_ptr<IDXGIOutput>             m_tearOutput;             // output waited on for the tearing line
@@ -207,7 +240,25 @@ private:
     winrt::com_ptr<ID3D11PixelShader>        m_hudPs;
     winrt::com_ptr<ID3D11BlendState>         m_hudBlend;
     UINT                                     m_hudW { 0 }, m_hudH { 0 };
-    std::chrono::steady_clock::time_point    m_hudLast {};
+    // tracer of the HUD clicks (Nbeam_ls.log)
+    struct ClickWindow
+    {
+        int    frames { 0 };
+        int    late { 0 };
+        double maxGap { 0.0 };
+        double maxHud { 0.0 };
+        double maxPresent { 0.0 };
+    };
+    void        ClickTrace(double presentMs, double nowMs);
+    ClickWindow m_trCur, m_trRef;
+    double      m_trLastPresent { 0.0 };
+    double      m_trStart { 0.0 };
+    double      m_trHudMs { 0.0 };
+    ULONGLONG   m_trClick { 0 };
+    long long   m_trGlitch0 { 0 };
+    int         m_minLate { 0 };     // late frames of the current minute (log)
+    double      m_minMaxGap { 0.0 };
+    double      m_minStart { 0.0 };
     RECT                                     m_hudArea {};     // area of the HUD texture that holds something (the overlay draws there only)
     bool                                     m_hudEmpty { false };
     bool                                     m_hudFailed { false };

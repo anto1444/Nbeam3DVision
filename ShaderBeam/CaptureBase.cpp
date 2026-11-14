@@ -34,7 +34,7 @@ struct Scaler
 Scaler g_scaler;
 
 const char kScaleHlsl[] = R"HLSL(
-cbuffer Params : register(b0) { float4 a; float4 b; float4 c; }; // c = viewport origin ; a = src w,h, dst w,h ; b = taps x, taps y, srgb out, 0
+cbuffer Params : register(b0) { float4 a; float4 b; float4 c; }; // c = viewport origin, part of the texture used ; a = src w,h, dst w,h ; b = taps x, taps y, srgb out, 0
 Texture2D<float4> src : register(t0);
 SamplerState smp : register(s0);
 float4 VSmain(uint id : SV_VertexID) : SV_Position
@@ -46,8 +46,8 @@ float3 Dec(float3 c) { return c <= 0.04045 ? c / 12.92 : pow((c + 0.055) / 1.055
 float4 PSmain(float4 pos : SV_Position) : SV_Target
 {
     // pos is inside the viewport (the fitted rectangle): uv from the viewport origin handled by the caller through a.zw
-    float2 uv = (pos.xy - c.xy) / a.zw;
-    float2 stepUv = float2(1.0 / a.x, 1.0 / a.y);
+    float2 uv = (pos.xy - c.xy) / a.zw * c.zw;
+    float2 stepUv = c.zw / a.xy;
     float  tx = b.x, ty = b.y;
     float2 foot = float2(a.x / a.z, a.y / a.w); // source pixels per output pixel
     float4 acc = 0;
@@ -77,7 +77,7 @@ void CaptureBase::Start(winrt::com_ptr<IDXGIDevice> captureDevice, winrt::com_pt
     m_windowX             = 0;
     m_windowY             = 0;
 
-    if(m_options.captureWindow && !m_options.processOutput ) // (output "Process": the output is the window itself, no offset)
+    if(m_options.captureWindow && !m_options.processOutput && !m_options.FullSbsActive()) // (Full SBS: the window is fitted whole in the double-width texture, no offset)  (output "Process": the output is the window itself, no offset)
     {
         RECT captureRect;
         if(DwmGetWindowAttribute(m_options.captureWindow, DWMWA_EXTENDED_FRAME_BOUNDS, &captureRect, sizeof(RECT)) == S_OK)
@@ -133,7 +133,7 @@ bool CaptureBase::Poll(const winrt::com_ptr<ID3D11Texture2D>& outputTexture)
     return newFrame;
 }
 
-void CaptureBase::CopyToOutput(const winrt::com_ptr<ID3D11Texture2D>& capturedFrame, int width, int height, const winrt::com_ptr<ID3D11Texture2D>& outputTexture)
+void CaptureBase::CopyToOutput(const winrt::com_ptr<ID3D11Texture2D>& capturedFrame, int width, int height, const winrt::com_ptr<ID3D11Texture2D>& outputTexture, int srcX, int srcY)
 {
     if(m_stopping || !capturedFrame || width == 0 || height == 0)
         return;
@@ -164,14 +164,14 @@ void CaptureBase::CopyToOutput(const winrt::com_ptr<ID3D11Texture2D>& capturedFr
         }
 
         // copy captured frame to staging frame (because capturedFrame wont't have CPU_ACCESS_READ)
-        CopyTrimToOutputSize(m_stagingContext.get(), m_stagingFrame.get(), capturedFrame.get(), width, height);
+        CopyTrimToOutputSize(m_stagingContext.get(), m_stagingFrame.get(), capturedFrame.get(), width, height, srcX, srcY);
 
         m_stagingCopyRequired = true;
     }
     else
     {
         // same adapter, just copy directly
-        CopyTrimToOutputSize(m_outputContext.get(), outputTexture.get(), capturedFrame.get(), width, height);
+        CopyTrimToOutputSize(m_outputContext.get(), outputTexture.get(), capturedFrame.get(), width, height, srcX, srcY);
     }
 }
 
@@ -197,13 +197,22 @@ void CaptureBase::CopyStagingToOutput(const winrt::com_ptr<ID3D11Texture2D>& out
     m_outputContext->Unmap(outputTexture.get(), 0);
 }
 
-void CaptureBase::CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Texture2D* output, ID3D11Texture2D* source, int width, int height)
+void CaptureBase::CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Texture2D* output, ID3D11Texture2D* source, int width, int height, int srcX, int srcY)
 {
     D3D11_TEXTURE2D_DESC outDesc {};
     output->GetDesc(&outDesc); // (3D "Full" modes capture into a texture twice as large as the shader display)
+    D3D11_TEXTURE2D_DESC inDesc {};
+    source->GetDesc(&inDesc);
     if(width == (int)outDesc.Width && height == (int)outDesc.Height && m_windowX == 0 && m_windowY == 0)
     {
-        context->CopyResource(output, source);
+        if(srcX == 0 && srcY == 0 && inDesc.Width == outDesc.Width && inDesc.Height == outDesc.Height)
+            context->CopyResource(output, source);
+        else
+        {
+            // the game part of the frame, exactly the size of the output (output "Process": no scaling at all)
+            D3D11_BOX b { (UINT)srcX, (UINT)srcY, 0, (UINT)(srcX + width), (UINT)(srcY + height), 1 };
+            context->CopySubresourceRegion(output, 0, 0, 0, 0, source, 0, &b);
+        }
         return;
     }
 
@@ -241,10 +250,13 @@ void CaptureBase::CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Textu
                 sd.MaxLOD         = D3D11_FLOAT32_MAX;
                 THROW(dev->CreateSamplerState(&sd, S.samp.put()), "Unable to create scaling sampler");
             }
-            D3D11_TEXTURE2D_DESC sd {};
-            source->GetDesc(&sd);
-            if(!S.srcCopy || S.srcW != sd.Width || S.srcH != sd.Height || S.srcFmt != sd.Format)
+            // the copy of the source is kept while the window is resized (made larger only when needed, by steps of 256 pixels): no new
+            // texture on every frame of a resize
+            D3D11_TEXTURE2D_DESC sd = inDesc;
+            if(!S.srcCopy || S.srcW < (UINT)width || S.srcH < (UINT)height || S.srcFmt != sd.Format)
             {
+                sd.Width          = (UINT)(((std::max)((UINT)width, S.srcFmt == sd.Format ? S.srcW : 0u) + 255) / 256 * 256);
+                sd.Height         = (UINT)(((std::max)((UINT)height, S.srcFmt == sd.Format ? S.srcH : 0u) + 255) / 256 * 256);
                 S.srcSrv  = nullptr;
                 S.srcCopy = nullptr;
                 sd.BindFlags      = D3D11_BIND_SHADER_RESOURCE;
@@ -263,7 +275,10 @@ void CaptureBase::CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Textu
             auto& rtvRef = S.rtvs[output];
             if(!rtvRef)
                 THROW(dev->CreateRenderTargetView(output, nullptr, rtvRef.put()), "Unable to create scaling target");
-            context->CopySubresourceRegion(S.srcCopy.get(), 0, 0, 0, 0, source, 0, nullptr);
+            {
+                D3D11_BOX b { (UINT)srcX, (UINT)srcY, 0, (UINT)(srcX + width), (UINT)(srcY + height), 1 };
+                context->CopySubresourceRegion(S.srcCopy.get(), 0, 0, 0, 0, source, 0, &b);
+            }
 
             // fitted rectangle (aspect ratio kept)
             const float sw = (float)width, sh = (float)height, dw = (float)outDesc.Width, dh = (float)outDesc.Height;
@@ -278,7 +293,7 @@ void CaptureBase::CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Textu
                 const float ty = (std::min)(4.0f, (std::max)(1.0f, ceilf(sh / fh)));
                 const bool  srgbOut = outDesc.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || outDesc.Format == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
                 // pixel position inside the viewport: SV_Position is in render-target pixels, so shift by the fitted origin
-                const float v[12] = { sw, sh, fw, fh, tx, ty, srgbOut ? 1.0f : 0.0f, 0.0f, fx, fy, 0.0f, 0.0f };
+                const float v[12] = { sw, sh, fw, fh, tx, ty, srgbOut ? 1.0f : 0.0f, 0.0f, fx, fy, sw / (float)S.srcW, sh / (float)S.srcH };
                 memcpy(mapped.pData, v, sizeof(v));
                 context->Unmap(S.cb.get(), 0);
             }
@@ -315,13 +330,17 @@ void CaptureBase::CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Textu
 
     // truncate (window capture offset, cross adapter)
     D3D11_BOX box;
-    box.left   = 0;
-    box.top    = 0;
-    box.right  = min(outDesc.Width - m_windowX, (unsigned)width);
-    box.bottom = min(outDesc.Height - m_windowY, (unsigned)height);
+    // (window capture: the game part is put where it is on the screen, the title bar and the borders are not copied)
+    const int dx = (std::max)(0, m_windowX + srcX), dy = (std::max)(0, m_windowY + srcY);
+    if(dx >= (int)outDesc.Width || dy >= (int)outDesc.Height)
+        return;
+    box.left   = (UINT)srcX;
+    box.top    = (UINT)srcY;
+    box.right  = (UINT)srcX + min(outDesc.Width - (UINT)dx, (unsigned)width);
+    box.bottom = (UINT)srcY + min(outDesc.Height - (UINT)dy, (unsigned)height);
     box.front  = 0;
     box.back   = 1;
-    context->CopySubresourceRegion(output, 0, m_windowX, m_windowY, 0, source, 0, &box);
+    context->CopySubresourceRegion(output, 0, dx, dy, 0, source, 0, &box);
 }
 
 } // namespace ShaderBeam

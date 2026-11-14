@@ -19,9 +19,10 @@ MIT License
 
 #include "HudFont.h"
 #include <atomic>
+#include <mutex>
+#include <thread>
 #include <functional>
 #include "UIWidgets.h"
-#include "Gamepad.h"
 #include "LogoShaderBeam.h"
 #include "ReleaseNotes.h"
 #include <shellapi.h>
@@ -123,7 +124,7 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 // About: one line per row, each centred in the window (the version is the one of the release notes below)
 const char* SHADERBEAM_ABOUT = SHADERBEAM_TITLE "\n"
-                               "Version 2.4.1\n"
+                               "Version 3.0.0\n"
                                "Made by anto1444, 2026\n"
                                "\n"
                                "Based on ShaderBeam (c) 2025-2026 mausimus\n"
@@ -134,7 +135,7 @@ const char* SHADERBEAM_ABOUT = SHADERBEAM_TITLE "\n"
                                "Timothy Lottes @NOTimothyLottes\n"
                                "https://blurbusters.com/crt";
 const char* SHADERBEAM_ABOUT_FR = SHADERBEAM_TITLE "\n"
-                                  "Version 2.4.1\n"
+                                  "Version 3.0.0\n"
                                   "Fait par anto1444, 2026\n"
                                   "\n"
                                   "Bas\303\251 sur ShaderBeam (c) 2025-2026 mausimus\n"
@@ -148,11 +149,9 @@ const char* SHADERBEAM_ABOUT_FR = SHADERBEAM_TITLE "\n"
 static std::string s_hotkeyMessage;
 static std::string s_hotkeyHelp;
 static int         s_captureId = -1;
-static int         s_padCaptureId = -1; // action whose gamepad combination is being captured
-static bool        s_padArmed     = false; // all buttons released once since the capture started
-static unsigned    s_padMax       = 0;     // buttons held during the capture
 
-static int s_hotkeysDrawnFrame = -1; // last HUD frame in which the Hotkeys section was drawn
+static int s_hotkeysDrawnFrame = -1;
+static const char* s_hudSection = nullptr; // section of the HUD shown (log of the slow HUD frames) // last HUD frame in which the Hotkeys section was drawn
 
 // the HUD and the effects shortcuts can never be empty (they must stay reachable)
 static bool IsProtectedHotkey(int id)
@@ -162,12 +161,9 @@ static bool IsProtectedHotkey(int id)
 
 static void CancelCaptureNow(ShaderBeam::Options& o)
 {
-    if(s_captureId < 0 && s_padCaptureId < 0 && !o.hotkeysSuspended)
+    if(s_captureId < 0 && !o.hotkeysSuspended)
         return;
     s_captureId        = -1;
-    s_padCaptureId     = -1;
-    s_padMax           = 0;
-    s_padArmed         = false;
     o.hotkeysSuspended = false;
     for(int id = 0; id < HOTKEY_COUNT; id++)
         o.UnregisterHotkey(id);
@@ -175,10 +171,6 @@ static void CancelCaptureNow(ShaderBeam::Options& o)
         o.RegisterHotkey(id);
 }
 
-// gamepad focus between the category rail and the settings pane (D-pad left / right)
-static ImGuiWindow* s_railWin       = nullptr;
-static ImGuiWindow* s_paneWin       = nullptr;
-static int          s_padFocus      = 0;     // 1 = move the focus to the rail, 2 = to the pane (done while that part is drawn)
 static std::string s_hotkeyError;
 
 namespace ShaderBeam
@@ -203,6 +195,7 @@ static ID3D11ShaderResourceView* s_iconSB    = nullptr;
 // HUD scale: base style and base font size (scale 1), applied scale
 static ImGuiStyle s_baseStyle;
 static float      s_baseFont     = 16.0f;
+static float      s_startDpi     = 96.0f; // Windows scale (dpi) at the start: the interface is at its normal size for it
 static float      s_appliedScale = 1.0f;
 
 // the ShaderBeam logo (embedded RGBA, straight alpha)
@@ -304,6 +297,18 @@ static winrt::com_ptr<ID3D11ShaderResourceView> CreateLogoTexture(ID3D11Device* 
     return srv;
 }
 
+// Auto: the interface follows the Windows display scale of the screen it is on (100 % in Windows = normal size, 150 % = 1.5 times...).
+float UI::EffScale()
+{
+    if(m_options.hud.autoScale && m_hwnd)
+    {
+        const UINT dpi = GetDpiForWindow(m_hwnd);
+        if(dpi)
+            return std::clamp((float)dpi / s_startDpi, 0.6f, 3.0f);
+    }
+    return HudScale();
+}
+
 UI::UI(Options& options, ShaderManager& shaderManager) : m_options(options), m_shaderManager(shaderManager) { }
 
 void UI::Start(HWND window, float scale, winrt::com_ptr<ID3D11Device> device, winrt::com_ptr<ID3D11DeviceContext> context)
@@ -338,6 +343,7 @@ void UI::Start(HWND window, float scale, winrt::com_ptr<ID3D11Device> device, wi
 
     m_fontSize = roundf(16.0f * scale);
     s_baseFont     = m_fontSize;
+    s_startDpi     = (std::max)(96.0f * scale, 48.0f);
     s_baseStyle    = style; // sizes at scale 1 of the HUD (colours are taken from the live style)
     s_appliedScale = 1.0f;
 
@@ -403,14 +409,35 @@ double UI::ExactRefreshRate(HMONITOR monitor)
     return 0.0;
 }
 
+static void KeepMax(std::atomic<int>& v, int x); // (tracer of the HUD clicks)
+
 bool UI::Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
 {
     try
     {
         // the render thread may be drawing the HUD right now: wait for it (a little, never forever)
+        if(m_options.ui && (msg == WM_LBUTTONDOWN || msg == WM_LBUTTONUP || msg == WM_RBUTTONDOWN || msg == WM_RBUTTONUP || msg == WM_LBUTTONDBLCLK))
+        {
+            // tracer of the HUD clicks (Renderer::ClickTrace)
+            m_lastClickName = msg == WM_LBUTTONDOWN ? "left down" : msg == WM_LBUTTONUP ? "left up" : msg == WM_LBUTTONDBLCLK ? "double click" : msg == WM_RBUTTONDOWN ? "right down" : "right up";
+            m_lastClick     = GetTickCount64();
+        }
+        // A message sent by ImGui itself while it handles one (ReleaseCapture when the button is released sends WM_CAPTURECHANGED at once, on
+        // this same thread): the lock is already held by this thread, so it is handled directly. Waiting for the lock here blocked for 50 ms
+        // while holding it, and the render thread with it (a flash of the BFI / 3D and the glasses out of step at each release of the button).
+        static thread_local bool inside = false;
+        if(inside)
+            return m_ready && m_options.ui && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
+        const auto                         w0 = std::chrono::steady_clock::now();
         std::unique_lock<std::timed_mutex> lock(m_imguiMutex, std::defer_lock);
         if(!lock.try_lock_for(std::chrono::milliseconds(50)))
             return false;
+        KeepMax(m_waitInputUs, (int)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - w0).count());
+        struct Inside
+        {
+            Inside() { inside = true; }
+            ~Inside() { inside = false; }
+        } mark;
         return m_ready && m_options.ui && ImGui_ImplWin32_WndProcHandler(hWnd, msg, wParam, lParam);
     }
     catch(...)
@@ -418,9 +445,69 @@ bool UI::Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return false;
 }
 
+// "Draw a pointer" (Direct presentation, HUD hidden): the Windows pointer is hidden over Nbeam, so Nbeam draws one with the picture (it follows
+// the BFI and the 3D) while the real pointer moves, and for 3 seconds after. A pointer that stays where it is (a game that keeps it in the
+// middle of the window while the mouse turns the camera) is never drawn. Render thread only.
+static bool OwnPointerWanted(const Options& o, bool windowMode)
+{
+    static POINT     s_anchor {};
+    static bool      s_have  = false;
+    static ULONGLONG s_moved = 0;
+    POINT            p {};
+    if(!o.drawPointer || !o.directPresent || o.ui || windowMode || !GetCursorPos(&p))
+    {
+        s_have = false;
+        return false;
+    }
+    const ULONGLONG now = GetTickCount64();
+    if(!s_have)
+    {
+        s_anchor = p;
+        s_have   = true;
+        s_moved  = 0;
+    }
+    else if(abs(p.x - s_anchor.x) >= 6 || abs(p.y - s_anchor.y) >= 6)
+    {
+        s_anchor = p;
+        s_moved  = now;
+    }
+    return s_moved != 0 && now - s_moved < 3000;
+}
+
 bool UI::RenderRequired() const
 {
-    return m_ready && (m_options.ui || BannerActive());
+    return m_ready && (m_options.ui || BannerActive() || OwnPointerWanted(m_options, m_windowMode));
+}
+
+// "Auto fps cap" choice (None / RTSS / Display Commander) of a program detection and of the global settings; a program that is not installed is
+// greyed out. Returns true when the choice changed.
+static bool FpsCapCombo(const char* id, int& mode, bool rtss, bool dc, bool mixed = false)
+{
+    bool        changed  = false;
+    const char* names[4] = { Tr("None"), "RTSS", "Display Commander", "ReLimiter" };
+    if(mode < 0 || mode > 3 || (mode == 1 && !rtss) || (mode == 2 && !dc))
+        mode = 0;
+    if(ImGui::BeginCombo(id, mixed ? Tr("(mixed)") : names[mode], 0))
+    {
+        for(int m = 0; m < 4; m++)
+        {
+            const bool avail = m == 0 || m == 3 || (m == 1 && rtss) || (m == 2 && dc); // (ReLimiter has no installation to look for: it is used for the games that have it)
+            ImGui::BeginDisabled(!avail);
+            if(ImGui::Selectable(names[m], mode == m) && avail)
+            {
+                mode    = m;
+                changed = true;
+            }
+            ImGui::EndDisabled();
+            if(!avail && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                ImGui::SetTooltip("%s", m == 1 ? Tr("Not available: RivaTuner Statistics Server (RTSS) was not found on this PC. Install it (it comes with MSI Afterburner, or from guru3d.com), then restart Nbeam.")
+                                               : Tr("Not available: Display Commander was not found on this PC (folder Display_Commander in %LocalAppData%\\Programs). Install it, then restart Nbeam."));
+        }
+        ImGui::EndCombo();
+    }
+    if(ImGui::IsItemHovered())
+        ImGui::SetTooltip("%s", Tr("Experimental. Caps the frame rate of this program automatically while it is detected. RTSS (RivaTuner Statistics Server): in 3D, half the 3D rate (e.g. 60 fps for a 120 Hz 3D); with BFI or CRT, the content rate (screen Hz / SubFrames); without effects there is no cap. It is followed live; Nbeam starts RTSS minimized if it is not running, and only changes the frame limit of the program in RTSS (the previous limit comes back when the program closes or Nbeam quits). Display Commander / ReLimiter (ReShade addons): Nbeam writes the \"Frame limit\" of this program (one per screen) in the DisplayCommander.ini / relimiter.ini next to the game, for every program at once, when Nbeam starts, when its screen changes and after the game closes, so it is ready before the game starts (the addon reads it only then; it does not follow the 3D / BFI changes). A game without that file is ignored."));
+    return changed;
 }
 
 static void ShowHelpMarker(const char* desc)
@@ -580,7 +667,7 @@ void UI::RenderHudHeader(float height)
     if(m_logo)
         dl->AddImage(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(logoX, p0.y + (height - logoSz) * 0.5f), ImVec2(logoX + logoSz, p0.y + (height + logoSz) * 0.5f));
     dl->AddText(font, titleSz, ImVec2(titleX, p0.y + height * 0.5f - titleSz * 0.95f), cOnAcc, title);
-    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v2.4.1");
+    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v3.0.0");
 
     // output mode (like "3440 x 1440 | 240Hz")
     char mode[64];
@@ -670,49 +757,41 @@ void UI::RenderHudHeader(float height)
 
 void UI::Render()
 {
-    std::lock_guard<std::timed_mutex> imguiLock(m_imguiMutex); // the main thread feeds ImGui with the mouse / keyboard
-    ImGui_ImplDX11_NewFrame();
+    // a HUD frame longer than 8 ms (the BFI / 3D can flash): logged with the section shown, to find what is slow
+    struct SlowFrame
     {
-        // Gamepad navigation (D-pad / stick: move, A: activate, B: back, LB / RB: slow / fast on sliders), only while the HUD is open
-        // and in front, so that a pad used for the game below never moves the HUD by accident.
-        ImGuiIO& io = ImGui::GetIO();
-        const bool padNav = m_options.ui && s_padCaptureId < 0 && GetForegroundWindow() == m_hwnd;
-        if(padNav)
-            io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
-        else
-            io.ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad;
-    }
-    ImGui_ImplWin32_NewFrame();
-    {
-        // D-pad Left / Right switch between the category rail and the settings pane, handled here and not by ImGui's directional move
-        // (which depends on where the focus happens to be): the press is turned into a focus request (s_padFocus) and hidden from ImGui.
-        // Not while a control is being tweaked or a list is open: there Left / Right belong to that control.
-        ImGuiIO&      io = ImGui::GetIO();
-        ImGuiContext& g  = *ImGui::GetCurrentContext();
-        static bool   prevL = false, prevR = false;
-        const unsigned b = Pad::Buttons();
-        const bool     L = (b & Pad::LEFT) != 0, R = (b & Pad::RIGHT) != 0;
-        const bool     busy = g.ActiveId != 0 || g.OpenPopupStack.Size > 0;
-        if(m_options.ui && (io.ConfigFlags & ImGuiConfigFlags_NavEnableGamepad) && !busy)
+        std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+        ~SlowFrame()
         {
-            if(L && !prevL)
-                s_padFocus = 1;
-            if(R && !prevR)
-                s_padFocus = 2;
-            // the events are applied in order within the frame (no trickling): the key ends up released for ImGui
-            io.ConfigInputTrickleEventQueue = false;
-            if(L)
-                io.AddKeyEvent(ImGuiKey_GamepadDpadLeft, false);
-            if(R)
-                io.AddKeyEvent(ImGuiKey_GamepadDpadRight, false);
+            const double ms = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t0).count();
+            if(ms > 8.0)
+            {
+                const std::string section = s_hudSection ? s_hudSection : "-";
+                std::thread([ms, section]() { LsLog("slow HUD frame: %.1f ms (section %s)", ms, section.c_str()); }).detach();
+            }
         }
-        prevL = L;
-        prevR = R;
+    } slowFrame;
+    const auto                        w0 = std::chrono::steady_clock::now();
+    std::lock_guard<std::timed_mutex> imguiLock(m_imguiMutex); // the main thread feeds ImGui with the mouse / keyboard
+    KeepMax(m_waitRenderUs, (int)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - w0).count());
+    ImGui_ImplDX11_NewFrame();
+    ImGui::GetIO().ConfigFlags &= ~ImGuiConfigFlags_NavEnableGamepad; // no gamepad (the backend does not read XInput then)
+    // Game capture, HUD shown: the Windows mouse pointer is hidden over Nbeam and the HUD draws its own (a visible Windows pointer makes
+    // Windows compose the picture: frames shown twice, the BFI / 3D flickers). Elsewhere the Windows pointer is used as usual.
+    const bool ownPointer          = OwnPointerWanted(m_options, m_windowMode);
+    ImGui::GetIO().MouseDrawCursor = ownPointer || (m_options.ui && !m_windowMode && m_options.captureWindow != nullptr);
+    ImGui_ImplWin32_NewFrame();
+    if(ownPointer)
+    {
+        // the overlay never takes the focus: the position is read from the pointer (the messages do not reach ImGui while the HUD is hidden)
+        POINT p {};
+        if(GetCursorPos(&p) && ScreenToClient(m_options.outputWindow, &p))
+            ImGui::GetIO().AddMousePosEvent((float)p.x, (float)p.y);
     }
     {
         // HUD scale (set by dragging the corner of the HUD): sizes and font follow, the layout is the same at every scale.
         ImGuiIO& io = ImGui::GetIO();
-        float    k  = std::clamp(HudScale(), 0.6f, 2.0f);
+        float    k  = std::clamp(EffScale(), 0.6f, 3.0f);
         if(io.DisplaySize.x > 0 && io.DisplaySize.y > 0)
             k = (std::min)(k, (std::min)(io.DisplaySize.x / (62 * s_baseFont), io.DisplaySize.y / (40 * s_baseFont))); // must fit on the screen
         k = (std::max)(k, 0.6f);
@@ -756,16 +835,16 @@ void UI::Render()
         else
         {
             ImGui::SetNextWindowSizeConstraints(ImVec2((std::min)(48 * fs, viewport.x), (std::min)(28 * fs, viewport.y)), viewport);
-            if(s_lastScale > 0.0f && s_hudSize.x > 0.0f && fabsf(HudScale() - s_lastScale) > 1e-4f)
+            if(s_lastScale > 0.0f && s_hudSize.x > 0.0f && fabsf(EffScale() - s_lastScale) > 1e-4f)
             {
-                const float k = HudScale() / s_lastScale; // the window follows the new scale
+                const float k = EffScale() / s_lastScale; // the window follows the new scale
                 ImGui::SetNextWindowSize(ImVec2(s_hudSize.x * k, s_hudSize.y * k), ImGuiCond_Always);
             }
             else
                 ImGui::SetNextWindowSize(mainWindowSize, ImGuiCond_FirstUseEver);
             ImGui::SetNextWindowPos(mainWindowPos, ImGuiCond_FirstUseEver);
         }
-        s_lastScale = HudScale();
+        s_lastScale = EffScale();
         // OSD layout: status banner on top, category rail on the left, settings of the category in the middle, action bar at the bottom.
         // The window has no title bar of its own (the banner is drawn instead) and no scrolling: the settings pane scrolls.
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0, 0));
@@ -799,13 +878,13 @@ void UI::Render()
             static int         s_cat     = 0;
             static int         s_lastCat = -1;
             s_cat                        = std::clamp(s_cat, 0, catCount - 1);
+            s_hudSection                 = catKeys[s_cat];
 
             // ---- category rail ----
             ImGui::SetCursorPos(ImVec2(0, headerH));
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(fs * 0.7f, fs * 0.8f));
             ImGui::PushStyleColor(ImGuiCol_ChildBg, ImVec4(0.0f, 0.0f, 0.0f, 0.35f));
             ImGui::BeginChild("##rail", ImVec2(railW, bodyH), ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened, 0);
-            s_railWin = ImGui::GetCurrentWindow();
             ImGui::PopStyleColor();
             ImGui::PopStyleVar();
             const bool testHidden = !m_options.captureProcess.empty() && !m_options.motionTest; // a program runs: no Test category
@@ -824,17 +903,6 @@ void UI::Render()
                 const bool  hov = ImGui::IsItemHovered(), sel = i == s_cat;
                 ImDrawList* dl  = ImGui::GetWindowDrawList();
                 const ImVec2 q(p.x + sz.x, p.y + sz.y);
-                if(s_padFocus == 1 && i == s_cat)
-                {
-                    // gamepad: the focus goes to the selected category
-                    ImGuiWindow* w = ImGui::GetCurrentWindow();
-                    ImGui::FocusWindow(w);
-                    ImGui::SetFocusID(ImGui::GetItemID(), w);
-                    ImGui::SetNavCursorVisible(true);
-                    s_padFocus = 0;
-                }
-                if(ImGui::IsItemFocused() && ImGui::GetIO().NavVisible)
-                    dl->AddRect(ImVec2(p.x + 3.0f, p.y + 3.0f), ImVec2(q.x - 3.0f, q.y - 3.0f), IM_COL32(255, 255, 255, 255), 0.0f, 0, 2.0f); // gamepad focus
                 if(sel)
                 {
                     dl->AddRectFilled(p, q, ImGui::GetColorU32(accent));
@@ -855,15 +923,6 @@ void UI::Render()
             ImGui::SameLine(0, 0);
             ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(fs * 1.2f, fs * 0.9f));
             ImGui::BeginChild("##pane", ImVec2(0, bodyH), ImGuiChildFlags_AlwaysUseWindowPadding | ImGuiChildFlags_NavFlattened, 0);
-            s_paneWin = ImGui::GetCurrentWindow();
-            if(s_padFocus == 2)
-            {
-                // gamepad: the focus goes to the settings (the control that had it last, else the first one)
-                ImGui::FocusWindow(s_paneWin);
-                ImGui::NavInitWindow(s_paneWin, false);
-                ImGui::SetNavCursorVisible(true);
-                s_padFocus = 0;
-            }
             ImGui::PopStyleVar();
             if(s_cat != s_lastCat)
             {
@@ -1059,7 +1118,7 @@ void UI::Render()
                 if(!in3D) // hidden in 3D (the SubFrames follow the emitter there)
                 {
                     bool autoOn = m_pending.subFramesMode == SF_AUTO;
-                    if(ImGui::Checkbox(Tr("BFI auto"), &autoOn))
+                    if(ToggleSwitch(Tr("BFI auto"), &autoOn))
                     {
                         const int sf = autoOn ? SF_AUTO : SF_MANUAL;
                         if(sf == SF_MANUAL)
@@ -1088,7 +1147,7 @@ void UI::Render()
 
             if(activeMode != SF_MANUAL)
             {
-                ImGui::Checkbox(Tr("Uniform brightness"), &m_options.uniformBrightness);
+                ToggleSwitch(Tr("Uniform brightness"), &m_options.uniformBrightness);
                 ShowHelpMarker(Tr("When the game's frame rate changes, the BFI brightness changes too (more SubFrames = darker). Checked: the picture keeps the brightness it has at the low FPS threshold. The lower the threshold, the darker the picture. Simple BFI only."));
                 ImGui::PushItemWidth(m_fontSize * 16);
                 SliderFloatStep(Tr("Low FPS threshold"), &m_options.lowFps.threshold, 20.0f, 120.0f, "%.0f fps", 1.0f);
@@ -1177,7 +1236,7 @@ void UI::Render()
                     if(p.name == "LCD Anti-retention")
                     {
                         bool on = *p.p.ip.value != 0; // Force Off / Auto: a check box
-                        if(ImGui::Checkbox(Tr(p.name.c_str()), &on))
+                        if(ToggleSwitch(Tr(p.name.c_str()), &on))
                             *p.p.ip.value = on ? 1 : 0;
                     }
                     else if(p.dropdown.size())
@@ -1237,7 +1296,7 @@ void UI::Render()
                 if(ImGui::BeginCombo(Tr("Capture Input"), label.c_str(), 0))
                 {
                     if(ImGui::IsWindowAppearing())
-                        ScanWindows(); // enumerating the windows is slow: once when the list opens, not on every frame
+                        ScanWindows(); // once when the list opens, not on every frame
                     for(const auto& window : m_inputs)
                     {
                         if(window.hwnd)
@@ -1261,16 +1320,31 @@ void UI::Render()
 
             {
                 // the output screen: connected screens only (the remembered ones that are not connected are hidden)
-                std::string cur = m_pending.outputOnProcess ? Tr("Process (over the game)") : m_displays[m_pending.shaderDisplayNo].name;
+                std::string cur = m_pending.outputAuto ? Tr("Automatic") : m_pending.outputOnProcess ? Tr("Process (over the game)") : m_displays[m_pending.shaderDisplayNo].name;
                 if(ImGui::BeginCombo(Tr("Output Display"), cur.c_str(), 0))
                 {
+                    if(ImGui::Selectable(Tr("Automatic"), m_pending.outputAuto))
+                    {
+                        // starts on the Windows main display; the game window then decides (main display or over the game)
+                        m_pending.outputAuto      = true;
+                        m_pending.outputOnProcess = false;
+                        const HMONITOR primary    = MonitorFromPoint(POINT { 0, 0 }, MONITOR_DEFAULTTOPRIMARY);
+                        for(const auto& display : m_displays)
+                            if(display.monitor == primary)
+                                m_pending.shaderDisplayNo = display.no;
+                        m_options.shaderScreenId.clear();
+                        SetApplyRequired();
+                    }
+                    if(ImGui::IsItemHovered())
+                        ImGui::SetTooltip("%s", Tr("A game in full screen or borderless maximized: the output goes on the Windows main display. A game in a window smaller than the screen: the output goes over the game (Process)."));
                     for(const auto& display : m_displays)
                     {
-                        auto selected = !m_pending.outputOnProcess && display.no == m_pending.shaderDisplayNo;
+                        auto selected = !m_pending.outputAuto && !m_pending.outputOnProcess && display.no == m_pending.shaderDisplayNo;
                         if(ImGui::Selectable(display.name.c_str(), selected))
                         {
                             m_pending.shaderDisplayNo = display.no;
                             m_pending.outputOnProcess = false;
+                            m_pending.outputAuto      = false;
                             m_options.shaderScreenId.clear();
                             SetApplyRequired();
                         }
@@ -1279,15 +1353,16 @@ void UI::Render()
                             ImGui::SetItemDefaultFocus();
                         }
                     }
-                    if(ImGui::Selectable(Tr("Process (over the game)"), m_pending.outputOnProcess))
+                    if(ImGui::Selectable(Tr("Process (over the game)"), !m_pending.outputAuto && m_pending.outputOnProcess))
                     {
                         m_pending.outputOnProcess = true;
+                        m_pending.outputAuto      = false;
                         SetApplyRequired();
                     }
                     ImGui::EndCombo();
                 }
             }
-            ShowHelpMarker(Tr("The screen Nbeam displays on (your high refresh rate one).\nProcess: the image is placed over the game window and follows it, so a windowed game gets an output of its own size. It needs the program to be added in the profile configuration.\nIt is best to have just one monitor connected."));
+            ShowHelpMarker(Tr("The screen Nbeam displays on (your high refresh rate one).\nProcess: the image is placed over the game window and follows it, so a windowed game gets an output of its own size. It needs the program to be added in the profile configuration.\nAutomatic: a game in full screen or borderless maximized puts the output on the Windows main display, a game in a smaller window puts it over the game.\nIt is best to have just one monitor connected."));
 
             if(ImGui::BeginCombo(Tr("Capture GPU"), m_adapters[m_pending.captureAdapterNo].name.c_str(), 0))
             {
@@ -1330,30 +1405,45 @@ void UI::Render()
 
 
 
-            // in 3D the queue is 3 frames at least (0 = tearing, 1 and 2 are hidden; to go lower, turn the 3D off)
-            const bool queue3D = m_options.emitter.sourceFormat != StereoSource::Off;
-            int        queueShown = m_pending.maxQueuedFrames;
-            if(queue3D && (queueShown == Options::QUEUE_TEARING || (queueShown >= 1 && queueShown < 3)))
-                queueShown = 0; // (3 = the default)
-            if(ImGui::BeginCombo(Tr("Queued Frames"), Tr(m_queuedFrames[queueShown].c_str()), 0))
+            // below 3 queued frames (1, 2, 0 = tearing) 3D is not available: red message below
+            int queueShown = m_pending.queueAuto ? -1 : m_pending.maxQueuedFrames; // (-1 = Auto)
+            if(ImGui::BeginCombo(Tr("Queued Frames"), m_pending.queueAuto ? Tr("Auto") : Tr(m_queuedFrames[queueShown].c_str()), 0))
             {
-                // order shown: 0 (tearing allowed), 1, 2, 3 (default = driver default), 4 ... 14
-                std::vector<int> order;
-                if(!queue3D)
-                    order = { Options::QUEUE_TEARING, 1, 2 };
-                order.push_back(0);
-                for(int v = 4; v < Options::QUEUE_TEARING; v++)
+                // Auto: 3 queued frames, one more (up to 6) each time a frame is late, back down after a long calm
+                if(ImGui::Selectable(Tr("Auto"), m_pending.queueAuto))
+                {
+                    m_pending.queueAuto = true;
+                    if(!m_options.queueAuto)
+                    {
+                        // the swap chain must have the buffers of the longest queue: live if it has them, else a new swap chain
+                        if(!m_options.Tearing() && (int)m_options.swapChainBuffers >= Options::QUEUE_AUTO_MAX + 1)
+                        {
+                            m_options.queueAuto    = true;
+                            m_options.queueAutoCur = Options::QUEUE_AUTO_MIN;
+                            m_options.liveLatency  = true;
+                        }
+                        else
+                            SetApplyRequired();
+                    }
+                }
+                if(m_pending.queueAuto)
+                    ImGui::SetItemDefaultFocus();
+                // order shown: 0 (tearing allowed), 1, 2, 3 (default = driver default), 4 ... 10
+                std::vector<int> order = { Options::QUEUE_TEARING, 1, 2, 0 };
+                for(int v = 4; v <= Options::QUEUE_MAX; v++)
                     order.push_back(v);
                 for(const int i : order)
                 {
-                    auto selected = i == queueShown;
+                    auto selected = !m_pending.queueAuto && i == queueShown;
                     if(ImGui::Selectable(Tr(m_queuedFrames[i].c_str()), selected))
                     {
                         m_pending.maxQueuedFrames = i;
+                        m_pending.queueAuto       = false;
                         // the swap chain keeps its buffers: a lower or equal latency is applied live, a higher one needs a new swap chain
                         if(i != Options::QUEUE_TEARING && !m_options.Tearing() && (i ? i + 1 : 3) <= (int)m_options.swapChainBuffers)
                         {
                             m_options.maxQueuedFrames = i;
+                            m_options.queueAuto       = false;
                             m_options.liveLatency     = true;
                         }
                         else
@@ -1366,17 +1456,26 @@ void UI::Render()
                 }
                 ImGui::EndCombo();
             }
+            ShowHelpMarker(Tr("Frames Windows keeps in advance before showing them: a longer queue absorbs the moments when the game takes the graphics card (a missed refresh: the glasses lose step for a moment), at the price of about one refresh of delay per frame.\012Auto: 3 frames, then one more (up to 6) each time a frame is late, and back down one at a time after a long calm. It is a different setting from the frame buffer, which smooths the game's own frame times."));
+            if(queueShown == Options::QUEUE_TEARING || (queueShown >= 1 && queueShown < 3))
+            {
+                ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
+                ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + m_fontSize * 24);
+                ImGui::TextUnformatted(Tr("3D is not available below 3 queued frames. Choose 3 or more to use 3D."));
+                ImGui::PopTextWrapPos();
+                ImGui::PopStyleColor();
+            }
             if(queueShown == Options::QUEUE_TEARING)
             {
                 {
-                    // always shown with 0: tearing breaks the left / right alternation, strongly discouraged with 3D
+                    // 0 = tearing allowed: explained, strongly discouraged with BFI
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.30f, 0.30f, 1.0f));
                     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + m_fontSize * 24);
-                    ImGui::TextUnformatted(Tr("Warning: 0 (tearing allowed) is strongly discouraged in 3D. Tearing breaks the left / right alternation and gives ghosting and flicker in the glasses. Choose another value."));
+                    ImGui::TextUnformatted(Tr("Warning: 0 (tearing allowed) is strongly discouraged with BFI. With no queue the image can change in the middle of a screen refresh: the tear line cuts the picture, and the image frames and black frames of the BFI no longer line up with the refreshes. You get bands, uneven brightness and flicker, and the clearer motion the BFI is there for is lost. Choose another value."));
                     ImGui::PopTextWrapPos();
                     ImGui::PopStyleColor();
                 }
-                ImGui::Checkbox(Tr("Beam racing"), &m_options.beamRacing);
+                ToggleSwitch(Tr("Beam racing"), &m_options.beamRacing);
                 ShowHelpMarker(Tr("Hides the tearing where the effect makes it invisible, by following the real position of the screen scan. With BFI and plain picture, the image is sent just before the screen refresh: no visible tear, a little more delay. CRT Beam Simulator can reach an even lower delay. Not used in 3D. Uses one processor core while waiting; the Nbeam window must be shown directly (nothing over it)."));
                 if(m_options.beamRacing)
                 {
@@ -1396,9 +1495,14 @@ void UI::Render()
             ShowHelpMarker(Tr("Images queued before the screen. Increase it if you see irregular flashing: lower = less delay, higher = more stable. The Windows default is usually 3.\n0 = no queue: lowest delay, but tearing is allowed. In 3D the minimum is 3 (turn 3D off to go lower)."));
 
             // "Direct presentation" (experimental): the overlay is no longer a layered window, so Windows can show it directly (renderer restart)
-            if(ImGui::Checkbox(Tr("Direct presentation (experimental)"), &m_options.directPresent))
-                PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
+            if(ToggleSwitch(Tr("Direct presentation (experimental)"), &m_options.directPresent))
+                PostMessage(m_options.outputWindow, WM_USER_RESTART, NB_RESTART_TAG, 0);
             ShowHelpMarker(Tr("Experimental. Windows shows Nbeam directly on the screen instead of blending it with the desktop: about one refresh less delay and a steadier BFI. There is no click-through any more: while the HUD is hidden, the overlay ignores clicks and hides the Windows pointer. Games that read the mouse directly keep working; games and menus that need the Windows pointer will not get the clicks. Nothing must be shown over Nbeam (notifications, Discord or Steam overlays...). See the line below."));
+            if(m_options.directPresent)
+            {
+                ToggleSwitch(Tr("Draw a pointer (direct presentation)"), &m_options.drawPointer);
+                ShowHelpMarker(Tr("Direct presentation hides the Windows pointer over Nbeam. This draws one in its place, with the picture (it follows the BFI and the 3D), while the mouse moves and for 3 seconds after. A game that keeps the pointer in the middle of the window while the mouse turns the camera never gets one. Turn it off if the game draws its own pointer."));
+            }
             {
                 const int   pm = m_options.presentMode;
                 const char* t  = pm == 0 ? Tr("composed by Windows") : pm == 1 ? Tr("direct (hardware plane)") : pm == 3 ? Tr("composition failure") : Tr("unknown");
@@ -1406,7 +1510,7 @@ void UI::Render()
                 ShowHelpMarker(Tr("How Windows shows Nbeam right now, and how many images stayed on screen longer or shorter than expected (a late image = a blink), per minute, measured over 10 seconds. Compare with and without Direct presentation in the same game. Not counted with tearing (Queued Frames 0)."));
             }
 
-            if(ImGui::Checkbox(Tr("Hardware sRGB"), &m_pending.hardwareSrgb))
+            if(ToggleSwitch(Tr("Hardware sRGB"), &m_pending.hardwareSrgb))
             {
                 SetApplyRequired();
             }
@@ -1414,7 +1518,7 @@ void UI::Render()
 
 
             // no Apply button: pending changes are applied as soon as you finish editing (see the end of this section)
-            ImGui::Checkbox(Tr("Remember"), &m_options.rememberSettings);
+            ToggleSwitch(Tr("Remember"), &m_options.rememberSettings);
 
             }
             if(s_cat == 2)
@@ -1422,6 +1526,9 @@ void UI::Render()
             m_emitterPanel.displayHz = m_options.vsyncRate;
             m_emitterPanel.subFrames = m_options.subFrames;
     m_emitterPanel.stereoBlocked = !m_options.StereoManual();
+            m_emitterPanel.queueBlocked  = !m_options.QueueAllows3D();
+            m_emitterPanel.gameCapture   = m_options.captureWindow != nullptr;
+            m_emitterPanel.outputOnProcess = m_options.outputOnProcess || m_options.processOutput;
             m_emitterPanel.fontSize  = m_fontSize;
             m_emitterPanel.status    = m_emitterStatus;
             m_emitterPanel.aiStatus  = m_aiStatus;
@@ -1430,6 +1537,11 @@ void UI::Render()
             m_emitterPanel.aiLatencyMs = m_aiLatencyMs;
             if(RenderEmitterPanel(m_options.emitter, m_emitterPanel))
                 m_emitterRestartRequired = true;
+            if(m_emitterPanel.fullRestart)
+            {
+                m_emitterPanel.fullRestart = false;
+                m_applyRequired            = true; // Full SBS toggled: the whole renderer and the capture restart (as the Restart button does)
+            }
 
             }
             if(s_cat == 3)
@@ -1667,16 +1779,7 @@ void UI::Render()
                 int  addAfter = -1;
                 bool save     = false;
 
-                // screens known to Nbeam (connected ones, and the ones remembered from the past), refreshed from time to time
-                static ULONGLONG s_monTick = 0;
-                if(GetTickCount64() - s_monTick > 4000)
-                {
-                    bool overridden = false; // a detection changes the refresh rate of a screen while its program runs
-                    for(const auto& l : m_options.profileLinks)
-                        overridden = overridden || (l.hz > 0 && l.enabled && m_options.captureWindow && IsWindow(m_options.captureWindow));
-                    m_options.RefreshMonitors(overridden);
-                    s_monTick = GetTickCount64();
-                }
+                // (the screens known to Nbeam are read again when Nbeam starts or restarts, never here: see WM_USER_RESTART)
                 const auto  mons      = m_options.MonitorsSnapshot();
                 const std::string cur = m_options.ScreenIdOfDisplay(m_options.shaderDisplayNo, m_displays); // the screen of the output now
                 auto exeKey = [](const std::string& e) { return Options::NormalizeExeName(e); };
@@ -1744,10 +1847,11 @@ void UI::Render()
                 if(profTabs && ImGui::BeginTabItem(Tr("Program settings")))
                 {
                     const float listW = m_fontSize * 12.0f;
-                    const float paneH = m_fontSize * 19.0f;
+                    // the list and the settings use the whole height left in the window (no big empty area under them), at least 19 lines
+                    const float paneH = (std::max)(m_fontSize * 19.0f, ImGui::GetContentRegionAvail().y - ImGui::GetStyle().ItemSpacing.y);
                     ImGui::BeginGroup();
                     {
-                        ImGui::BeginChild("##proglist", ImVec2(listW, paneH - ImGui::GetFrameHeightWithSpacing() * 2.0f), ImGuiChildFlags_Borders);
+                        ImGui::BeginChild("##proglist", ImVec2(listW, paneH - ImGui::GetFrameHeightWithSpacing() * 3.0f), ImGuiChildFlags_Borders);
                         ImGui::TextDisabled("%d %s", (int)procs.size(), Tr("programs"));
                         ImGui::Separator();
                         for(const auto& k : procs)
@@ -1781,6 +1885,9 @@ void UI::Render()
                             {
                                 Options::ProfileLink nl;
                                 nl.screenId = cur; // the first profile of a program: the current screen
+                                nl.fpsCapMode = m_options.DefaultFpsCapMode();
+                                nl.fpsLimit   = m_options.fpsLimitDefault;
+                                nl.profile    = m_options.ProfileForNewProgram();
                                 m_options.profileLinks.push_back(nl);
                                 save = true;
                             }
@@ -1790,53 +1897,73 @@ void UI::Render()
                         if(ImGui::IsItemHovered())
                             ImGui::SetTooltip("%s", Tr("Adds an empty program: type the name of its .exe (e.g. game.exe) in the field at the top right."));
                         // add a program chosen among the ones shown on the taskbar
-                        static std::vector<std::string> s_taskbarExes; // scanned when the list is opened
+                        static std::mutex               s_taskbarMutex;
+                        static std::vector<std::string> s_taskbarExes; // scanned when the list is opened, by a thread of its own
+                        static std::atomic<bool>        s_taskbarBusy { false };
                         if(ImGui::Button(Tr("Add a new process"), ImVec2(listW, 0)))
                         {
-                            s_taskbarExes.clear();
-                            EnumWindows(
-                                [](HWND w, LPARAM p) -> BOOL {
-                                    auto&      list = *(std::vector<std::string>*)p;
-                                    const auto ex   = GetWindowLongW(w, GWL_EXSTYLE);
-                                    if(!IsWindowVisible(w) || GetWindowTextLengthW(w) == 0)
-                                        return TRUE;
-                                    if(GetWindow(w, GW_OWNER) != NULL && !(ex & WS_EX_APPWINDOW))
-                                        return TRUE;
-                                    if((ex & WS_EX_TOOLWINDOW) && !(ex & WS_EX_APPWINDOW))
-                                        return TRUE;
-                                    DWORD cloaked = 0;
-                                    if(SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
-                                        return TRUE;
-                                    DWORD pid = 0;
-                                    GetWindowThreadProcessId(w, &pid);
-                                    if(!pid || pid == GetCurrentProcessId())
-                                        return TRUE;
-                                    const std::string name = Options::ProcessNameOfWindow(w);
-                                    static const char* ignored[] = { "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
-                                                                     "textinputhost.exe", "applicationframehost.exe", "lockapp.exe", "dwm.exe" };
-                                    if(name.empty())
-                                        return TRUE;
-                                    for(const char* ig : ignored)
-                                        if(name == ig)
+                            {
+                                std::lock_guard<std::mutex> l(s_taskbarMutex);
+                                s_taskbarExes.clear();
+                            }
+                            // asking Windows for the name of each program takes a few ms per window: never on the render thread
+                            if(!s_taskbarBusy.exchange(true))
+                                std::thread([]() {
+                                    std::vector<std::string> found;
+                                    EnumWindows(
+                                    [](HWND w, LPARAM p) -> BOOL {
+                                        auto&      list = *(std::vector<std::string>*)p;
+                                        const auto ex   = GetWindowLongW(w, GWL_EXSTYLE);
+                                        if(!IsWindowVisible(w) || GetWindowTextLengthW(w) == 0)
                                             return TRUE;
-                                    if(std::find(list.begin(), list.end(), name) == list.end())
-                                        list.push_back(name);
-                                    return TRUE;
-                                },
-                                (LPARAM)&s_taskbarExes);
-                            // Lossless Scaling is always offered: its scaling layer is what is detected and captured, its settings window does not
-                            // have to be open
-                            if(std::find(s_taskbarExes.begin(), s_taskbarExes.end(), std::string("losslessscaling.exe")) == s_taskbarExes.end())
-                                s_taskbarExes.push_back("losslessscaling.exe");
-                            std::sort(s_taskbarExes.begin(), s_taskbarExes.end());
+                                        if(GetWindow(w, GW_OWNER) != NULL && !(ex & WS_EX_APPWINDOW))
+                                            return TRUE;
+                                        if((ex & WS_EX_TOOLWINDOW) && !(ex & WS_EX_APPWINDOW))
+                                            return TRUE;
+                                        DWORD cloaked = 0;
+                                        if(SUCCEEDED(DwmGetWindowAttribute(w, DWMWA_CLOAKED, &cloaked, sizeof(cloaked))) && cloaked)
+                                            return TRUE;
+                                        DWORD pid = 0;
+                                        GetWindowThreadProcessId(w, &pid);
+                                        if(!pid || pid == GetCurrentProcessId())
+                                            return TRUE;
+                                        const std::string name = Options::ProcessNameOfWindow(w);
+                                        static const char* ignored[] = { "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe", "startmenuexperiencehost.exe",
+                                                                         "textinputhost.exe", "applicationframehost.exe", "lockapp.exe", "dwm.exe" };
+                                        if(name.empty())
+                                            return TRUE;
+                                        for(const char* ig : ignored)
+                                            if(name == ig)
+                                                return TRUE;
+                                        if(std::find(list.begin(), list.end(), name) == list.end())
+                                            list.push_back(name);
+                                        return TRUE;
+                                    },
+                                        (LPARAM)&found);
+                                    // Lossless Scaling is always offered: its scaling layer is what is detected and captured, its settings window does not
+                                    // have to be open
+                                    if(std::find(found.begin(), found.end(), std::string("losslessscaling.exe")) == found.end())
+                                        found.push_back("losslessscaling.exe");
+                                    std::sort(found.begin(), found.end());
+                                    {
+                                        std::lock_guard<std::mutex> l(s_taskbarMutex);
+                                        s_taskbarExes = std::move(found);
+                                    }
+                                    s_taskbarBusy = false;
+                                }).detach();
                             ImGui::OpenPopup("##taskbarExes");
                         }
                         if(ImGui::IsItemHovered())
                             ImGui::SetTooltip("%s", Tr("Choose a program among the ones open on the taskbar."));
                         if(ImGui::BeginPopup("##taskbarExes"))
                         {
-                            int shown = 0;
-                            for(const auto& exe : s_taskbarExes)
+                            int                      shown = 0;
+                            std::vector<std::string> exes;
+                            {
+                                std::lock_guard<std::mutex> l(s_taskbarMutex);
+                                exes = s_taskbarExes;
+                            }
+                            for(const auto& exe : exes)
                             {
                                 bool known = false; // programs already in the list are not offered
                                 for(const auto& l : m_options.profileLinks)
@@ -1849,15 +1976,32 @@ void UI::Render()
                                     Options::ProfileLink nl;
                                     nl.exe      = exe;
                                     nl.screenId = cur;
+                                    nl.fpsCapMode = m_options.DefaultFpsCapMode();
+                                    nl.fpsLimit   = m_options.fpsLimitDefault;
+                                    nl.profile    = m_options.ProfileForNewProgram();
                                     m_options.profileLinks.push_back(nl);
                                     s_procSel = exe; // the program just added is the one shown
                                     save      = true;
                                 }
                             }
                             if(shown == 0)
-                                ImGui::TextUnformatted(Tr("No program open on the taskbar"));
+                                ImGui::TextUnformatted(s_taskbarBusy ? Tr("Looking for the open programs...") : Tr("No program open on the taskbar"));
                             ImGui::EndPopup();
                         }
+                        // removes the selected program (all its screens) from the detections
+                        bool haveSel = false;
+                        for(const auto& l : m_options.profileLinks)
+                            haveSel = haveSel || exeKey(l.exe) == s_procSel;
+                        if(!haveSel)
+                            ImGui::BeginDisabled();
+                        if(ImGui::Button(Tr("Delete the process"), ImVec2(listW, 0)))
+                            for(size_t k = 0; k < m_options.profileLinks.size(); k++)
+                                if(exeKey(m_options.profileLinks[k].exe) == s_procSel)
+                                    removeList.push_back((int)k);
+                        if(!haveSel)
+                            ImGui::EndDisabled();
+                        if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                            ImGui::SetTooltip("%s", Tr("Removes the selected program from the list (its profile file is kept)."));
                     }
                     ImGui::EndGroup();
                     ImGui::SameLine();
@@ -1915,29 +2059,6 @@ void UI::Render()
                                     ImGui::TableSetColumnIndex(1);
                                     ImGui::SetNextItemWidth(-FLT_MIN);
                                 };
-                                rowLabel(Tr("Enabled"));
-                                {
-                                    bool en = head.enabled;
-                                    if(ImGui::Checkbox("##on", &en))
-                                    {
-                                        for(size_t k : grp)
-                                            m_options.profileLinks[k].enabled = en;
-                                        save = true;
-                                    }
-                                    if(ImGui::IsItemHovered())
-                                        ImGui::SetTooltip("%s", Tr("Enable this detection. Unchecked = ignored (nothing is loaded when the program runs)."));
-                                }
-                                rowLabel(Tr("Activation delay"));
-                                {
-                                    int delay = head.delay;
-                                    if(ImGui::DragInt("##delay", &delay, 0.2f, 0, 600, "%d s"))
-                                        for(size_t k : grp)
-                                            m_options.profileLinks[k].delay = std::clamp(delay, 0, 600);
-                                    if(ImGui::IsItemDeactivatedAfterEdit())
-                                        save = true;
-                                    if(ImGui::IsItemHovered())
-                                        ImGui::SetTooltip("%s", Tr("Activation delay: the program must have been running for this many seconds before the profile is applied."));
-                                }
                                 for(size_t n = 0; n < grp.size(); n++)
                                 {
                                     auto& link = m_options.profileLinks[grp[n]];
@@ -1975,7 +2096,7 @@ void UI::Render()
                                             ImGui::EndCombo();
                                         }
                                         if(ImGui::IsItemHovered())
-                                            ImGui::SetTooltip("%s", Tr("Screen of this profile. The screens are recognised by their name and remembered, even when they are not connected.\nWhen several screens are connected, the profile of the Windows main screen is used first."));
+                                            ImGui::SetTooltip("%s", Tr("Screen of this program (output and capture of the profile). The screens are recognised by their name and remembered, even when they are not connected."));
                                         if(n > 0)
                                         {
                                             ImGui::SameLine();
@@ -1985,16 +2106,63 @@ void UI::Render()
                                                 ImGui::SetTooltip("%s", Tr("Remove this profile / screen"));
                                         }
                                     }
-                                    rowLabel(Tr("Profile"), true);
-                                    if(ImGui::BeginCombo("##profile", link.profile.empty() ? Tr("(no profile)") : link.profile.c_str(), 0))
+                                    rowLabel(Tr("Enabled"), true);
                                     {
-                                        for(const auto& name : s_profiles)
-                                            if(ImGui::Selectable(name.c_str(), name == link.profile))
-                                            {
-                                                link.profile = name;
-                                                save         = true;
-                                            }
-                                        ImGui::EndCombo();
+                                        if(ToggleSwitch("##on", &link.enabled))
+                                            save = true;
+                                        if(ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("%s", Tr("Enable the detection of the program on this screen. Unchecked = ignored on this screen."));
+                                    }
+                                    if(n == 0)
+                                    {
+                                        rowLabel(Tr("Profile"), true);
+                                        if(ImGui::BeginCombo("##profile", link.profile.empty() ? Tr("(no profile)") : link.profile.c_str(), 0))
+                                        {
+                                            for(const auto& name : s_profiles)
+                                                if(ImGui::Selectable(name.c_str(), name == link.profile))
+                                                {
+                                                    for(size_t k : grp)
+                                                        m_options.profileLinks[k].profile = name; // the same profile for every screen of the program
+                                                    save = true;
+                                                }
+                                            ImGui::EndCombo();
+                                        }
+                                    }
+                                    else
+                                        link.profile = head.profile;
+                                    rowLabel(Tr("Auto fps cap"), true);
+                                    {
+                                        int mode = link.fpsCapMode;
+                                        if(FpsCapCombo("##capmode", mode, m_options.rtssAvailable, m_options.dcAvailable))
+                                        {
+                                            link.fpsCapMode = mode;
+                                            save            = true;
+                                        }
+                                    }
+                                    rowLabel(Tr("Frame limit"), true);
+                                    {
+                                        // frame limit of the program on this screen, written in the DisplayCommander.ini / relimiter.ini next to the game
+                                        const bool addon = link.fpsCapMode == 2 || link.fpsCapMode == 3;
+                                        ImGui::BeginDisabled(!addon);
+                                        int lim = link.fpsLimit;
+                                        if(ImGui::DragInt("##fpslimit", &lim, 0.5f, 0, 1000, lim == 0 ? Tr("No limit") : "%d fps"))
+                                            link.fpsLimit = std::clamp(lim, 0, 1000);
+                                        if(ImGui::IsItemDeactivatedAfterEdit())
+                                            save = true;
+                                        ImGui::EndDisabled();
+                                        if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                                            ImGui::SetTooltip("%s", addon ? Tr("Frame limit of this program on this screen (0 = no limit, up to 1000 fps; ReLimiter: at least 30). When this screen is the Windows main display, Nbeam writes it in the DisplayCommander.ini / relimiter.ini next to the game when Nbeam starts and each time the main display changes, for every program at once, so it is ready before the game starts. A game without that file is ignored.")
+                                                                          : Tr("Used when \"Auto fps cap\" is Display Commander or ReLimiter."));
+                                    }
+                                    rowLabel(Tr("Activation delay"), true);
+                                    {
+                                        int delay = link.delay;
+                                        if(ImGui::DragInt("##delay", &delay, 0.2f, 0, 600, "%d s"))
+                                            link.delay = std::clamp(delay, 0, 600);
+                                        if(ImGui::IsItemDeactivatedAfterEdit())
+                                            save = true;
+                                        if(ImGui::IsItemHovered())
+                                            ImGui::SetTooltip("%s", Tr("Activation delay: the program must have been running for this many seconds before the profile is applied."));
                                     }
                                     rowLabel(Tr("Refresh rate"), true);
                                     {
@@ -2050,12 +2218,8 @@ void UI::Render()
                                 if(!canAdd)
                                     ImGui::EndDisabled();
                                 if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                                    ImGui::SetTooltip("%s", Tr("Add another profile for this program, on another screen (up to 3, one per screen). A screen has to have been connected once to be listed."));
+                                    ImGui::SetTooltip("%s", Tr("Add another screen for this program (up to 3): it only changes its refresh rate while the program runs, the profile is the same for every screen. A screen has to have been connected once to be listed."));
                             }
-                            ImGui::SameLine();
-                            if(ImGui::Button(Tr("Remove the program")))
-                                for(size_t k : grp)
-                                    removeList.push_back((int)k);
                         }
                     }
                     ImGui::EndChild();
@@ -2068,10 +2232,40 @@ void UI::Render()
                     ImGui::PushTextWrapPos(0.0f);
                     ImGui::TextDisabled("%s", Tr("Changes every program at once."));
                     ImGui::PopTextWrapPos();
-                    ShowHelpMarker(Tr("Changes every program at once: the check box, the delay, and for each screen the profile and refresh rate. You can still change each program on its own afterwards. \"(mixed)\" = the programs have different values."));
+                    ShowHelpMarker(Tr("Changes every program at once: the check box, the delay, the profile (the same for every screen) and the refresh rate of each screen. You can still change each program on its own afterwards. \"(mixed)\" = the programs have different values."));
                     auto& links = m_options.profileLinks;
+                    // "Profile when a program is added": None, or one of the profiles; given to every program added afterwards (HUD, shortcut, emitter button)
+                    auto profileOnAddCombo = [&]() {
+                        const std::string cur = m_options.ProfileForNewProgram();
+                        if(ImGui::BeginCombo("##gprofileadd", cur.empty() ? Tr("None") : cur.c_str(), 0))
+                        {
+                            if(ImGui::Selectable(Tr("None"), cur.empty()))
+                                m_options.profileOnAdd.clear(), save = true;
+                            for(const auto& name : s_profiles)
+                                if(ImGui::Selectable(name.c_str(), name == cur))
+                                    m_options.profileOnAdd = name, save = true;
+                            ImGui::EndCombo();
+                        }
+                        if(ImGui::IsItemHovered())
+                            ImGui::SetTooltip("%s", Tr("Profile given automatically to a program when it is added (by the HUD, the \"Add the program to the profiles\" shortcut or the button of the emitter). None = the program is added without a profile."));
+                    };
                     if(links.empty())
+                    {
                         ImGui::TextDisabled("%s", Tr("No program yet: write a name above or add one from the taskbar."));
+                        if(ImGui::BeginTable("##globaladd", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp))
+                        {
+                            ImGui::TableSetupColumn(Tr("Setting"), ImGuiTableColumnFlags_WidthStretch, 1.0f);
+                            ImGui::TableSetupColumn(Tr("Current value"), ImGuiTableColumnFlags_WidthStretch, 1.3f);
+                            ImGui::TableNextRow();
+                            ImGui::TableSetColumnIndex(0);
+                            ImGui::AlignTextToFramePadding();
+                            ImGui::TextUnformatted(Tr("Profile when a program is added"));
+                            ImGui::TableSetColumnIndex(1);
+                            ImGui::SetNextItemWidth(-FLT_MIN);
+                            profileOnAddCombo();
+                            ImGui::EndTable();
+                        }
+                    }
                     else if(ImGui::BeginTable("##globaltable", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp))
                     {
                         ImGui::PushID("global");
@@ -2090,34 +2284,6 @@ void UI::Render()
                             ImGui::TableSetColumnIndex(1);
                             ImGui::SetNextItemWidth(-FLT_MIN);
                         };
-                        rowLabel(Tr("Enabled"));
-                        {
-                            bool allOn = true;
-                            for(const auto& l : links)
-                                allOn = allOn && l.enabled;
-                            if(ImGui::Checkbox("##gon", &allOn))
-                            {
-                                for(auto& l : links)
-                                    l.enabled = allOn;
-                                save = true;
-                            }
-                            if(ImGui::IsItemHovered())
-                                ImGui::SetTooltip("%s", Tr("Checks / unchecks every detection."));
-                        }
-                        rowLabel(Tr("Activation delay"));
-                        {
-                            bool sameDelay = true;
-                            for(const auto& l : links)
-                                sameDelay = sameDelay && l.delay == links[0].delay;
-                            int gdelay = links[0].delay;
-                            if(ImGui::DragInt("##gdelay", &gdelay, 0.2f, 0, 600, sameDelay ? "%d s" : Tr("(mixed)")))
-                                for(auto& l : links)
-                                    l.delay = std::clamp(gdelay, 0, 600);
-                            if(ImGui::IsItemDeactivatedAfterEdit())
-                                save = true;
-                            if(ImGui::IsItemHovered())
-                                ImGui::SetTooltip("%s", Tr("Activation delay of every program."));
-                        }
                         // the programs (one head link per .exe)
                         std::vector<size_t> heads;
                         for(size_t k = 0; k < links.size(); k++)
@@ -2142,72 +2308,156 @@ void UI::Render()
                                     n++;
                             return n;
                         };
-                        // one group of rows per connected screen (Windows order, at most 3): profile and refresh rate for every program on it
-                        const int nScreens = (int)(std::min)(m_displays.size(), (size_t)Options::MAX_LINKS_PER_EXE);
-                        for(int d = 0; d < nScreens; d++)
+                        // one profile for every program, whatever the screen
+                        rowLabel(Tr("Profile"));
                         {
-                            const std::string sid = m_options.ScreenIdOfDisplay((unsigned)d, m_displays);
-                            if(sid.empty())
-                                continue;
-                            const Options::KnownMonitor* mon = nullptr;
-                            for(const auto& m : mons)
-                                if(m.id == sid)
-                                    mon = &m;
-                            ImGui::PushID(d);
+                            std::string shared;
+                            bool        same = true, firstSeen = true;
+                            for(size_t h : heads)
+                            {
+                                if(firstSeen)
+                                    shared = links[h].profile, firstSeen = false;
+                                else if(links[h].profile != shared)
+                                    same = false;
+                            }
+                            if(ImGui::BeginCombo("##gprofile", !same ? Tr("(mixed)") : (shared.empty() ? Tr("(no profile)") : shared.c_str()), 0))
+                            {
+                                auto apply = [&](const std::string& name) {
+                                    for(auto& l : links)
+                                        l.profile = name;
+                                    save = true;
+                                };
+                                if(ImGui::Selectable(Tr("(no profile)"), same && shared.empty()))
+                                    apply(std::string());
+                                for(const auto& name : s_profiles)
+                                    if(ImGui::Selectable(name.c_str(), same && name == shared))
+                                        apply(name);
+                                ImGui::EndCombo();
+                            }
+                            if(ImGui::IsItemHovered())
+                                ImGui::SetTooltip("%s", Tr("Profile loaded for every program when it runs, whatever the screen. The other screens only change their refresh rate."));
+                        }
+                        rowLabel(Tr("Profile when a program is added"));
+                        profileOnAddCombo();
+                        // the refresh rate of each screen (3 at most): the places are those of the list of the screens (remembered, connected or not);
+                        // each place offers every screen, and choosing one exchanges the two places
+                        std::vector<const Options::KnownMonitor*> order;
+                        for(const auto& m : mons)
+                            order.push_back(&m);
+                        if(order.size() > (size_t)Options::MAX_LINKS_PER_EXE)
+                            order.resize((size_t)Options::MAX_LINKS_PER_EXE);
+                        int         swapPlace = -1, swapWith = -1; // a place asked to take another screen
+                        std::string removeScreen;                  // a screen not connected asked to be forgotten
+                        for(size_t d = 0; d < order.size(); d++)
+                        {
+                            const Options::KnownMonitor* mon = order[d];
+                            const std::string            sid = mon->id;
+                            ImGui::PushID((int)d);
                             char screenLabel[48];
-                            snprintf(screenLabel, sizeof(screenLabel), "%s %d", Tr("Screen"), d + 1);
+                            snprintf(screenLabel, sizeof(screenLabel), "%s %d", Tr("Screen"), (int)d + 1);
                             ImGui::TableNextRow();
                             ImGui::TableSetColumnIndex(0);
                             ImGui::AlignTextToFramePadding();
                             ImGui::TextUnformatted(screenLabel);
                             ImGui::TableSetColumnIndex(1);
-                            ImGui::AlignTextToFramePadding();
-                            ImGui::TextDisabled("%s", mon ? monLabel(*mon).c_str() : "");
-                            rowLabel(Tr("Profile"), true);
+                            ImGui::SetNextItemWidth(-FLT_MIN);
+                            if(ImGui::BeginCombo("##gsscreen", monLabel(*mon).c_str(), 0))
                             {
-                                std::string shared;
-                                bool        same = true, firstSeen = true;
+                                for(size_t k = 0; k < mons.size(); k++)
+                                {
+                                    ImGui::PushID((int)k);
+                                    if(ImGui::Selectable(monLabel(mons[k]).c_str(), k == d))
+                                    {
+                                        swapPlace = (int)d;
+                                        swapWith  = (int)k;
+                                    }
+                                    ImGui::PopID();
+                                }
+                                ImGui::EndCombo();
+                            }
+                            if(ImGui::IsItemHovered())
+                                ImGui::SetTooltip("%s", Tr("Every screen Nbeam knows, connected or not. Choosing one here puts it in this place and the screen that was here takes its old place."));
+                            rowLabel(Tr("Screen to remove"), true);
+                            {
+                                ImGui::BeginDisabled(mon->connected);
+                                if(ImGui::Button(Tr("Remove")))
+                                    removeScreen = sid;
+                                ImGui::EndDisabled();
+                                if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                                    ImGui::SetTooltip("%s", Tr("Removes this screen from Nbeam, with its detections (a program keeps its last one on another screen). Only a screen that is not connected can be removed; it comes back by itself if it is connected again."));
+                            }
+                            {
+                                // the detections of every program on this screen
+                                std::vector<int> ks;
                                 for(size_t h : heads)
+                                    if(const int k = linkOn(h, sid); k >= 0)
+                                        ks.push_back(k);
+                                ImGui::BeginDisabled(ks.empty());
+                                rowLabel(Tr("Enabled"), true);
                                 {
-                                    const int         k = linkOn(h, sid);
-                                    const std::string p = k >= 0 ? links[k].profile : std::string();
-                                    if(firstSeen)
-                                        shared = p, firstSeen = false;
-                                    else if(p != shared)
-                                        same = false;
-                                }
-                                if(ImGui::BeginCombo("##gsprofile", !same ? Tr("(mixed)") : (shared.empty() ? Tr("(no profile)") : shared.c_str()), 0))
-                                {
-                                    auto apply = [&](const std::string& name) {
-                                        std::vector<Options::ProfileLink> added;
-                                        for(size_t h : heads)
-                                        {
-                                            const int k = linkOn(h, sid);
-                                            if(k >= 0)
-                                                links[k].profile = name;
-                                            else if(!name.empty() && countOf(h) < Options::MAX_LINKS_PER_EXE)
-                                            {
-                                                Options::ProfileLink nl = links[h]; // same program, delay and check box
-                                                nl.profile              = name;
-                                                nl.screenId             = sid;
-                                                nl.hz                   = 0;
-                                                added.push_back(nl);
-                                            }
-                                        }
-                                        for(const auto& nl : added)
-                                            if(links.size() < 64)
-                                                links.push_back(nl);
+                                    bool allOn = !ks.empty(), anyOn = false;
+                                    for(int k : ks)
+                                    {
+                                        allOn = allOn && links[k].enabled;
+                                        anyOn = anyOn || links[k].enabled;
+                                    }
+                                    const bool mixed = anyOn && !allOn; // (some programs on, some off: the switch stays half way, a click turns them all on)
+                                    if(ToggleSwitch("##gson", &allOn, mixed))
+                                    {
+                                        for(int k : ks)
+                                            links[k].enabled = allOn;
                                         save = true;
-                                    };
-                                    if(ImGui::Selectable(Tr("(no profile)"), same && shared.empty()))
-                                        apply(std::string());
-                                    for(const auto& name : s_profiles)
-                                        if(ImGui::Selectable(name.c_str(), same && name == shared))
-                                            apply(name);
-                                    ImGui::EndCombo();
+                                    }
+                                    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                                        ImGui::SetTooltip("%s", Tr("Checks / unchecks the detection of every program on this screen. Half way = some are on and some are off: a click turns them all on."));
                                 }
-                                if(ImGui::IsItemHovered())
-                                    ImGui::SetTooltip("%s", Tr("Profile loaded for every program when it runs on this screen."));
+                                rowLabel(Tr("Auto fps cap"), true);
+                                {
+                                    bool same = true;
+                                    for(int k : ks)
+                                        same = same && links[k].fpsCapMode == links[ks[0]].fpsCapMode;
+                                    int gcap = !ks.empty() && same ? links[ks[0]].fpsCapMode : m_options.DefaultFpsCapMode();
+                                    if(FpsCapCombo("##gscap", gcap, m_options.rtssAvailable, m_options.dcAvailable, !ks.empty() && !same))
+                                    {
+                                        for(int k : ks)
+                                            links[k].fpsCapMode = gcap;
+                                        m_options.fpsCapDefault = gcap; // (also the choice given to the programs added afterwards)
+                                        save = true;
+                                    }
+                                }
+                                rowLabel(Tr("Frame limit"), true);
+                                {
+                                    bool same = true;
+                                    for(int k : ks)
+                                        same = same && links[k].fpsLimit == links[ks[0]].fpsLimit;
+                                    int glimit = !ks.empty() && same ? links[ks[0]].fpsLimit : m_options.fpsLimitDefault;
+                                    if(ImGui::DragInt("##gslimit", &glimit, 0.5f, 0, 1000, !ks.empty() && !same ? Tr("(mixed)") : glimit == 0 ? Tr("No limit") : "%d fps"))
+                                    {
+                                        glimit = std::clamp(glimit, 0, 1000);
+                                        for(int k : ks)
+                                            links[k].fpsLimit = glimit;
+                                        m_options.fpsLimitDefault = glimit; // (also the limit given to the programs added afterwards)
+                                    }
+                                    if(ImGui::IsItemDeactivatedAfterEdit())
+                                        save = true;
+                                    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                                        ImGui::SetTooltip("%s", Tr("Frame limit of every program on this screen whose \"Auto fps cap\" is Display Commander or ReLimiter (0 = no limit, up to 1000 fps; ReLimiter: at least 30). The limits of the Windows main display are written in the DisplayCommander.ini / relimiter.ini next to each game when Nbeam starts and each time the main display changes, for every program at once. A game without that file is ignored."));
+                                }
+                                rowLabel(Tr("Activation delay"), true);
+                                {
+                                    bool same = true;
+                                    for(int k : ks)
+                                        same = same && links[k].delay == links[ks[0]].delay;
+                                    int gdelay = ks.empty() ? 0 : links[ks[0]].delay;
+                                    if(ImGui::DragInt("##gsdelay", &gdelay, 0.2f, 0, 600, same ? "%d s" : Tr("(mixed)")))
+                                        for(int k : ks)
+                                            links[k].delay = std::clamp(gdelay, 0, 600);
+                                    if(ImGui::IsItemDeactivatedAfterEdit())
+                                        save = true;
+                                    if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
+                                        ImGui::SetTooltip("%s", Tr("Activation delay of every program on this screen."));
+                                }
+                                ImGui::EndDisabled();
                             }
                             rowLabel(Tr("Refresh rate"), true);
                             {
@@ -2215,12 +2465,11 @@ void UI::Render()
                                 bool hzSame = true, hzFirst = true;
                                 for(size_t h : heads)
                                 {
-                                    const int k = linkOn(h, sid);
-                                    if(k < 0)
-                                        continue;
+                                    const int k  = linkOn(h, sid);
+                                    const int hz = k >= 0 ? links[k].hz : 0;
                                     if(hzFirst)
-                                        hzShared = links[k].hz, hzFirst = false;
-                                    else if(links[k].hz != hzShared)
+                                        hzShared = hz, hzFirst = false;
+                                    else if(hz != hzShared)
                                         hzSame = false;
                                 }
                                 char curHz[32];
@@ -2233,27 +2482,65 @@ void UI::Render()
                                 if(ImGui::BeginCombo("##gshz", curHz, 0))
                                 {
                                     auto applyHz = [&](int hz) {
-                                        for(auto& l : links)
-                                            if(l.screenId == sid)
-                                                l.hz = hz;
+                                        std::vector<Options::ProfileLink> added;
+                                        for(size_t h : heads)
+                                        {
+                                            const int k = linkOn(h, sid);
+                                            if(k >= 0)
+                                                links[k].hz = hz;
+                                            else if(hz > 0 && countOf(h) < Options::MAX_LINKS_PER_EXE)
+                                            {
+                                                Options::ProfileLink nl = links[h]; // same program, profile, delay and check box: this screen only changes its rate
+                                                nl.screenId             = sid;
+                                                nl.hz                   = hz;
+                                                added.push_back(nl);
+                                            }
+                                        }
+                                        for(const auto& nl : added)
+                                            if(links.size() < 64)
+                                                links.push_back(nl);
                                         save = true;
                                     };
                                     if(ImGui::Selectable(Tr("Current Hz"), hzSame && hzShared == 0))
                                         applyHz(0);
-                                    if(mon)
-                                        for(int hz : mon->rates)
-                                        {
-                                            char t[32];
-                                            snprintf(t, sizeof(t), "%d Hz", hz);
-                                            if(ImGui::Selectable(t, hzSame && hz == hzShared))
-                                                applyHz(hz);
-                                        }
+                                    for(int hz : mon->rates)
+                                    {
+                                        if(hz < 79)
+                                            continue; // under 80 Hz: not offered
+                                        char t[32];
+                                        snprintf(t, sizeof(t), "%d Hz", hz);
+                                        if(ImGui::Selectable(t, hzSame && hz == hzShared))
+                                            applyHz(hz);
+                                    }
                                     ImGui::EndCombo();
                                 }
                                 if(ImGui::IsItemHovered())
                                     ImGui::SetTooltip("%s", Tr("Windows refresh rate of this screen while any of the programs runs."));
                             }
                             ImGui::PopID();
+                        }
+                        if(swapPlace >= 0 && swapWith >= 0 && swapPlace != swapWith)
+                        {
+                            m_options.SwapKnownMonitors(mons[(size_t)swapPlace].id, mons[(size_t)swapWith].id);
+                            save = true;
+                        }
+                        if(!removeScreen.empty() && m_options.RemoveKnownMonitor(removeScreen))
+                        {
+                            // its detections go too, except the last one of a program: that one gets another screen (see the start of this tab)
+                            for(size_t k = 0; k < links.size(); k++)
+                            {
+                                if(links[k].screenId != removeScreen)
+                                    continue;
+                                int others = 0;
+                                for(size_t j = 0; j < links.size(); j++)
+                                    if(j != k && exeKey(links[j].exe) == exeKey(links[k].exe) && links[j].screenId != removeScreen)
+                                        others++;
+                                if(others > 0)
+                                    removeList.push_back((int)k);
+                                else
+                                    links[k].screenId.clear();
+                            }
+                            save = true;
                         }
                         ImGui::PopID();
                         ImGui::EndTable();
@@ -2336,7 +2623,7 @@ void UI::Render()
                 ImGui::EndCombo();
             }
             ShowHelpMarker(Tr("Split-screen mode for before/after comparison."));
-            ImGui::Checkbox(Tr("Invert"), &m_options.splitInvert);
+            ToggleSwitch(Tr("Invert"), &m_options.splitInvert);
             ShowHelpMarker(Tr("Puts the effect on the other half of the screen (right or bottom instead of left or top)."));
             }
             if(s_cat == 6)
@@ -2363,21 +2650,35 @@ void UI::Render()
 
             SectionHeader(Tr("Application"));
             {
-                if(ImGui::Checkbox(Tr("Start with Windows"), &m_options.startWithWindows))
+                if(ToggleSwitch(Tr("Start with Windows"), &m_options.startWithWindows))
                 {
                     m_options.ApplyAutoStart();
                     m_options.SaveApp();
                 }
                 ShowHelpMarker(Tr("Nbeam starts when you sign in to Windows."));
-                if(ImGui::Checkbox(Tr("Start minimized"), &m_options.startMinimized))
+                if(ToggleSwitch(Tr("Start minimized"), &m_options.startMinimized))
                     m_options.SaveApp();
                 ShowHelpMarker(Tr("Nbeam starts without showing the HUD (reduced to the notification area if that option is on)."));
-                if(ImGui::Checkbox(Tr("Run as administrator"), &m_options.runAsAdmin))
+                if(ToggleSwitch(Tr("Keep Dolby Atmos active"), &m_options.keepAudio))
+                {
+                    AudioKeepAliveSet(m_options.keepAudio);
+                    m_options.SaveApp();
+                }
+                ShowHelpMarker(Tr("Nbeam plays a sound nobody can hear (about -90 dB, on the default Windows audio device) for as long as it runs, so Windows keeps the spatial audio (Dolby Atmos) active instead of falling back to the stereo mix."));
+                if(ToggleSwitch(Tr("Run as administrator"), &m_options.runAsAdmin))
                     m_options.SaveApp();
                 ShowHelpMarker(Tr("At the next start Nbeam asks Windows for administrator rights (a confirmation window appears). Useful for games or programs that run as administrator, which a normal Nbeam cannot capture or stay above."));
-                if(ImGui::Checkbox(Tr("Minimize instead of closing"), &m_options.closeMinimizes))
+                if(ToggleSwitch(Tr("Minimize instead of closing"), &m_options.closeMinimizes))
                     m_options.SaveApp();
                 ShowHelpMarker(Tr("The cross of the window minimizes it (to the notification area if that option is on: the profile detections keep working) instead of quitting Nbeam."));
+                if(ToggleSwitch(Tr("Save the event log"), &m_options.saveLog))
+                {
+                    g_logEnabled = m_options.saveLog;
+                    if(!m_options.saveLog)
+                        DeleteEventLogs();
+                    m_options.SaveApp();
+                }
+                ShowHelpMarker(Tr("Nbeam writes its events (Nbeam_ls.log), the capture of the O key (Nbeam_desync.log), the crash report and the log of the emitter reader next to the program. Untick to delete all of them and record nothing any more: no event and no history of Nbeam is kept."));
             }
 
             }
@@ -2393,15 +2694,21 @@ void UI::Render()
                     static bool  s_sizeEdit = false;
                     if(!s_sizeEdit)
                         s_sizePct = HudScale() * 100.0f;
-                    if(ImGui::SliderFloat(Tr("HUD Size"), &s_sizePct, 60.0f, 200.0f, "%.0f %%", ImGuiSliderFlags_AlwaysClamp))
-                        s_sizeEdit = true;
-                    if(ImGui::IsItemDeactivatedAfterEdit())
+                    if(ToggleSwitch(Tr("Auto HUD size"), &m_options.hud.autoScale))
+                        changed = true;
+                    ShowHelpMarker(Tr("The size of the interface follows the Windows display scale of the screen it is on: 100 % in Windows gives the normal size, 150 % makes it 1.5 times bigger. Untick to choose the size yourself."));
+                    if(!m_options.hud.autoScale) // (hidden while the size follows the Windows scale)
                     {
-                        HudScale() = std::clamp(s_sizePct / 100.0f, 0.6f, 2.0f); // the size of the mode in use (window or HUD over the screen)
-                        s_sizeEdit          = false;
-                        changed             = true;
+                        if(ImGui::SliderFloat(Tr("HUD Size"), &s_sizePct, 60.0f, 200.0f, "%.0f %%", ImGuiSliderFlags_AlwaysClamp))
+                            s_sizeEdit = true;
+                        if(ImGui::IsItemDeactivatedAfterEdit())
+                        {
+                            HudScale() = std::clamp(s_sizePct / 100.0f, 0.6f, 2.0f); // the size of the mode in use (window or HUD over the screen)
+                            s_sizeEdit = false;
+                            changed    = true;
+                        }
+                        ShowHelpMarker(Tr("Size of the whole HUD, 60 to 200 %. Dragging the edges of the HUD stretches it."));
                     }
-                    ShowHelpMarker(Tr("Size of the whole HUD, 60 to 200 %. Dragging the edges of the HUD stretches it."));
                 }
                 float col[3] = { m_options.hud.r, m_options.hud.g, m_options.hud.b };
                 if(ImGui::ColorEdit3(Tr("Accent Color"), col, ImGuiColorEditFlags_NoInputs))
@@ -2453,7 +2760,7 @@ void UI::Render()
                         m_appearanceDirty = true;
                         ShowBanner();
                     }
-                    if(ImGui::Checkbox(Tr("Show stats"), &m_options.hud.showStats))
+                    if(ToggleSwitch(Tr("Show stats"), &m_options.hud.showStats))
                         m_appearanceDirty = true;
                     ShowHelpMarker(Tr("Adds to the Nbeam banner (the banner then stays on while an effect or 3D is active): the RAM Nbeam uses, the render latency (one game picture, with the frame buffer added in brackets when it is used) and the late frames per minute (the picture was shown for more or fewer refreshes than planned)."));
                 }
@@ -2604,7 +2911,7 @@ void UI::Render()
                 }
                 ImGui::SameLine();
                 if(ImGui::Button(labels[4]))
-                    PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
+                    PostMessage(m_options.outputWindow, WM_USER_RESTART, NB_RESTART_TAG, 0);
 
                 ImVec2 popupSize = ImVec2((std::min)(m_fontSize * 34, viewport.x * 0.95f), (std::min)(m_fontSize * 34, viewport.y * 0.95f));
                 ImGui::SetNextWindowSize(popupSize, ImGuiCond_Always);
@@ -2698,7 +3005,7 @@ void UI::Render()
                     // display, GPU, capture, HDR, sRGB or swap chain buffers: the renderer has to restart
                     ApplyPendingChanges();
                     m_applyRequired = false;
-                    PostMessage(m_options.outputWindow, WM_USER_RESTART, 0, 0);
+                    PostMessage(m_options.outputWindow, WM_USER_RESTART, NB_RESTART_TAG, 0);
                 }
                 else
                 {
@@ -2761,7 +3068,7 @@ void UI::Render()
         RenderMenu();
     }
     // a shortcut capture started in the Hotkeys section, then another tab was opened: cancelled (the hotkeys work again)
-    if((s_captureId >= 0 || s_padCaptureId >= 0) && s_hotkeysDrawnFrame != ImGui::GetFrameCount())
+    if(s_captureId >= 0 && s_hotkeysDrawnFrame != ImGui::GetFrameCount())
         CancelCaptureNow(m_options);
     {
         // a control was released after a change (slider, checkbox, list...): the active profile is saved (by the main thread)
@@ -2785,6 +3092,18 @@ void UI::Render()
     ImGui_ImplDX11_RenderDrawData(ImGui::GetDrawData());
 }
 
+// After a lost graphics card the ImGui textures can already be invalid: releasing them must not take Nbeam down (it restarts anyway)
+static void ImGuiBackendShutdownGuarded()
+{
+    __try
+    {
+        ImGui_ImplDX11_Shutdown();
+    }
+    __except(EXCEPTION_EXECUTE_HANDLER)
+    {
+    }
+}
+
 void UI::Stop()
 {
     m_ready = false;
@@ -2793,9 +3112,15 @@ void UI::Stop()
     m_logoSB = nullptr;
     s_iconNbeam = nullptr;
     s_iconSB    = nullptr;
-    ImGui_ImplDX11_Shutdown();
-    ImGui_ImplWin32_Shutdown();
-    ImGui::DestroyContext();
+    // Quit can arrive while the renderer is being restarted: ImGui may already be shut down, then there is nothing to release
+    if(ImGui::GetCurrentContext())
+    {
+        if(ImGui::GetIO().BackendRendererUserData)
+            ImGuiBackendShutdownGuarded();
+        if(ImGui::GetIO().BackendPlatformUserData)
+            ImGui_ImplWin32_Shutdown();
+        ImGui::DestroyContext();
+    }
 
     m_smallFont   = nullptr;
     m_largeFont   = nullptr;
@@ -2806,7 +3131,9 @@ void UI::Stop()
 bool UI::Toggle()
 {
     m_options.ui = !m_options.ui;
-    if(!m_options.ui)
+    if(m_options.ui)
+        CloseMenu(); // the HUD and the mini menu are never shown together
+    else
         CancelHotkeyCapture(); // a shortcut capture left open would keep every hotkey off (even the one that shows the HUD)
     return m_options.ui;
 }
@@ -2893,11 +3220,21 @@ void UI::SetStyle(ImGuiStyle& style)
         }
 }
 
-// the HUD is being dragged with the mouse: the renderer redraws it at the full rate meanwhile (30 times a second otherwise)
-bool UI::HudMoving() const
+// tracer of the HUD clicks: the longest waits for the HUD lock since the last call (render thread, window thread), then reset
+static void KeepMax(std::atomic<int>& v, int x)
 {
-    ImGuiContext* g = ImGui::GetCurrentContext();
-    return m_ready && g && g->MovingWindow != nullptr;
+    int cur = v.load();
+    while(x > cur && !v.compare_exchange_weak(cur, x))
+    { }
+}
+
+void UI::TakeLockWaits(double* render, double* window)
+{
+    const int r = m_waitRenderUs.exchange(0), w = m_waitInputUs.exchange(0);
+    if(render)
+        *render = r / 1000.0;
+    if(window)
+        *window = w / 1000.0;
 }
 
 // union of the HUD windows (and popups, tooltips) of the last frame: the renderer lays the HUD texture over this area only
@@ -2969,6 +3306,12 @@ bool UI::Banner3d() const
     return m_options.emitter.sourceFormat != StereoSource::Off && !m_options.emitter.hold && m_options.StereoAllowed();
 }
 
+// 3D switched off because the game runs too fast for stable 3D (the banner follows the banner display time, like the others)
+bool UI::Capped3d() const
+{
+    return !m_windowMode && m_options.emitter.sourceFormat != StereoSource::Off && !m_options.emitter.hold && (m_options.emitter.fpsCapped || m_options.emitter.fullSbsBad);
+}
+
 bool UI::BannerFx() const
 {
     return !m_windowMode && !m_options.effectsSuspended && m_options.subFrames > 1;
@@ -2988,7 +3331,7 @@ void UI::ShowBanner()
         return;
     }
     const int sec = m_options.hud.bannerSeconds;
-    const bool on = (Banner3d() || BannerFx()) && sec > 0; // (3D wins over the effect: the banner is the Nbeam 3D Vision one)
+    const bool on = (Banner3d() || BannerFx() || Capped3d()) && sec > 0; // (3D wins over the effect: the banner is the Nbeam 3D Vision one)
     m_bannerUntil = !on ? 0 : (sec > 10 ? ~0ULL : GetTickCount64() + (ULONGLONG)sec * 1000ULL);
 }
 
@@ -3017,7 +3360,7 @@ bool UI::BannerActive() const
 // shown for 3 seconds when a 3D mode is active: tells that the emitter is on (or could not start)
 void UI::RenderBanner()
 {
-    static const char* formats[] = { "Off", "SBS", "TB", "Checkerboard", "2D to 3D (AI)" };
+    static const char* formats[] = { "Off", "SBS", "TB", "Checkerboard", "2D to 3D (AI)", "Interlaced H", "Interlaced V" };
     const ImU32 accent = IM_COL32((int)(m_options.hud.r * 255), (int)(m_options.hud.g * 255), (int)(m_options.hud.b * 255), 255);
 
     struct Line
@@ -3043,6 +3386,24 @@ void UI::RenderBanner()
         add(2, "Sync Offset: %d us", m_options.emitter.syncOffsetUs);
         add(3, "Open Duration: %.0f us", m_options.emitter.nvidia.openDurationUs);
     }
+    else if(Capped3d())
+    {
+        const auto& em = m_options.emitter;
+        char        buf[160];
+        if(em.fullSbsBad)
+        {
+            lines.push_back({ Tr("Full SBS impossible with this window"), IM_COL32(255, 90, 40, 255) });
+            lines.push_back({ Tr("The captured window must be twice as wide as the screen (e.g. 3840x1080 on 1080p)"), IM_COL32(215, 215, 215, 255) });
+            lines.push_back({ Tr("Resize the game window, or pick another 3D format"), IM_COL32(170, 170, 170, 255) });
+        }
+        else
+        {
+        lines.push_back({ Tr("3D disabled: frame rate too high"), IM_COL32(255, 90, 40, 255) });
+        snprintf(buf, sizeof(buf), Tr("Game: %.0f fps  |  limit: %.0f fps"), em.cappedFps, (std::max)(em.fpsLimit - 5.0f, 1.0f)); // (shown: half the 3D rate; the 5 fps above it are Nbeam's margin)
+        lines.push_back({ buf, IM_COL32(215, 215, 215, 255) });
+        lines.push_back({ Tr("Cap the game frame rate to the limit: 3D comes back once under it (stability of the glasses)"), IM_COL32(170, 170, 170, 255) });
+        }
+    }
     else
     {
         bool failed = false;
@@ -3060,8 +3421,13 @@ void UI::RenderBanner()
             lines.push_back({ buf, IM_COL32(215, 215, 215, 255) });
         }
         else
-        lines.push_back({ failed ? std::string(Tr("3D emitter: NOT FOUND (see Status)")) : std::string(Tr("3D emitter ON  -  ")) + Tr(formats[(fmt >= 0 && fmt < 5) ? fmt : 0]),
+        {
+        std::string fmtName = Tr(formats[(fmt >= 0 && fmt < 7) ? fmt : 0]);
+        if(m_options.emitter.autoSource)
+            fmtName = std::string(Tr("Auto")) + ": " + fmtName;
+        lines.push_back({ failed ? std::string(Tr("3D emitter: NOT FOUND (see Status)")) : std::string(Tr("3D emitter ON  -  ")) + fmtName,
                           failed ? IM_COL32(255, 90, 40, 255) : accent });
+        }
         if(!failed && Banner3d())
         {
             // 3D refresh rate = half of the emitter (eye switch) rate
@@ -3080,7 +3446,7 @@ void UI::RenderBanner()
             lines.push_back({ std::string(Tr("Late frames")) + ": " + late, IM_COL32(215, 215, 215, 255) });
         }
     }
-    const char* title = (m_options.emitter.sourceFormat != StereoSource::Off && !(m_noteUntil == 0 && false) && Banner3d()) || m_adjustUntil > GetTickCount64() ? "Nbeam 3D Vision" : "Nbeam";
+    const char* title = (m_options.emitter.sourceFormat != StereoSource::Off && !(m_noteUntil == 0 && false) && Banner3d()) || Capped3d() || m_adjustUntil > GetTickCount64() ? "Nbeam 3D Vision" : "Nbeam";
 
     auto  drawList = ImGui::GetForegroundDrawList();
     auto  size     = ImGui::GetMainViewport()->Size;
@@ -3109,12 +3475,39 @@ void UI::RenderBanner()
     }
 }
 
+void UI::CloseMenu()
+{
+    m_menuUntil       = 0;
+    m_menuOpen        = false;
+    m_menuEdit        = -1;
+    m_menuPendingItem = -1;
+    m_menuClicks      = 0;
+    m_menuWheel       = 0;
+    m_menuHeld        = 0;
+}
+
 // ---- 3D mini menu: driven only by the NVIDIA emitter ----
-// wheel = move between the lines, button held + wheel = change the value, button released = apply the heavy changes (3D mode, AI resolution)
+// wheel = move between the lines; click = select a line; wheel = change its value; click = confirm (the list choices are applied then)
 void UI::MenuInput(int clicks, int wheel, int held)
 {
-    if(!m_ready || m_windowMode || m_options.emitter.hold)
+    if(!m_ready)
         return;
+    if(m_windowMode || !m_options.captureWindow)
+    {
+        // desktop mode (effects on or off, HUD shown or not): the button only adds the program to the profiles, exactly as the "add the program
+        // to the profiles" shortcut does; there is no mini menu. The mini menu is for the game capture.
+        CloseMenu();
+        if(clicks > 0 && !held)
+            PostMessage(m_options.outputWindow, WM_HOTKEY, HOTKEY_ADDEXE, 1);
+        return;
+    }
+    if(m_options.emitter.hold)
+        return;
+    if(m_options.ui)
+    {
+        CloseMenu(); // the HUD is shown: no mini menu
+        return;
+    }
     const auto now = GetTickCount64();
     if(!(m_menuUntil && now < m_menuUntil))
         m_menuOpen = false; // the timer ran out: the next input opens the menu again
@@ -3129,11 +3522,23 @@ void UI::MenuInput(int clicks, int wheel, int held)
 
 void UI::RenderMenu()
 {
+    if(m_options.ui)
+    {
+        CloseMenu();
+        return;
+    }
     const auto now = GetTickCount64();
+    if(m_menuOpen && m_menuEdit >= 0 && m_menuUntil != ~0ULL)
+    {
+        const unsigned long long cur = m_menuUntil;
+        if(cur < now + 5000)
+            m_menuUntil = now + 5000; // the slider stays until the setting is confirmed
+    }
     if(!(m_menuUntil && now < m_menuUntil))
     {
         m_menuOpen        = false;
         m_menuPendingItem = -1;
+        m_menuEdit        = -1;
         return;
     }
     auto& s = m_options.emitter;
@@ -3149,6 +3554,7 @@ void UI::RenderMenu()
         std::function<std::string(int)>       name;
         std::function<bool(int)>              enabled;
         std::function<void(int)>              apply;
+        float                                 frac  = -1.0f;             // live line with a range: position 0..1 for the slider shown when it changes (-1 = none)
     };
     std::vector<Item> items;
     char              buf[64];
@@ -3157,6 +3563,7 @@ void UI::RenderMenu()
         Item it;
         it.label  = Tr(label);
         it.value  = buf;
+        it.frac   = hi > lo ? std::clamp((*p - lo) / (hi - lo), 0.0f, 1.0f) : 0.0f;
         it.adjust = [=](int n) { *p = std::clamp(*p + (float)n * step, lo, hi); };
         items.push_back(std::move(it));
     };
@@ -3172,9 +3579,18 @@ void UI::RenderMenu()
     const int    range  = syncHz > 0 ? (int)(1e6 / syncHz) : 10000;
     const bool   on3d   = s.sourceFormat != StereoSource::Off;
 
-    // 3D mode (restarts the 3D renderer: applied when the button is released)
     {
-        static const char* kNames[] = { "Off", "Side by Side (SBS)", "Top and Bottom (TB)", "Checkerboard", "2D to 3D (AI)" };
+        // Auto source: above the 3D Source Format, which is hidden while it is on (the format then follows the detected 3D source)
+        Item it;
+        it.label  = Tr("Auto source");
+        it.value  = s.autoSource ? Tr("On") : Tr("Off");
+        it.adjust = [&s](int n) { s.autoSource = n > 0; };
+        items.push_back(std::move(it));
+    }
+    // 3D mode (restarts the 3D renderer: applied when the button is released)
+    if(!s.autoSource)
+    {
+        static const char* kNames[] = { "Off", "Side by Side (SBS)", "Top and Bottom (TB)", "Checkerboard", "2D to 3D (AI)", "Interlaced horizontal", "Interlaced vertical" };
         static std::vector<std::string> s_missing;
         static ULONGLONG                s_missingAt = 0;
         if(now - s_missingAt > 2000)
@@ -3185,11 +3601,16 @@ void UI::RenderMenu()
         const bool aiOk = s_missing.empty();
         Item       it;
         it.label   = Tr("3D Source Format");
-        it.count   = 5;
-        it.cur     = std::clamp((int)s.sourceFormat, 0, 4);
-        it.name    = [](int i) { return std::string(Tr(kNames[i])); };
-        it.enabled = [aiOk](int i) { return i != 4 || aiOk; };
-        it.apply   = [this](int i) {
+        static const int kOrder[7] = { 0, 1, 2, 3, 5, 6, 4 };
+        it.count   = 7;
+        it.cur     = 0;
+        for(int k = 0; k < 7; k++)
+            if(kOrder[k] == (int)s.sourceFormat)
+                it.cur = k;
+        it.name    = [](int p) { return std::string(Tr(kNames[kOrder[p]])); };
+        it.enabled = [aiOk](int p) { return kOrder[p] != 4 || aiOk; }; // (the item is hidden while Auto source is on)
+        it.apply   = [this](int p) {
+            const int i = kOrder[p];
             auto& e = m_options.emitter;
             if((int)e.sourceFormat == i)
                 return;
@@ -3227,6 +3648,8 @@ void UI::RenderMenu()
                 snprintf(t, sizeof(t), "%.3f Hz", rates[std::clamp(i, 0, (int)rates.size() - 1)]);
                 return std::string(t);
             };
+            const bool lockRate = s.syncAuto || s.autoSource; // (the rate is chosen by Sync Auto / Auto source: not changed from the mini menu)
+            it.enabled = [lockRate, cur](int p) { return !lockRate || p == cur; };
             it.apply = [this, rates](int i) {
                 auto& e      = m_options.emitter;
                 e.syncAuto   = false;
@@ -3261,10 +3684,11 @@ void UI::RenderMenu()
             Item it;
             it.label  = Tr("Sync Offset (us)");
             it.value  = buf;
-            it.adjust = [&s, range](int n) { s.syncOffsetUs = std::clamp(s.syncOffsetUs + n * 100, -range, 0); };
+            it.frac   = range > 0 ? std::clamp((float)(s.syncOffsetUs + range) / (float)range, 0.0f, 1.0f) : 0.0f;
+            it.adjust = [&s, range](int n) { s.syncOffsetUs = std::clamp(s.syncOffsetUs + n * 50, -range, 0); }; // (50 us per tick of the wheel)
             items.push_back(std::move(it));
         }
-        addFloat("Open Duration (us)", &s.nvidia.openDurationUs, 0.0f, (float)range, 100.0f, "%.0f");
+        addFloat("Open Duration (us)", &s.nvidia.openDurationUs, 0.0f, (float)range, 50.0f, "%.0f"); // (50 us per tick of the wheel)
         // convergence, shown -100..+100 like the slider
         {
             const float conv = (50.0f - s.ai.convergence) * 2.0f;
@@ -3272,6 +3696,7 @@ void UI::RenderMenu()
             Item it;
             it.label  = Tr("Convergence");
             it.value  = buf;
+            it.frac   = std::clamp((conv + 100.0f) / 200.0f, 0.0f, 1.0f);
             it.adjust = [&s](int n) {
                 const float c    = std::clamp((50.0f - s.ai.convergence) * 2.0f + (float)n, -100.0f, 100.0f);
                 s.ai.convergence = std::clamp(50.0f - c * 0.5f, 0.0f, 100.0f);
@@ -3318,8 +3743,8 @@ void UI::RenderMenu()
                     if(Options::NormalizeExeName(l.exe) == prog)
                     {
                         known = true;
-                        if(!match || l.screenId == screen)
-                            match = &l;
+                        if(!match)
+                            match = &l; // the first line of the program decides its profile
                     }
                 if(match)
                     for(int i = 0; i < (int)s_profList.size(); i++)
@@ -3345,6 +3770,9 @@ void UI::RenderMenu()
                     Options::ProfileLink nl;
                     nl.exe      = prog;
                     nl.screenId = screen;
+                    nl.fpsCapMode = m_options.DefaultFpsCapMode();
+                    nl.fpsLimit   = m_options.fpsLimitDefault;
+                    nl.profile    = m_options.ProfileForNewProgram();
                     m_options.profileLinks.push_back(nl);
                     m_options.SaveApp();
                     ShowNote(prog + " " + Tr("added to the profile detections"));
@@ -3358,23 +3786,32 @@ void UI::RenderMenu()
                 it.count = (int)s_profList.size();
                 it.cur   = curProf;
                 it.name  = [](int i) { return i >= 0 && i < (int)s_profList.size() ? s_profList[i] : std::string(Tr("(no profile)")); };
-                it.apply = [this, prog, screen](int i) {
+                it.apply = [this, prog](int i) {
                     if(i < 0 || i >= (int)s_profList.size())
                         return;
                     std::lock_guard<std::recursive_mutex> lk(m_options.linksMutex);
-                    Options::ProfileLink* match = nullptr;
+                    bool changed = false;
                     for(auto& l : m_options.profileLinks)
-                        if(Options::NormalizeExeName(l.exe) == prog && (!match || l.screenId == screen))
-                            match = &l;
-                    if(match)
-                    {
-                        match->profile = s_profList[i];
+                        if(Options::NormalizeExeName(l.exe) == prog)
+                        {
+                            l.profile = s_profList[i]; // one profile per program: the same for all its screens (the detection loads it right away)
+                            changed   = true;
+                        }
+                    if(changed)
                         m_options.SaveApp();
-                    }
                 };
                 items.push_back(std::move(it));
             }
         }
+    }
+
+    {
+        // the last line: all the effects and the emitter off / on (as the Hide / Show button and its hotkey)
+        Item it;
+        it.label  = Tr("Disable effects");
+        it.value  = m_options.effectsSuspended ? Tr("On") : Tr("Off");
+        it.adjust = [this](int n) { m_options.effectsSuspended = n > 0; };
+        items.push_back(std::move(it));
     }
 
     // ---- pending input ----
@@ -3391,6 +3828,8 @@ void UI::RenderMenu()
             m_menuOpen        = true;
             m_menuIndex       = 0;
             m_menuPendingItem = -1;
+            m_menuEdit        = -1;
+            m_menuNavRest     = 0;
         }
         else
             return;
@@ -3398,72 +3837,84 @@ void UI::RenderMenu()
     else
     {
         m_menuIndex = std::clamp(m_menuIndex, 0, count - 1);
-        // the wheel moves between the lines (up = previous line)
-        // (less sensitive than the settings: 3 ticks of the wheel per line)
-        m_menuNavRest += wheel;
-        const int nav = m_menuNavRest / 3;
-        m_menuNavRest -= nav * 3;
-        if(nav != 0)
+        if(m_menuEdit >= count)
         {
-            m_menuPendingItem = -1; // a change that was not confirmed is dropped
-            m_menuIndex       = std::clamp(m_menuIndex - nav, 0, count - 1);
+            m_menuEdit        = -1;
+            m_menuPendingItem = -1;
         }
-        // button held + wheel: change the value of the highlighted line
-        if(held != 0)
+        // the wheel (button held or not) moves between the lines, or, once a line is selected by a click, changes its value
+        const int turn = wheel + held;
+        if(turn != 0)
         {
-            Item& it = items[m_menuIndex];
-            if(it.count > 0)
+            if(m_menuEdit < 0)
             {
-                if(m_menuPendingItem != m_menuIndex)
+                // (less sensitive than the settings: 3 ticks of the wheel per line; up = previous line)
+                m_menuNavRest += turn;
+                const int nav = m_menuNavRest / 3;
+                m_menuNavRest -= nav * 3;
+                if(nav != 0)
+                    m_menuIndex = std::clamp(m_menuIndex - nav, 0, count - 1);
+            }
+            else
+            {
+                Item& it = items[m_menuEdit];
+                if(it.count > 0)
+                {
+                    // a choice from a short list (3D mode, rate of the emitter, AI resolution, profile): applied when confirmed
+                    // (less sensitive than the other settings: 3 ticks of the wheel per choice)
+                    m_menuChoiceRest += turn;
+                    const int choiceSteps = m_menuChoiceRest / 3;
+                    m_menuChoiceRest -= choiceSteps * 3;
+                    int       v   = m_menuPendingVal;
+                    const int dir = choiceSteps > 0 ? 1 : -1;
+                    for(int k = 0; k < std::abs(choiceSteps); k++)
+                    {
+                        int nv = v + dir;
+                        while(nv >= 0 && nv < it.count && it.enabled && !it.enabled(nv))
+                            nv += dir;
+                        if(nv >= 0 && nv < it.count)
+                            v = nv;
+                    }
+                    m_menuPendingVal = v;
+                }
+                else if(it.adjust)
+                {
+                    // live setting (glasses timing, convergence, ...): applied at once while the wheel turns
+                    it.adjust(turn);
+                    RequestSave();
+                    changed     = true;
+                }
+            }
+        }
+        // a click selects the highlighted line, or confirms the selected one (a click right after a turn with the button held is its release)
+        for(int i = 0; i < clicks; i++)
+        {
+            if(held != 0 || now - m_menuLastHeld < 1500)
+                break;
+            if(m_menuEdit >= 0)
+            {
+                Item& it = items[m_menuEdit];
+                if(it.count > 0 && it.apply && m_menuPendingItem == m_menuEdit && m_menuPendingVal != it.cur)
+                {
+                    it.apply(m_menuPendingVal);
+                    RequestSave();
+                    changed     = true;
+                }
+                m_menuPendingItem = -1;
+                m_menuEdit        = -1;
+                m_menuNavRest     = 0;
+            }
+            else
+            {
+                Item& it = items[m_menuIndex];
+                m_menuEdit    = m_menuIndex;
+                m_menuNavRest = 0;
+                if(it.count > 0)
                 {
                     m_menuPendingItem = m_menuIndex;
                     m_menuPendingVal  = it.cur;
                     m_menuChoiceRest  = 0;
                 }
-                // (less sensitive than the other settings: 3 ticks of the wheel per choice)
-                m_menuChoiceRest += held;
-                const int choiceSteps = m_menuChoiceRest / 3;
-                m_menuChoiceRest -= choiceSteps * 3;
-                int v   = m_menuPendingVal;
-                const int dir = choiceSteps > 0 ? 1 : -1;
-                for(int k = 0; k < std::abs(choiceSteps); k++)
-                {
-                    int nv = v + dir;
-                    while(nv >= 0 && nv < it.count && it.enabled && !it.enabled(nv))
-                        nv += dir;
-                    if(nv >= 0 && nv < it.count)
-                        v = nv;
-                }
-                m_menuPendingVal = v;
-            }
-            else if(it.adjust)
-            {
-                it.adjust(held);
-                RequestSave();
-                changed = true;
-            }
-        }
-        // the button was released: apply what was chosen (a plain click with nothing to apply closes the menu)
-        for(int i = 0; i < clicks; i++)
-        {
-            if(m_menuPendingItem >= 0)
-            {
-                Item& it = items[std::clamp(m_menuPendingItem, 0, count - 1)];
-                if(it.apply && m_menuPendingVal != it.cur)
-                {
-                    it.apply(m_menuPendingVal);
-                    RequestSave();
-                    changed = true;
-                }
-                m_menuPendingItem = -1;
-            }
-            else if(now - m_menuLastHeld < 1500)
-                ; // the release at the end of a turn with the button held
-            else
-            {
-                m_menuOpen  = false;
-                m_menuUntil = 0; // a click closes the menu
-                return;
             }
         }
     }
@@ -3479,7 +3930,7 @@ void UI::RenderMenu()
     const int   maxRows  = 9;
     const int   rows     = (std::min)(count, maxRows);
     const int   first    = std::clamp(m_menuIndex - rows / 2, 0, count - rows);
-    const char* help[]   = { Tr("Wheel: move up / down"), Tr("Button held + wheel: change the value"), Tr("3D mode, AI resolution, profile: press the button again to confirm"), Tr("Click: close the menu") };
+    const char* help[]   = { Tr("Wheel: move up / down"), Tr("Click: select the setting"), Tr("Wheel: change it, click again: confirm"), Tr("Last line: disable the effects") };
     std::vector<std::string> shown(count);
     for(int i = 0; i < count; i++)
     {
@@ -3487,11 +3938,16 @@ void UI::RenderMenu()
         if(it.count > 0)
         {
             const bool pend = m_menuPendingItem == i;
-            shown[i]        = it.name(pend ? m_menuPendingVal : it.cur) + (pend && m_menuPendingVal != it.cur ? "  >" : "");
+            shown[i]        = it.name(pend ? m_menuPendingVal : it.cur);
         }
         else
             shown[i] = it.value;
+        if(m_menuEdit == i)
+            shown[i] = "< " + shown[i] + " >"; // selected: the wheel changes it
     }
+    // while a setting is being adjusted only the slider is shown (the menu comes back when it is confirmed)
+    if(m_menuEdit < 0)
+    {
     float boxW = fs * 26.0f;
     for(int i = 0; i < count; i++)
         boxW = (std::max)(boxW, m_smallFont->CalcTextSizeA(fs, size.x, 0, items[i].label.c_str()).x + m_smallFont->CalcTextSizeA(fs, size.x, 0, shown[i].c_str()).x + fs * 5.0f);
@@ -3527,6 +3983,47 @@ void UI::RenderMenu()
         drawList->AddText(ImVec2(x0 + fs, y), IM_COL32(170, 170, 170, 255), h);
         y += fs * 1.35f;
     }
+    }
+    // the slider shown when a setting has just changed: Nbeam logo, name, bar (when the setting has a range), value; rounded, in the accent colour
+    if(m_menuEdit >= 0 && m_menuEdit < count)
+    {
+        const Item& it  = items[m_menuEdit];
+        const float rr  = fs * 1.5f; // half the height: fully rounded ends
+        const float oh  = rr * 2.0f;
+        const float ow  = (std::min)(size.x - fs * 2.0f, fs * 30.0f);
+        const float ox  = (size.x - ow) * 0.5f;
+        const float oy  = size.y - fs * 4.0f - oh;
+        const ImVec4 ac = ImVec4(m_options.hud.r, m_options.hud.g, m_options.hud.b, 1.0f);
+        const float lum = 0.299f * ac.x + 0.587f * ac.y + 0.114f * ac.z;
+        const ImU32 txt  = lum > 0.6f ? IM_COL32(20, 20, 20, 255) : IM_COL32(255, 255, 255, 255);
+        const ImU32 dark = ImGui::GetColorU32(ImVec4(ac.x * 0.35f, ac.y * 0.35f, ac.z * 0.35f, 1.0f));
+        const ImU32 fill = ImGui::GetColorU32(ImVec4(ac.x + (1.0f - ac.x) * 0.85f, ac.y + (1.0f - ac.y) * 0.85f, ac.z + (1.0f - ac.z) * 0.85f, 1.0f));
+        drawList->AddRectFilled(ImVec2(ox, oy), ImVec2(ox + ow, oy + oh), accent, rr);
+        // the logo, where the left arrow was
+        const float ls = oh - fs * 0.5f;
+        const float lx = ox + fs * 0.25f, ly = oy + fs * 0.25f;
+        drawList->AddCircleFilled(ImVec2(lx + ls * 0.5f, ly + ls * 0.5f), ls * 0.5f, dark, 48); // (behind the logo, for a logo with transparent parts)
+        if(m_logo)
+            drawList->AddImageRounded(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(lx, ly), ImVec2(lx + ls, ly + ls), ImVec2(0, 0), ImVec2(1, 1), IM_COL32_WHITE, ls * 0.5f); // the logo fills the whole circle
+        float       x      = lx + ls + fs * 0.7f;
+        const float labelW = m_smallFont->CalcTextSizeA(fs, size.x, 0, it.label.c_str()).x;
+        drawList->AddText(ImVec2(x, oy + (oh - fs) * 0.5f), txt, it.label.c_str());
+        x += labelW + fs * 0.8f;
+        const std::string val = it.count > 0 ? it.name(m_menuPendingItem == m_menuEdit ? m_menuPendingVal : it.cur) : it.value;
+        const float       vw  = m_smallFont->CalcTextSizeA(fs * 1.3f, size.x, 0, val.c_str()).x;
+        const float       vx  = ox + ow - rr * 0.7f - vw;
+        if(it.frac >= 0.0f)
+        {
+            const float th = fs * 0.9f, tx0 = x, tx1 = vx - fs * 0.8f, ty = oy + (oh - th) * 0.5f;
+            if(tx1 - tx0 > th * 2.0f)
+            {
+                drawList->AddRectFilled(ImVec2(tx0, ty), ImVec2(tx1, ty + th), dark, th * 0.5f);
+                const float fw = (std::max)(th, (tx1 - tx0) * it.frac); // (never narrower than a round end)
+                drawList->AddRectFilled(ImVec2(tx0, ty), ImVec2(tx0 + fw, ty + th), fill, th * 0.5f);
+            }
+        }
+        drawList->AddText(m_smallFont, fs * 1.3f, ImVec2(vx, oy + (oh - fs * 1.3f) * 0.5f), txt, val.c_str());
+    }
 }
 
 void UI::UpdateCaptureTone(bool refreshHdr)
@@ -3545,19 +4042,17 @@ void UI::UpdateCaptureTone(bool refreshHdr)
 void UI::RefreshHotkeyTexts()
 {
     s_hotkeyMessage = std::string(Tr("Press ")) + Options::HotkeyText(m_options.hotkeys[HOTKEY_TOGGLEUI]);
-    if(m_options.hotkeys[HOTKEY_TOGGLEUI].pad)
-        s_hotkeyMessage += " / " + Pad::Text(m_options.hotkeys[HOTKEY_TOGGLEUI].pad);
     s_hotkeyMessage += Tr(" for UI");
     s_hotkeyHelp    = Tr("Global hotkeys (change them in the Hotkeys section):\n\n");
-    for(int id : { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_EFFECTS, HOTKEY_DETECTION, HOTKEY_ADDEXE })
-        s_hotkeyHelp += std::string("  ") + Tr(Options::HotkeyActionName(id)) + ": " + Options::HotkeyText(m_options.hotkeys[id]) + (m_options.hotkeys[id].pad ? " / " + Pad::Text(m_options.hotkeys[id].pad) : std::string()) + "\n";
+    for(int id : { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_EFFECTS, HOTKEY_ADDEXE })
+        s_hotkeyHelp += std::string("  ") + Tr(Options::HotkeyActionName(id)) + ": " + Options::HotkeyText(m_options.hotkeys[id]) + "\n";
 }
 
 // Hotkeys section: click a button, then press the new key or combination (any key, modifiers optional). Esc alone cancels, Backspace alone clears.
 void UI::RenderHotkeys()
 {
     s_hotkeysDrawnFrame = ImGui::GetFrameCount();
-    static const int ids[] = { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_EFFECTS, HOTKEY_DETECTION, HOTKEY_ADDEXE, HOTKEY_SUBFRAMES_DEC, HOTKEY_SUBFRAMES_INC, HOTKEY_CLEAR_DEC,
+    static const int ids[] = { HOTKEY_TOGGLEUI, HOTKEY_RESTART, HOTKEY_QUIT, HOTKEY_SWAPEYES, HOTKEY_EFFECTS, HOTKEY_ADDEXE, HOTKEY_SUBFRAMES_DEC, HOTKEY_SUBFRAMES_INC, HOTKEY_CLEAR_DEC,
                               HOTKEY_CLEAR_INC, HOTKEY_SYNCOFFSET_DEC, HOTKEY_SYNCOFFSET_INC, HOTKEY_DURATION_DEC, HOTKEY_DURATION_INC };
     auto      restoreAll = [&]() {
         m_options.hotkeysSuspended = false;
@@ -3578,7 +4073,7 @@ void UI::RenderHotkeys()
 
     if(s_captureId >= 0)
     {
-        // keyboard: the first key pressed is the new shortcut. The gamepad / emitter part is handled below (same box).
+        // keyboard: the first key pressed is the new shortcut
         // (the global hotkeys are unregistered while capturing so they cannot fire)
         unsigned mods = 0;
         if(GetAsyncKeyState(VK_CONTROL) & 0x8000) mods |= MOD_CONTROL;
@@ -3601,7 +4096,7 @@ void UI::RenderHotkeys()
                     s_hotkeyError = "This shortcut cannot be empty."; // the HUD / the effects must always be reachable
                 else
                 {
-                    m_options.hotkeys[s_captureId].mods = 0, m_options.hotkeys[s_captureId].vk = 0, m_options.hotkeys[s_captureId].pad = 0; // Backspace clears the shortcut
+                    m_options.hotkeys[s_captureId].mods = 0, m_options.hotkeys[s_captureId].vk = 0; // Backspace clears the shortcut
                     s_hotkeyError.clear();
                 }
             }
@@ -3619,96 +4114,34 @@ void UI::RenderHotkeys()
                 {
                     const auto oldA = hkA;
                     hkA.mods = mods, hkA.vk = vk;
-                    if(!IsProtectedHotkey(s_captureId))
-                        hkA.pad = 0; // one device per box (the HUD and the effects keep their pad shortcut: they must stay reachable)
                     if(other >= 0)
                     {
                         auto& hkB = m_options.hotkeys[other];
                         hkB.mods = oldA.mods, hkB.vk = oldA.vk;
-                        hkB.pad  = IsProtectedHotkey(s_captureId) ? (IsProtectedHotkey(other) ? hkB.pad : 0) : oldA.pad;
                     }
                     restoreAll(); // registers everything again
                     s_hotkeyError.clear();
                 }
             }
-            s_captureId    = -1;
-            s_padCaptureId = -1;
-            s_padMax       = 0;
+            s_captureId = -1;
             restoreAll();
             RefreshHotkeyTexts();
             break;
         }
     }
 
-    if(s_padCaptureId >= 0)
-    {
-        // gamepad combination: wait until every button is released, then record what was held together; Esc cancels, Backspace clears
-        const unsigned b = Pad::Buttons();
-        bool           done = false;
-        if(GetAsyncKeyState(VK_ESCAPE) & 0x8000)
-        {
-            s_hotkeyError.clear();
-            done = true;
-        }
-        else if(GetAsyncKeyState(VK_BACK) & 0x8000)
-        {
-            m_options.hotkeys[s_padCaptureId].pad = 0;
-            s_hotkeyError.clear();
-            done = true;
-        }
-        else if(!s_padArmed)
-        {
-            if(b == 0)
-                s_padArmed = true;
-        }
-        else if(b)
-            s_padMax |= b;
-        else if(s_padMax)
-        {
-            // a combination already used by another action: the two actions swap their shortcuts
-            int other = -1;
-            for(int id : ids)
-                if(id != s_padCaptureId && m_options.hotkeys[id].pad == s_padMax)
-                    other = id;
-            auto&      hkA  = m_options.hotkeys[s_padCaptureId];
-            const auto oldA = hkA;
-            hkA.pad         = s_padMax;
-            if(!IsProtectedHotkey(s_padCaptureId))
-                hkA.mods = 0, hkA.vk = 0; // one device per box
-            if(other >= 0)
-            {
-                auto& hkB = m_options.hotkeys[other];
-                hkB.pad   = oldA.pad;
-                if(!IsProtectedHotkey(s_padCaptureId) && !(IsProtectedHotkey(other) && !oldA.vk))
-                    hkB.mods = oldA.mods, hkB.vk = oldA.vk;
-            }
-            s_hotkeyError.clear();
-            done = true;
-        }
-        if(done)
-        {
-            s_captureId    = -1;
-            s_padCaptureId = -1;
-            s_padMax       = 0;
-            restoreAll();
-            RefreshHotkeyTexts();
-        }
-    }
-
-    // what an action is bound to: the keyboard shortcut and / or the pad / emitter combination
+    // what an action is bound to: its keyboard shortcut
     auto bindingText = [](const Options::Hotkey& h) {
         std::string t;
         if(h.vk)
             t = Options::HotkeyText(h);
-        if(h.pad)
-            t += (t.empty() ? "" : " / ") + Pad::Text(h.pad);
         return t.empty() ? std::string(Tr("None")) : t;
     };
     for(int id : ids)
     {
         ImGui::PushID(id);
         const bool  capturing = s_captureId == id;
-        std::string label     = capturing ? std::string(Tr("Press a key or a button... (Esc cancels, Backspace clears)")) : bindingText(m_options.hotkeys[id]);
+        std::string label     = capturing ? std::string(Tr("Press a key... (Esc cancels, Backspace clears)")) : bindingText(m_options.hotkeys[id]);
         ImGui::TextUnformatted(Tr(Options::HotkeyActionName(id)));
         // one box per action, lined up on the right edge of the HUD so the action names stay readable
         const float boxWidth = m_fontSize * 21.5f;
@@ -3719,10 +4152,7 @@ void UI::RenderHotkeys()
                 CancelCaptureNow(m_options); // a click on the box being set cancels it
             else if(s_captureId < 0)
             {
-                s_captureId    = id;
-                s_padCaptureId = id;
-                s_padArmed     = false;
-                s_padMax       = 0;
+                s_captureId = id;
                 s_hotkeyError.clear();
                 m_options.hotkeysSuspended = true;
                 for(int i = 0; i < HOTKEY_COUNT; i++)
@@ -3734,9 +4164,9 @@ void UI::RenderHotkeys()
         ImGui::PopID();
     }
     ImGui::PushTextWrapPos(0.0f);
-    ImGui::TextDisabled("%s", Tr("Click a box, then press a key, a gamepad button (several together: hold, then release) - the NVIDIA emitter only drives the 3D menu. A click elsewhere or Esc cancels, Backspace clears. The pad moves the HUD only while the HUD is open and in front."));
+    ImGui::TextDisabled("%s", Tr("Click a box, then press a key or a key combination - the NVIDIA emitter only drives the 3D menu. A click elsewhere or Esc cancels, Backspace clears."));
     ImGui::PopTextWrapPos();
-    if(ImGui::Button(Tr("Reset hotkeys")) && s_captureId < 0 && s_padCaptureId < 0)
+    if(ImGui::Button(Tr("Reset hotkeys")) && s_captureId < 0)
     {
         Options defaults;
         for(int id = 0; id < HOTKEY_COUNT; id++)
@@ -3762,11 +4192,13 @@ void UI::ClearPendingChanges()
     m_pending.captureWindow    = m_options.captureWindow;
     m_pending.shaderDisplayNo  = m_options.shaderDisplayNo;
     m_pending.outputOnProcess  = m_options.outputOnProcess;
+    m_pending.outputAuto       = m_options.outputAuto;
     m_pending.subFramesMode    = m_options.subFramesMode;
     m_pending.hardwareSrgb     = m_options.hardwareSrgb;
     m_pending.captureMethod    = m_options.captureMethod;
     m_pending.splitScreen      = m_options.splitScreen;
     m_pending.maxQueuedFrames  = m_options.maxQueuedFrames;
+    m_pending.queueAuto        = m_options.queueAuto;
     m_pending.useHdr           = m_options.useHdr;
 }
 
@@ -3779,12 +4211,14 @@ void UI::ApplyPendingChanges()
     m_options.captureWindow = m_options.captureProcess.empty() ? NULL : m_options.FindCaptureWindow();
     m_pending.captureWindow = m_options.captureWindow;
     m_options.outputOnProcess  = m_pending.outputOnProcess;
+    m_options.outputAuto       = m_pending.outputAuto;
     m_options.shaderDisplayNo  = m_pending.shaderDisplayNo;
     m_options.subFramesMode    = m_pending.subFramesMode;
     m_options.hardwareSrgb     = m_pending.hardwareSrgb;
     m_options.captureMethod    = m_pending.captureMethod;
     m_options.splitScreen      = m_pending.splitScreen;
     m_options.maxQueuedFrames  = m_pending.maxQueuedFrames;
+    m_options.queueAuto        = m_pending.queueAuto;
     m_options.useHdr           = m_pending.useHdr;
 }
 
@@ -3800,96 +4234,17 @@ void UI::SetError(const char* message)
     m_errorMessage = message;
 }
 
-// See http://blogs.msdn.com/b/oldnewthing/archive/2007/10/08/5351207.aspx
-BOOL IsAltTabWindow(HWND hwnd)
-{
-    // Start at the root owner
-    HWND hwndWalk = GetAncestor(hwnd, GA_ROOTOWNER);
-
-    // See if we are the last active visible popup
-    HWND hwndTry;
-    while((hwndTry = GetLastActivePopup(hwndWalk)) != hwndTry)
-    {
-        if(IsWindowVisible(hwndTry))
-            break;
-        hwndWalk = hwndTry;
-    }
-    return hwndWalk == hwnd;
-}
-
-void UI::AddWindow(HWND hWnd)
-{
-    wchar_t name[128];
-    wchar_t wclass[128];
-    if(hWnd != m_options.outputWindow && hWnd != m_hwnd && IsWindowVisible(hWnd) && IsAltTabWindow(hWnd) && !IsIconic(hWnd) && GetWindowText(hWnd, name, 127))
-    {
-        auto style      = GetWindowLongPtr(hWnd, GWL_STYLE);
-        bool fullscreen = !(style & WS_CAPTION) && !(style & WS_THICKFRAME);
-        if(fullscreen)
-        {
-            auto monitor = MonitorFromWindow(hWnd, MONITOR_DEFAULTTONEAREST);
-            if(monitor == m_options.captureMonitor)
-            {
-                RECT windowRect;
-                fullscreen =
-                    GetWindowRect(hWnd, &windowRect) && windowRect.right - windowRect.left == m_options.outputWidth && windowRect.bottom - windowRect.top == m_options.outputHeight;
-            }
-        }
-
-        if(GetClassNameW(hWnd, wclass, 127) && (wcscmp(wclass, L"Windows.UI.Core.CoreWindow") == 0 || wcscmp(wclass, L"ApplicationFrameWindow") == 0))
-        {
-            DWORD cloaked = FALSE;
-            if(DwmGetWindowAttribute(hWnd, DWMWA_CLOAKED, &cloaked, sizeof(cloaked)) == S_OK && cloaked == DWM_CLOAKED_SHELL)
-                return;
-        }
-
-        std::string displayName = "Window: " + Helpers::WCharToString(name) + " (" + std::to_string((uint64_t)hWnd) + ")";
-        m_inputs.emplace_back(hWnd, displayName, fullscreen, 0, 0);
-    }
-}
-
-static BOOL CALLBACK EnumWindowsProc(_In_ HWND hWnd, _In_ LPARAM lParam)
-{
-    ((UI*)lParam)->AddWindow(hWnd);
-    return true;
-}
-
 void UI::ScanWindows()
 {
+    // the displays (and the capture method of each): programs are captured by their .exe, so their windows are not listed here
     m_inputs.clear();
-
-    if(m_captures[0].api->SupportsWindowCapture())
-    {
-        EnumWindows(EnumWindowsProc, (LPARAM)this);
-        std::sort(m_inputs.begin(), m_inputs.end(), [](const InputInfo& a, const InputInfo& b) { return _stricmp(a.name.c_str(), b.name.c_str()) < 0; });
-    }
-
-    std::vector<InputInfo> desktops;
     for(const auto& capture : m_captures)
     {
         for(const auto& display : m_displays)
         {
-            desktops.emplace_back((HWND)0, display.name + " (" + capture.name + ")", true, capture.no, display.no);
+            m_inputs.emplace_back((HWND)0, display.name + " (" + capture.name + ")", true, capture.no, display.no);
         }
     }
-    m_inputs.insert(m_inputs.begin(), desktops.begin(), desktops.end());
-
-    /*
-    std::sort(m_inputs.begin(), m_inputs.end(), [](const InputInfo& a, const InputInfo& b) {
-        if(a.fullscreen == b.fullscreen)
-            return _stricmp(a.name.c_str(), b.name.c_str()) < 0;
-        else
-            return a.fullscreen > b.fullscreen;
-    });
-    m_inputs.insert(m_inputs.begin(), InputInfo { (HWND)INVALID_HANDLE_VALUE, "-- FULLSCREEN WINDOWS", true });
-    for(auto iter = m_inputs.begin(); iter < m_inputs.end(); iter++)
-    {
-        if(!iter->fullscreen)
-        {
-            m_inputs.insert(iter, InputInfo { (HWND)INVALID_HANDLE_VALUE, "-- OTHER WINDOWS", false });
-            break;
-        }
-    }*/
 }
 
 } // namespace ShaderBeam

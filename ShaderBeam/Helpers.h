@@ -25,7 +25,6 @@ public:
     static winrt::com_ptr<ID3D11Device> CreateD3DDevice(IDXGIAdapter* adapter);
     static void                         InitQPC();
     static float                        GetTicks();
-    static ULONGLONG                    GetQPC();
     static float                        QPCToTicks(ULONGLONG qpc);
     static float                        QPCToDeltaMs(ULONGLONG qpc);
     static void                         Throw(HRESULT hr, const char* action);
@@ -63,4 +62,9 @@ public:
 private:
     HANDLE m_handle { nullptr };
 };
+
+// A sound nobody can hear (about -90 dBFS noise) played on the default Windows audio device for as long as Nbeam runs, so Windows keeps the
+// spatial audio (Dolby Atmos) active: with no stream running, Atmos often falls back to the stereo mix after a while or after a mode change.
+// The thread follows the default device when it changes and tries again by itself when the device goes away.
+void AudioKeepAliveSet(bool on);
 } // namespace ShaderBeam

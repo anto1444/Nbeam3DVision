@@ -40,5 +40,12 @@ private:
     winrt::Windows::Graphics::Capture::Direct3D11CaptureFramePool m_framePool { nullptr };
     winrt::Windows::Graphics::Capture::GraphicsCaptureSession     m_session { nullptr };
     HWND                                                          m_captureWindow { NULL };
+    winrt::Windows::Graphics::SizeInt32                           m_poolSize { 0, 0 }; // size the frame pool buffers were made for
+    // client area of the captured window inside the frame (ClientPart)
+    void      ClientPart(int W, int H, int& x, int& y, int& w, int& h);
+    ULONGLONG m_cropAt { 0 };
+    int       m_cropFrameW { 0 }, m_cropFrameH { 0 };
+    int       m_crop[4] {};
+    bool      m_cropOk { false };
 };
 } // namespace ShaderBeam
