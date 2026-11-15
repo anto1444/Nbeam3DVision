@@ -33,6 +33,14 @@ Nbeam 3D Vision est une surcouche (overlay) Windows qui s'affiche par-dessus un 
 
 Au tout premier lancement (quand le dossier `Profils` est créé), Nbeam affiche un avertissement.
 
+## Antivirus et SmartScreen (faux positif possible)
+
+L'exécutable n'est pas signé numériquement et Nbeam fait des choses qu'un antivirus peut juger suspectes (raccourcis clavier globaux, capture d'écran, affichage par-dessus les jeux, renvoi des messages de souris au jeu, redémarrage automatique). Windows SmartScreen ou un antivirus peut donc afficher un avertissement ou, plus rarement, le signaler à tort. **Le code source est entièrement public sur ce dépôt** et peut être relu et compilé soi-même.
+
+- SmartScreen : « Informations complémentaires » puis « Exécuter quand même ».
+- Vérifiez l'intégrité du téléchargement avec l'empreinte SHA-256 publiée dans les notes de la version (`certutil -hashfile Nbeam3DVision-3.0.0.zip SHA256`).
+- Si Defender le bloque, vous pouvez l'envoyer comme faux positif à Microsoft : https://www.microsoft.com/wdsi/filesubmission
+
 ## Prérequis
 
 - Windows 10 (1903) ou 11, 64 bits, carte graphique DirectX 11 (RTX 3050 ou AMD équivalent recommandé).

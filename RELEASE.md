@@ -74,15 +74,24 @@ Mise à jour de la version 2.4.1 : source auto, SBS complet, synchro auto et tim
 ## Contenu de l'archive
 
 - `Nbeam3DVision.exe` : le programme
-- `Nbeam3DVision.pdb` : les symboles, pour que le journal de plantage indique les noms des fonctions (facultatif, à garder à côté de l'exe)
 - `Shaders\CRTBeamSimulator.hlsl` : le shader du CRT Beam Simulator (à garder à côté de l'exe)
 - `README.md` : le mode d'emploi complet ; `RELEASE.md` : ces notes
 - `LICENSE`, `THIRD_PARTY_NOTICES.md` : licences
 
+## Intégrité et antivirus
+
+SHA-256 de `Nbeam3DVision-3.0.0.zip` :
+`490508991f62fc2b8d8eb4a794b9b93132b30ad4076ebdc3ae0af5ac3301ddf0`
+
+SHA-256 de `Nbeam3DVision.exe` :
+`6fa87a8c1f04b3fc255f31a6d4e32d6e497c279972410ca3536336f4527b72e1`
+
+L'exécutable n'est pas signé : Windows SmartScreen ou un antivirus peut afficher un avertissement (faux positif). Le code source est public sur ce dépôt. Voir le README, section « Antivirus et SmartScreen ».
+
 ## Installation / mise à jour
 
 1. Décompressez l'archive dans un dossier où Nbeam peut écrire.
-2. Pour une mise à jour, quittez d'abord Nbeam par le menu de l'icône de notification, puis remplacez l'exe, le `.pdb` et le dossier `Shaders`. Vos profils (`Profils\`) et votre configuration sont conservés.
+2. Pour une mise à jour, quittez d'abord Nbeam par le menu de l'icône de notification, puis remplacez l'exe et le dossier `Shaders`. Vos profils (`Profils\`) et votre configuration sont conservés.
 3. Lancez `Nbeam3DVision.exe`.
 
 **2D vers 3D (IA)** : `onnxruntime.dll`, `onnxruntime_providers_shared.dll` et le modèle `.onnx` ne sont **pas fournis** (licence et taille). Copiez-les vous-même à côté de l'exe (voir le README). Sans eux, tout le reste fonctionne.
