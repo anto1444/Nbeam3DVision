@@ -178,10 +178,12 @@ struct Options
     int  ManualSubFrames() const;  // what the Manual mode runs: the 3D value when 3D is active, else the typed value
     int  ResolveSubFrames() const; // Manual value (display Hz / 60 when none was ever set)
     // Auto needs a captured process (window); without one the mode falls back to Manual.
-    int  EffectiveSubFramesMode() const { return (subFramesMode == SF_AUTO && captureWindow) ? SF_AUTO : SF_MANUAL; }
+    // Auto source: the SubFrames follow the emitter rate (as with any 3D source), so BFI auto is not used while it is on.
+    int  EffectiveSubFramesMode() const { return (subFramesMode == SF_AUTO && captureWindow && !emitter.autoSource) ? SF_AUTO : SF_MANUAL; }
+    bool SubFramesFollow3D() const { return emitter.sourceFormat != StereoSource::Off || emitter.autoSource; } // a 3D source, or Auto source looking for one
     AutoSettings   autoSub; // Auto: detection interval
-    LowFpsSettings lowFps;  // Auto: behaviour of the BFI when the game runs below the threshold
-    bool uniformBrightness { false }; // Auto: brightness kept at the level the BFI has at the low fps threshold (see Renderer::UniformGain)
+    LowFpsSettings lowFps;  // SubFrames threshold: behaviour of the BFI when the SubFrames (Auto or Manual) go above it
+    bool uniformBrightness { false }; // brightness kept at the level the BFI has at the SubFrames threshold (see Renderer::UpdateSubFramesMode)
     // phase lock (BFI sync 1 or 3, 2D, captured process, no buffer in use): the cycle is shifted by whole refreshes so the game frames
     // arrive just before the visible subframe (see Renderer::PhaseSample); it follows the SubFrames of BFI auto
     float          phaseInterval { 1.0f };  // seconds between two measures (0.1 to 2), profile setting

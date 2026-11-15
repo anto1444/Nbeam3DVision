@@ -719,7 +719,7 @@ tearingline=0
 framebuffer=0
 subframessetting=2
 subframesmode=0
-lowfpsthreshold=48.000000
+lowsubframes=10
 lowfpsmode=0
 autointerval=0.000000
 outputonprocess=0
@@ -1647,7 +1647,7 @@ int Options::PickStereoDivisor(double fps) const
 int Options::StereoSubFrames() const
 {
     emitter.rateBlocked = false;
-    if(emitter.sourceFormat == StereoSource::Off || emitter.hold || vsyncRate <= 1.0f)
+    if(!SubFramesFollow3D() || emitter.hold || vsyncRate <= 1.0f)
         return 0;
     int n = 0;
     if(emitter.syncAuto)
@@ -1681,7 +1681,7 @@ int Options::StereoSubFrames() const
 
 bool Options::StereoLinked() const
 {
-    return emitter.sourceFormat != StereoSource::Off && !emitter.hold && StereoSubFrames() > 0;
+    return SubFramesFollow3D() && !emitter.hold && StereoSubFrames() > 0;
 }
 
 int Options::ManualSubFrames() const
@@ -1739,7 +1739,7 @@ void Options::Save(const ShaderManager& shaderManager) const
             SAVE_INT(s, beamLead)
             SAVE_INT(s, subFramesSetting)
             SAVE_INT(s, subFramesMode)
-            s["lowFpsThreshold"] = std::to_string(lowFps.threshold);
+            s["lowSubFrames"]    = std::to_string(lowFps.threshold);
             s["lowFpsMode"]      = std::to_string(lowFps.mode);
             SAVE_BOOL(s, uniformBrightness)
             SAVE_INT(s, bfiSync)
@@ -1833,8 +1833,8 @@ void Options::Load(ShaderManager& shaderManager)
                     subFramesMode = SF_MANUAL; // (the removed Adaptive mode of earlier builds falls back to Manual)
                 try
                 {
-                    if(s.has("lowFpsThreshold"))
-                        lowFps.threshold = std::clamp(std::stof(s.get("lowFpsThreshold")), 10.0f, 120.0f);
+                    if(s.has("lowSubFrames"))
+                        lowFps.threshold = std::clamp(std::stoi(s.get("lowSubFrames")), 2, (int)MAX_SUBFRAMES); // (the old lowFpsThreshold, in fps, is ignored)
                     if(s.has("lowFpsMode"))
                         lowFps.mode = std::clamp(std::stoi(s.get("lowFpsMode")), 0, 1);
                     uniformBrightness = s.has("uniformBrightness") && s.get("uniformBrightness") == "1";

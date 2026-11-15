@@ -24,13 +24,33 @@ enum SubFramesMode
     SF_AUTO     = 1,
 };
 
-// Low frame rate rule (Auto): below the threshold (48) the BFI would flicker too slowly. Double: every game frame is lit twice
-// (47 fps -> 94 Hz; under half the threshold the flashes stay at the threshold rate, 20 fps -> 48 Hz). Disable: no BFI.
+// SubFrames threshold (Auto and Manual, desktop included): above it the BFI would flicker too slowly (on a 480 Hz display 10 = 48 Hz).
+// Double: the BFI flashes twice as fast (SubFrames halved; far above the threshold the flashes stay at the threshold rate).
+// Disable: no BFI. Not used while the SubFrames follow the 3D emitter.
 struct LowFpsSettings
 {
-    float threshold { 48.0f }; // fps
-    int   mode { 0 };          // below the threshold: 0 = double, 1 = disable BFI
+    int threshold { 10 }; // SubFrames
+    int mode { 0 };       // above the threshold: 0 = double, 1 = disable BFI
 };
+
+struct LowFpsResult
+{
+    int  subFrames; // SubFrames to run
+    bool low;       // the requested SubFrames is above the threshold
+    bool bypass;    // ... and the BFI is disabled because of it
+};
+
+inline int LowThreshold(const LowFpsSettings& s) { return std::clamp(s.threshold, 2, 20); }
+
+inline LowFpsResult ApplyLowRule(int requested, const LowFpsSettings& s)
+{
+    const int t = LowThreshold(s);
+    if(requested <= t)
+        return { requested, false, false };
+    if(s.mode == 1)
+        return { requested, true, true };
+    return { requested <= 2 * t ? (std::max)(1, (requested + 1) / 2) : t, true, false };
+}
 
 // Auto settings
 struct AutoSettings
@@ -38,42 +58,7 @@ struct AutoSettings
     float intervalSec { 1.0f }; // how often the game frame rate is measured (0.1 to 2 s)
 };
 
-class LowFpsGate
-{
-public:
-    void Reset() { m_low = false; }
-
-    // call with each new frame rate measurement; hysteresis avoids flapping around the threshold
-    void Update(double fps, const LowFpsSettings& s)
-    {
-        const double t = Threshold(s);
-        if(!m_low && fps < t * 0.98)
-            m_low = true;
-        else if(m_low && fps > t * 1.04)
-            m_low = false;
-    }
-
-    bool Low() const { return m_low; }
-    bool Bypass(const LowFpsSettings& s) const { return m_low && s.mode == 1; }
-
-    // flash rate (Hz) the display should have for a game running at fps
-    double TargetHz(double fps, const LowFpsSettings& s) const
-    {
-        if(!m_low)
-            return fps;
-        if(s.mode == 1)
-            return fps;
-        const double t = Threshold(s);
-        return fps >= t * 0.5 ? fps * 2.0 : t;
-    }
-
-    static double Threshold(const LowFpsSettings& s) { return std::clamp((double)s.threshold, 10.0, 240.0); }
-
-private:
-    bool m_low { false };
-};
-
-// Auto: measures the game frame rate and returns the SubFrames to use.
+// Auto: measures the game frame rate and returns the SubFrames it asks for.
 class AutoSubFrames
 {
 public:
@@ -85,31 +70,29 @@ public:
         m_t0  = 0;
         m_n0  = 0;
         m_fps = 0;
-        m_gate.Reset();
+        m_req = 0;
     }
 
     // game frame rate measured over the last window (0 until known)
     float GameFps() const { return (float)m_fps; }
-    bool  LowFps() const { return m_gate.Low(); }
-    bool  Bypass(const LowFpsSettings& s) const { return m_gate.Bypass(s); }
-    // flash rate the display is set to for the last measurement
-    float TargetHz(const LowFpsSettings& s) const { return (float)m_gate.TargetHz(m_fps, s); }
 
     // call every vsync; returns the SubFrames to use (== current when nothing changes). The rate is measured every intervalSec
     // seconds (0 = every 0.25 s) and the result applies right away; the ratio has to be clearly past the middle between two integers
     // (hysteresis).
-    int Update(double nowMs, unsigned long long totalFrames, double displayHz, int current, const LowFpsSettings& low, float intervalSec)
+    int Update(double nowMs, unsigned long long totalFrames, double displayHz, int current, float intervalSec)
     {
+        if(m_req == 0)
+            m_req = current;
         if(m_t0 == 0)
         {
             m_t0 = nowMs;
             m_n0 = totalFrames;
-            return current;
+            return m_req;
         }
         const double window = (std::max)(kMinWindowMs, (double)std::clamp(intervalSec, 0.0f, 5.0f) * 1000.0);
         const double dt     = nowMs - m_t0;
         if(dt < window)
-            return current;
+            return m_req;
         double fps = (double)(totalFrames - m_n0) * 1000.0 / dt;
         m_t0       = nowMs;
         m_n0       = totalFrames;
@@ -120,22 +103,19 @@ public:
             fps = m_fps * (1.0 - a) + fps * a;
         m_fps = fps;
         if(fps < 5.0 || displayHz < 1.0)
-            return current; // idle window / paused game: keep what we have
-        m_gate.Update(fps, low);
-        if(m_gate.Bypass(low))
-            return current; // BFI disabled while the game is slow: SubFrames is not used
-        const double ratio = displayHz / m_gate.TargetHz(fps, low);
+            return m_req; // idle window / paused game: keep what we have
+        const double ratio = displayHz / fps;
         const int    cand  = std::clamp((int)std::lround(ratio), 1, kMax);
-        if(cand == current || std::fabs(ratio - current) < 0.6)
-            return current;
-        return cand;
+        if(cand != m_req && std::fabs(ratio - m_req) >= 0.6)
+            m_req = cand;
+        return m_req; // the SubFrames the game rate asks for (ApplyLowRule gives what is run)
     }
 
 private:
     double             m_t0 { 0 };
     unsigned long long m_n0 { 0 };
     double             m_fps { 0 };
-    LowFpsGate         m_gate;
+    int                m_req { 0 }; // the requested SubFrames (before the threshold rule)
 };
 
 } // namespace ShaderBeam

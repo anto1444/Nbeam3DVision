@@ -80,7 +80,7 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         bool autoSrc = s.autoSource;
         if(ToggleSwitch(Tr("Auto source"), &autoSrc))
             s.autoSource = autoSrc;
-        Help(Tr("Checked: the 3D Source Format is hidden and stays as it is (even Off) until Nbeam detects a different 3D source (SBS, TB, Checkerboard or Interlaced) in the captured picture; it then switches to it by itself, as if you had chosen it, and follows the picture if it changes. Unchecked: the 3D Source Format is shown again and the format stays as it is."));
+        Help(Tr("Checked: the 3D Source Format is hidden and stays as it is (even Off) until Nbeam detects a different 3D source (SBS, TB, Checkerboard or Interlaced) in the captured picture; it then switches to it by itself, as if you had chosen it, and follows the picture if it changes. As with any 3D source, the SubFrames follow the emitter rate (BFI auto is not used). Unchecked: the 3D Source Format is shown again and the format stays as it is."));
     }
     if(!s.autoSource) // (hidden while the Auto source is on: it chooses the format)
     {

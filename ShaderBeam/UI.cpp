@@ -987,7 +987,7 @@ void UI::Render()
 
             // ---- SubFrames (the value used without BFI auto; the "BFI auto" checkbox is in the BFI sync block, only while a program is captured) ----
             const int activeMode = m_options.EffectiveSubFramesMode();
-            if(m_pending.subFramesMode != SF_MANUAL && activeMode == SF_MANUAL)
+            if(m_pending.subFramesMode != SF_MANUAL && activeMode == SF_MANUAL && !m_options.emitter.autoSource)
             {
                 ImGui::PushTextWrapPos(0.0f);
                 ImGui::TextDisabled("%s", Tr("BFI auto needs a captured program: the value below is used until then."));
@@ -1115,7 +1115,7 @@ void UI::Render()
                     ImGui::TextDisabled(Tr("Cap the game at %.3f fps"), cap);
                 }
                 // BFI auto: the SubFrames follow the game frame rate (2D)
-                if(!in3D) // hidden in 3D (the SubFrames follow the emitter there)
+                if(!in3D && !m_options.emitter.autoSource) // hidden in 3D and with Auto source (the SubFrames follow the emitter there)
                 {
                     bool autoOn = m_pending.subFramesMode == SF_AUTO;
                     if(ToggleSwitch(Tr("BFI auto"), &autoOn))
@@ -1145,33 +1145,25 @@ void UI::Render()
             }
 
 
-            if(activeMode != SF_MANUAL)
+            if(!m_options.SubFramesFollow3D()) // (with a 3D source the SubFrames follow the emitter: no threshold)
             {
                 ToggleSwitch(Tr("Uniform brightness"), &m_options.uniformBrightness);
-                ShowHelpMarker(Tr("When the game's frame rate changes, the BFI brightness changes too (more SubFrames = darker). Checked: the picture keeps the brightness it has at the low FPS threshold. The lower the threshold, the darker the picture. Simple BFI only."));
+                ShowHelpMarker(Tr("When the SubFrames change, the BFI brightness changes too (more SubFrames = darker). Checked: the picture keeps the brightness it has at the safety threshold. The higher the threshold, the darker the picture. Simple BFI only."));
                 ImGui::PushItemWidth(m_fontSize * 16);
-                SliderFloatStep(Tr("Low FPS threshold"), &m_options.lowFps.threshold, 20.0f, 120.0f, "%.0f fps", 1.0f);
+                SliderIntStep(Tr("Safety threshold"), &m_options.lowFps.threshold, 2, MAX_SUBFRAMES, 1);
                 ImGui::PopItemWidth();
-                ShowHelpMarker(Tr("Below this game frame rate the BFI would visibly flicker. Just under it, the BFI flashes twice as fast; far below, it stays at the threshold rate. With Disable, the BFI is switched off under the threshold."));
-                static const char* lowModes[] = { "Double the BFI rate", "Disable BFI" };
-                const int          lowMode    = std::clamp(m_options.lowFps.mode, 0, 1);
-                ImGui::PushItemWidth(m_fontSize * 16);
-                if(ImGui::BeginCombo(Tr("Below threshold"), Tr(lowModes[lowMode]), 0))
-                {
-                    for(int i = 0; i < 2; i++)
-                        if(ImGui::Selectable(Tr(lowModes[i]), i == lowMode))
-                            m_options.lowFps.mode = i;
-                    ImGui::EndCombo();
-                }
-                ImGui::PopItemWidth();
-                ShowHelpMarker(Tr("What to do when the game runs below the threshold: double the flash rate of the BFI, or disable the BFI."));
+                ShowHelpMarker(Tr("Above this number of SubFrames (BFI auto or Manual, also on the desktop) the BFI would visibly flicker, so the safety applies: see the switch below. Example: on a 480 Hz screen, 10 = 48 Hz."));
+                bool disableAbove = m_options.lowFps.mode == 1;
+                if(ToggleSwitch(Tr("Disable BFI above the safety threshold"), &disableAbove))
+                    m_options.lowFps.mode = disableAbove ? 1 : 0;
+                ShowHelpMarker(Tr("Off (default): above the safety threshold the BFI flashes twice as fast, then stays at the threshold rate. On: the BFI is switched off above the safety threshold."));
 
                 if(m_lowFps)
                 {
                     if(m_lowBypass)
-                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), Tr("Low FPS: BFI disabled (game %.1f fps)"), m_gameFps);
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), "%s", Tr("SubFrames above the safety threshold: BFI disabled"));
                     else
-                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), Tr("Low FPS: BFI at %.0f Hz (game %.1f fps)"), m_flickerHz, m_gameFps);
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), Tr("SubFrames above the safety threshold: BFI at %.0f Hz"), m_flickerHz);
                 }
             }
 

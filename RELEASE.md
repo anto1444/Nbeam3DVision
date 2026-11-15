@@ -11,7 +11,7 @@ Mise à jour de la version 2.4.1 : source auto, SBS complet, synchro auto et tim
 - Sécurité (redémarrage complet) : si la carte graphique est perdue 3 fois en 2 minutes, si le rendu redémarre 8 fois en 20 secondes, ou si aucune image n'est affichée pendant 15 secondes alors que les effets sont actifs (écran noir), Nbeam se relance entièrement tout seul (3 fois au maximum en 10 minutes, pour ne pas boucler). Le suivi d'événements note l'état de la source auto et la mémoire vidéo à chaque perte de la carte.
 - Plafond d'images auto (expérimental, choix Aucun / RTSS / Display Commander / ReLimiter dans chaque détection de programme ; le choix par défaut des programmes ajoutés est dans les paramètres globaux). RTSS : Nbeam règle la limite d'images du jeu dans RivaTuner Statistics Server : en 3D la moitié du taux 3D (par exemple 60 fps), avec BFI ou CRT la cadence du contenu (Hz de l'écran / SubFrames), sans effet pas de plafond, suivi en direct. Il lance RTSS réduit s'il ne tourne pas, et la limite d'origine revient à la fermeture du jeu. Display Commander / ReLimiter (addons ReShade) : chaque programme a une « Limite d'images » par écran (0 = sans limite, jusqu'à 1000 fps), écrite dans le DisplayCommander.ini / relimiter.ini à côté du jeu pour tous les programmes à la fois, en dehors du lancement des jeux : au démarrage de Nbeam, au changement d'écran principal et après la fermeture d'un jeu ; elle est prête avant le lancement. Un jeu sans ce fichier est ignoré. Display Commander et RTSS sont grisés s'ils ne sont pas installés.
 - Case SBS complet (expérimental) dans le format SBS : Nbeam redimensionne automatiquement la fenêtre du jeu (sans bordure) à deux fois la largeur de l'écran (3840x1080 sur un écran 1080p, 5120x1440 sur un 1440p…) et la remet comme avant à la décoche ; chaque moitié est un œil affiché entier, sans déformation. Le jeu doit accepter la taille (fenêtré ou sans bordure) et dessiner les deux yeux. Disponible uniquement en capture de jeu, avec une sortie qui ne recouvre pas le jeu (pas la sortie Process). Si le jeu refuse la taille, la 3D se coupe et la bannière indique « impossible ». Sur le bureau, la limite de fps et la synchro auto de l'émetteur ne s'appliquent pas.
-- Source auto (interrupteur au-dessus de Format de la source 3D, masqué tant qu'elle est cochée, dans le panneau et dans le mini menu ; utilisable quel que soit le rendu affiché) : cochée, rien ne change tant que Nbeam ne détecte pas, par une technique de détection automatique par algorithme, une source 3D différente (SBS, TB, damier ou entrelacé) dans l'image capturée ; le format de la source 3D passe alors dessus tout seul, comme si tu l'avais choisi, et suit l'image si elle change. Tant que l'interrupteur est coché le format est masqué ; décoché, la source auto s'arrête, le format réapparaît et reste tel quel.
+- Source auto (interrupteur au-dessus de Format de la source 3D, masqué tant qu'elle est cochée, dans le panneau et dans le mini menu ; utilisable quel que soit le rendu affiché) : cochée, rien ne change tant que Nbeam ne détecte pas, par une technique de détection automatique par algorithme, une source 3D différente (SBS, TB, damier ou entrelacé) dans l'image capturée ; le format de la source 3D passe alors dessus tout seul, comme si tu l'avais choisi, et suit l'image si elle change. Tant que l'interrupteur est coché le format est masqué ; décoché, la source auto s'arrête, le format réapparaît et reste tel quel. Comme avec toute source 3D, les sous-images suivent la fréquence de l'émetteur (le BFI auto n'est pas utilisé et son interrupteur est masqué).
 - Formats de source 3D entrelacé horizontal (lignes) et entrelacé vertical (colonnes) : l'œil gauche sur les lignes (ou colonnes) paires, le droit sur les impaires ; les lignes manquantes de chaque œil sont reconstruites par moyenne des voisines. Ils sont aussi reconnus par la source auto, et proposés dans le mini menu.
 - Capture figée après la source auto : quand la source auto avait détecté un format (entrelacé par exemple) et qu'on la désactivait pour repasser en Off, seul l'émetteur était arrêté et l'image restait figée ; le HUD connaît maintenant le format détecté et la 3D est reconstruite (et, par sécurité, toute incohérence entre la 3D construite et le format déclenche la reconstruction).
 - Désynchronisations de la 3D : la source auto ne copie plus l'image entière sur le thread de rendu chaque seconde (quelques ms, une image en retard et les lunettes décalées un instant) ; l'analyse lit directement l'image dans son propre thread. Le suivi d'événements indique chaque minute les images en retard, et la cause de chaque redémarrage de la sortie « Processus » (taille du jeu avant / après).
@@ -53,6 +53,7 @@ Mise à jour de la version 2.4.1 : source auto, SBS complet, synchro auto et tim
 
 ## Interface
 
+- Seuil de sécurité : curseur en sous-images (2 à 20, 10 par défaut ; sur un écran 480 Hz, 10 = 48 Hz), indépendant du BFI auto, actif en BFI auto comme en réglage manuel et aussi en mode bureau. Quand les sous-images demandées dépassent le seuil, le BFI est doublé (par défaut : sous-images divisées par deux, puis maintenues au seuil) ou, avec l'interrupteur « Désactiver le BFI au-dessus du seuil de sécurité », coupé. Sans effet quand les sous-images suivent l'émetteur (3D ou source auto). La luminosité uniforme garde la luminosité qu'a le BFI au seuil de sécurité, aussi en réglage manuel.
 - Écran de sortie Automatique : un jeu en plein écran ou sans bordure maximisé met la sortie sur l'écran principal de Windows ; un jeu dans une fenêtre plus petite que l'écran la met par-dessus le jeu (sortie « Processus »).
 - Dolby Atmos : Nbeam joue en continu un son inaudible (environ -90 dB, sur le périphérique audio par défaut de Windows, qu'il suit s'il change) pour que Windows garde l'audio spatial actif. Interrupteur « Garder le Dolby Atmos actif » dans la section Application, activé par défaut.
 - Mini menu : la dernière ligne devient « Désactiver les effets » (au lieu de « Fermer le menu »), « Source auto » est ajoutée au-dessus du format de la source 3D (qui est masqué tant qu'elle est cochée), et un curseur arrondi aux couleurs d'accent (logo Nbeam, nom, barre, valeur) remplace le menu pendant qu'un réglage est modifié et reste affiché jusqu'à sa validation (le menu revient ensuite). Dans les paramètres globaux, l'interrupteur « Activé » de chaque écran reste à moitié quand des programmes sont activés et d'autres non ; un clic les active tous.
@@ -74,24 +75,15 @@ Mise à jour de la version 2.4.1 : source auto, SBS complet, synchro auto et tim
 ## Contenu de l'archive
 
 - `Nbeam3DVision.exe` : le programme
+- `Nbeam3DVision.pdb` : les symboles, pour que le journal de plantage indique les noms des fonctions (facultatif, à garder à côté de l'exe)
 - `Shaders\CRTBeamSimulator.hlsl` : le shader du CRT Beam Simulator (à garder à côté de l'exe)
 - `README.md` : le mode d'emploi complet ; `RELEASE.md` : ces notes
 - `LICENSE`, `THIRD_PARTY_NOTICES.md` : licences
 
-## Intégrité et antivirus
-
-SHA-256 de `Nbeam3DVision-3.0.0.zip` :
-`490508991f62fc2b8d8eb4a794b9b93132b30ad4076ebdc3ae0af5ac3301ddf0`
-
-SHA-256 de `Nbeam3DVision.exe` :
-`6fa87a8c1f04b3fc255f31a6d4e32d6e497c279972410ca3536336f4527b72e1`
-
-L'exécutable n'est pas signé : Windows SmartScreen ou un antivirus peut afficher un avertissement (faux positif). Le code source est public sur ce dépôt. Voir le README, section « Antivirus et SmartScreen ».
-
 ## Installation / mise à jour
 
 1. Décompressez l'archive dans un dossier où Nbeam peut écrire.
-2. Pour une mise à jour, quittez d'abord Nbeam par le menu de l'icône de notification, puis remplacez l'exe et le dossier `Shaders`. Vos profils (`Profils\`) et votre configuration sont conservés.
+2. Pour une mise à jour, quittez d'abord Nbeam par le menu de l'icône de notification, puis remplacez l'exe, le `.pdb` et le dossier `Shaders`. Vos profils (`Profils\`) et votre configuration sont conservés.
 3. Lancez `Nbeam3DVision.exe`.
 
 **2D vers 3D (IA)** : `onnxruntime.dll`, `onnxruntime_providers_shared.dll` et le modèle `.onnx` ne sont **pas fournis** (licence et taille). Copiez-les vous-même à côté de l'exe (voir le README). Sans eux, tout le reste fonctionne.

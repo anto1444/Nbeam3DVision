@@ -1170,7 +1170,7 @@ void Renderer::CheckPresent(HRESULT hr)
 }
 
 // Auto SubFrames: every second the measured game frame rate gives SubFrames = round(display Hz / fps); Render() applies it live.
-// Below the low fps threshold the BFI is doubled (or disabled), see LowFpsSettings.
+// Auto or Manual, above the SubFrames threshold the BFI is doubled (or disabled), see LowFpsSettings.
 void Renderer::UpdateSubFramesMode()
 {
     const int effective = m_options.EffectiveSubFramesMode();
@@ -1297,9 +1297,9 @@ void Renderer::UpdateSubFramesMode()
         else
             m_clearSlot = -1;
     }
-    if(effective == SF_MANUAL && m_mode == SF_MANUAL && m_options.emitter.sourceFormat != StereoSource::Off)
+    if(effective == SF_MANUAL && m_mode == SF_MANUAL && m_options.SubFramesFollow3D())
     {
-        // 3D: SubFrames follows the emitter rate (live, also when the display rate changes)
+        // 3D (or Auto source): SubFrames follows the emitter rate (live, also when the display rate changes)
         const int n = m_options.StereoSubFrames();
         if(n > 0 && n != m_options.subFrames)
             m_options.subFrames = n;
@@ -1311,26 +1311,34 @@ void Renderer::UpdateSubFramesMode()
         if(effective == SF_MANUAL)
             m_options.subFrames = m_options.ManualSubFrames();
     }
-    if(m_mode != SF_AUTO)
+    m_uniformGain = 1.0f;
+    m_bypass      = false;
+    m_ui.m_lowFps = m_ui.m_lowBypass = false;
+    if(m_mode != SF_AUTO && m_options.StereoLinked())
+        return; // the SubFrames follow the emitter: the threshold does not apply
+    // SubFrames asked for: Auto = from the game frame rate, Manual = the typed value (also on the desktop)
+    int request;
+    if(m_mode == SF_AUTO)
     {
-        m_uniformGain = 1.0f;
-        return;
+        request        = m_auto.Update(NowMs(), m_watcher.TotalInputFrames(), m_options.vsyncRate, m_options.subFrames, m_options.autoSub.intervalSec);
+        m_ui.m_gameFps = m_auto.GameFps();
     }
-    const auto& low     = m_options.lowFps;
-    const int   current = m_options.subFrames;
-    const int   next    = m_auto.Update(NowMs(), m_watcher.TotalInputFrames(), m_options.vsyncRate, current, low, m_options.autoSub.intervalSec);
-    m_bypass            = m_auto.Bypass(low);
-    m_ui.m_gameFps      = m_auto.GameFps();
-    m_ui.m_lowFps       = m_auto.LowFps();
-    m_ui.m_lowBypass    = m_bypass;
-    m_ui.m_flickerHz    = m_bypass ? m_auto.GameFps() : (float)(m_options.vsyncRate / (std::max)(1, m_options.subFrames));
-    if(next != current && next >= MIN_SUBFRAMES && next <= MAX_SUBFRAMES)
+    else
+        request = m_options.ManualSubFrames();
+    // SubFrames threshold: above it the BFI is doubled (or disabled)
+    const auto& low = m_options.lowFps;
+    const auto  r   = ApplyLowRule(request, low);
+    m_bypass         = r.bypass;
+    m_ui.m_lowFps    = r.low;
+    m_ui.m_lowBypass = r.bypass;
+    const int next   = r.bypass ? request : r.subFrames;
+    if(next != m_options.subFrames && next >= MIN_SUBFRAMES && next <= MAX_SUBFRAMES)
         m_options.subFrames = next;
+    m_ui.m_flickerHz = m_bypass ? 0.0f : (float)(m_options.vsyncRate / (std::max)(1, m_options.subFrames));
 
     // Uniform brightness (Simple BFI): the brightness of the BFI is (clear + dark x (1 - gain vs blur)) / SubFrames, so it changes with
-    // the SubFrames Auto picks. The picture is kept at the brightness the BFI has at the low fps threshold (the darkest point of
-    // the range: the lower the threshold, the darker), by dimming every other case (more fps, doubled or disabled BFI below it).
-    m_uniformGain = 1.0f;
+    // the SubFrames. The picture is kept at the brightness the BFI has at the SubFrames threshold (the darkest point of the range: the
+    // higher the threshold, the darker), by dimming every other case (fewer SubFrames, doubled or disabled BFI above it).
     if(m_options.uniformBrightness && !EffectsOff()) // effects hidden: the picture as it is
     {
         int   clearFrames = -1;
@@ -1350,8 +1358,7 @@ void Renderer::UpdateSubFramesMode()
                 const int c = (std::min)(clearFrames, sf);
                 return ((float)c + (float)(sf - c) * (1.0f - std::clamp(darkGain, 0.0f, 1.0f))) / (float)sf;
             };
-            const int   sfLow  = std::clamp((int)std::lround(m_options.vsyncRate / LowFpsGate::Threshold(low)), 1, AutoSubFrames::kMax);
-            const float target = brightness(sfLow);
+            const float target = brightness(LowThreshold(low));
             const float now    = m_bypass ? 1.0f : brightness(m_options.subFrames);
             if(now > 0.0f)
                 m_uniformGain = std::clamp(target / now, 0.0f, 1.0f);
