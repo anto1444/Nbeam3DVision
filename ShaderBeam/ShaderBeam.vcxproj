@@ -146,7 +146,8 @@
     <ClInclude Include="imgui\imconfig.h" />
     <ClInclude Include="ini.h" />
     <ClInclude Include="RenderContext.h" />
-    <ClInclude Include="Shaders\CRTBeamSimulatorShader.h" />
+    <ClInclude Include="PhaseLock.h" />
+    <ClInclude Include="Shaders\BfiSweepShader.h" />
     <ClInclude Include="ShaderProfile.h" />
     <ClInclude Include="ShaderManager.h" />
     <ClInclude Include="SinglePassShaderProfile.h" />
@@ -214,7 +215,7 @@
     <Image Include="small.ico" />
   </ItemGroup>
   <ItemGroup>
-    <CopyFileToFolders Include="Shaders\CRTBeamSimulator.hlsl">
+    <CopyFileToFolders Include="Shaders\bfi.hlsl">
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Pixel</ShaderType>
       <ShaderType Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Pixel</ShaderType>

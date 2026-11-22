@@ -4,7 +4,7 @@ Nbeam 3D Vision -- French / English interface text (MIT License)
 
 #pragma once
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 #define LANG_FR 0
@@ -14,4 +14,4 @@ int         GetLanguage();
 void        SetLanguage(int lang);
 const char* Tr(const char* en); // English text -> text in the selected language (returns the same text if there is no translation)
 
-} // namespace ShaderBeam
+} // namespace Nbeam

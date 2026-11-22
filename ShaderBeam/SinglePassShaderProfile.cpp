@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -12,7 +12,7 @@ MIT License
 #include "SinglePassShaderProfile.h"
 #include "Helpers.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 void SinglePassShaderProfile::SetShader(const wchar_t* filename, D3D10_SHADER_MACRO* macros, const RenderContext& renderContext)
@@ -126,4 +126,4 @@ void SinglePassShaderProfile::Destroy()
     m_pixelShader    = nullptr;
     m_vertexShader   = nullptr;
 }
-} // namespace ShaderBeam
+} // namespace Nbeam

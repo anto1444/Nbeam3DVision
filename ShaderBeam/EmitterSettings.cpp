@@ -1,12 +1,13 @@
 /*
-ShaderBeam: shader effect overlay -- emitter settings <-> ShaderBeam.ini ([emitter] section)
+Nbeam 3D Vision: shader effect overlay -- emitter settings <-> ShaderBeam.ini ([emitter] section)
 MIT License
 */
 
 #include "stdafx.h"
 #include "EmitterIni.h"
+#include <cmath>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 namespace
@@ -24,13 +25,13 @@ void Get(const mINI::INIMap<std::string>& m, const char* k, float& v, float lo, 
 {
     if(!m.has(k))
         return;
-    try { v = std::clamp(std::stof(m.get(k)), lo, hi); } catch(...) { }
+    try { const float x = std::stof(m.get(k)); if(std::isfinite(x)) v = std::clamp(x, lo, hi); } catch(...) { }
 }
 void Get(const mINI::INIMap<std::string>& m, const char* k, double& v, double lo, double hi)
 {
     if(!m.has(k))
         return;
-    try { v = std::clamp(std::stod(m.get(k)), lo, hi); } catch(...) { }
+    try { const double x = std::stod(m.get(k)); if(std::isfinite(x)) v = std::clamp(x, lo, hi); } catch(...) { }
 }
 void Get(const mINI::INIMap<std::string>& m, const char* k, bool& v)
 {
@@ -51,6 +52,9 @@ void SaveEmitterSettings(mINI::INIStructure& ini, const StereoEmitterSettings& s
     Put(e, "scanoutSync", s.scanoutSync);
     Put(e, "fullSbs", s.fullSbs);
     Put(e, "offsetCorrection", s.offsetCorrection);
+    Put(e, "desyncMethod", s.desyncMethod);
+    if(s.expPeriodMarginPct > 0.0f)
+        Put(e, "expPeriodMarginPct", s.expPeriodMarginPct);
     Put(e, "swapEyes", s.swapEyes);
     Put(e, "comPortNo", s.comPort.comPortNo);
     Put(e, "nvOpenDurationUs", s.nvidia.Saved());
@@ -105,6 +109,11 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
     Get(e, "scanoutSync", s.scanoutSync);
     Get(e, "fullSbs", s.fullSbs);
     Get(e, "offsetCorrection", s.offsetCorrection);
+    s.desyncMethod = 0;
+    s.expPeriodMarginPct = 0.0f;
+    Get(e, "desyncMethod", s.desyncMethod, 0, 1);
+    if(e.has("expPeriodMarginPct"))
+        Get(e, "expPeriodMarginPct", s.expPeriodMarginPct, 0.0f, 100.0f);
     Get(e, "swapEyes", s.swapEyes);
     Get(e, "comPortNo", s.comPort.comPortNo, -1, 256);
     Get(e, "nvOpenDurationUs", s.nvidia.openDurationUs, -100000.0f, 100000.0f);
@@ -143,4 +152,4 @@ void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s
     Get(e, "aiMapBuffer", s.ai.mapBuffer);
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

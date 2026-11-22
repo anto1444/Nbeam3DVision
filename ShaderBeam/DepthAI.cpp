@@ -11,7 +11,7 @@ MIT License
 #include <mutex>
 #include <thread>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 namespace
@@ -494,4 +494,4 @@ void DepthEstimator::Worker(std::filesystem::path dir, int width, int height, bo
     m_busy = false;
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

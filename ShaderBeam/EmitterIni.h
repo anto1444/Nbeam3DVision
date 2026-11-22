@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- emitter settings persistence ([emitter] section of ShaderBeam.ini)
+Nbeam 3D Vision: shader effect overlay -- emitter settings persistence ([emitter] section of the Nbeam ini)
 MIT License
 */
 
@@ -11,8 +11,8 @@ MIT License
 #include "EmitterSettings.h"
 #include "ini.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 void SaveEmitterSettings(mINI::INIStructure& ini, const StereoEmitterSettings& s);
 void LoadEmitterSettings(const mINI::INIStructure& ini, StereoEmitterSettings& s);
-} // namespace ShaderBeam
+} // namespace Nbeam

@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- 3D source decoding
+Nbeam 3D Vision: shader effect overlay -- 3D source decoding
 Turns a captured Side-by-Side / Top-Bottom / Checkerboard frame into a full-resolution single-eye image.
 MIT License
 */
@@ -8,7 +8,7 @@ MIT License
 
 #include "EmitterSettings.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class StereoConverter
@@ -39,4 +39,4 @@ private:
     winrt::com_ptr<ID3D11SamplerState> m_sampler;
 };
 
-} // namespace ShaderBeam
+} // namespace Nbeam

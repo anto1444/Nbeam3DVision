@@ -1,7 +1,7 @@
 // Automatic 3D format detection (SBS / TB / Checkerboard / interlaced) from a captured frame.
 // Header only, no D3D: the caller gives a pixel reader, so it can be tested on its own.
 //
-// Principle (colours compared, pure black / pure white / flat pixels ignored):
+// Principle (colours compared, flat areas ignored; pure black and pure white pixels count when there is some texture around them: text, edges):
 //  - SBS: a pixel of the left half is compared with the pixels of the right half on the same row (a small horizontal search, the parallax),
 //    and with two "wrong" places (same row far away horizontally, another row): a real SBS matches much better in the right place.
 //  - TB: the same, top against bottom.
@@ -13,11 +13,11 @@
 #include <cmath>
 #include <cstdlib>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 struct StereoDetectResult
 {
-    int    samples { 0 };    // valid samples (coloured, textured pixels): too few = the picture is not readable (black, menu...)
+    int    samples { 0 };    // valid samples (textured pixels): too few = the picture is not readable (black, menu...)
     double sbs { 1.0 };      // match in the right place / match in the wrong places (low = SBS)
     double tb { 1.0 };       // same for top / bottom
     double checker { 0.0 };  // straight neighbour difference / diagonal neighbour difference (high = checkerboard)
@@ -36,13 +36,6 @@ struct Rgb
 inline float Diff(const Rgb& a, const Rgb& b)
 {
     return (std::fabs(a.c[0] - b.c[0]) + std::fabs(a.c[1] - b.c[1]) + std::fabs(a.c[2] - b.c[2])) * (1.0f / 3.0f);
-}
-
-inline bool BlackOrWhite(const Rgb& a)
-{
-    const float mx = (std::max)({ a.c[0], a.c[1], a.c[2] });
-    const float mn = (std::min)({ a.c[0], a.c[1], a.c[2] });
-    return mx <= 0.04f || mn >= 0.96f;
 }
 } // namespace StereoDetectDetail
 
@@ -84,8 +77,6 @@ StereoDetectResult DetectStereo(int W, int H, Px&& px)
         {
             const int x = 2 + (int)((long long)i * (W - 6) / nx);
             const Rgb a = px(x, y);
-            if(BlackOrWhite(a))
-                continue;
             // textured: some colour change around (flat areas tell nothing)
             const Rgb ar = px((std::min)(x + 3, W - 1), y), ad = px(x, (std::min)(y + 3, H - 1));
             if(Diff(a, ar) + Diff(a, ad) < 0.02f)
@@ -165,4 +156,4 @@ StereoDetectResult DetectStereo(int W, int H, Px&& px)
         r.verdict = 3;
     return r;
 }
-} // namespace ShaderBeam
+} // namespace Nbeam

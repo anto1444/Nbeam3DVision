@@ -1,12 +1,12 @@
 /*
-ShaderBeam: shader effect overlay -- game frame-rate sync through RivaTuner Statistics Server
+Nbeam 3D Vision: shader effect overlay -- game frame-rate sync through RivaTuner Statistics Server
 MIT License
 
-Anti-cheat friendly by design: ShaderBeam never opens, injects into, hooks or reads the game process. It only
+Anti-cheat friendly by design: Nbeam never opens, injects into, hooks or reads the game process. It only
   * looks the executable name up in the process list (Toolhelp snapshot: no handle to the game is opened) and
   * asks RTSS (the usual frame limiter that most anti-cheats tolerate) to change the frame limit of that program's
     RTSS profile, through the RTSS profile interface (RTSSHooks64.dll, the same one MSI Afterburner uses).
-The limit that RTSS had before is restored when the option is switched off, the target changes, or ShaderBeam quits.
+The limit that RTSS had before is restored when the option is switched off, the target changes, or Nbeam quits.
 */
 
 #pragma once
@@ -14,7 +14,7 @@ The limit that RTSS had before is restored when the option is switched off, the 
 #include <mutex>
 #include <string>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class FrameLimiter
@@ -62,4 +62,4 @@ std::string DcWriteLimit(const std::wstring& exePath, int fps, bool& ok);
 // ReLimiter has no installation folder to look for: it is only used for a game that has its addon (or its settings file) next to the exe.
 std::string RlWriteLimit(const std::wstring& exePath, int fps, bool& ok);
 
-} // namespace ShaderBeam
+} // namespace Nbeam

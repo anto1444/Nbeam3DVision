@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -10,7 +10,7 @@ MIT License
 #include "ShaderManager.h"
 #include "Shaders/ShaderList.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 ShaderManager::ShaderManager()
@@ -83,4 +83,4 @@ float ShaderManager::TearSafeLimit(const RenderContext& renderContext) const
     return m_shaderProfiles[m_activeProfile]->TearSafeLimit(renderContext);
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

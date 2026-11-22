@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -13,13 +13,13 @@ MIT License
 #include "Watcher.h"
 #include "RenderThread.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
-class ShaderBeam
+class NbeamApp
 {
 public:
-    ShaderBeam();
+    NbeamApp();
 
     void Create(HWND window);
     void Start();
@@ -56,4 +56,4 @@ private:
 
     static std::vector<winrt::com_ptr<IDXGIAdapter2>> EnumerateAdapters();
 };
-} // namespace ShaderBeam
+} // namespace Nbeam

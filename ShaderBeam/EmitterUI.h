@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- "Stereo Emitter" panel (ImGui)
+Nbeam 3D Vision: shader effect overlay -- "Stereo Emitter" panel (ImGui)
 MIT License
 */
 
@@ -9,7 +9,7 @@ MIT License
 #include <string>
 #include <vector>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 struct EmitterPanelContext
@@ -36,4 +36,4 @@ struct EmitterPanelContext
 // Live settings (swap eyes, sync offset, parity mode, drift threshold) are applied immediately by the renderer.
 bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx);
 
-} // namespace ShaderBeam
+} // namespace Nbeam

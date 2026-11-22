@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -12,14 +12,14 @@ MIT License
 #include "CaptureWGC.h"
 #include "Lang.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
-ShaderBeam::ShaderBeam() :
+NbeamApp::NbeamApp() :
     m_options(), m_ui(m_options, m_shaderManager), m_watcher(m_ui), m_renderer(m_options, m_ui, m_watcher, m_shaderManager), m_renderThread(m_options, m_ui, m_renderer)
 { }
 
-void ShaderBeam::Create(HWND window)
+void NbeamApp::Create(HWND window)
 {
     m_options.outputWindow = window;
 
@@ -84,7 +84,7 @@ void ShaderBeam::Create(HWND window)
         m_options.RegisterHotkey(id);
 }
 
-void ShaderBeam::Destroy()
+void NbeamApp::Destroy()
 {
     for(int id = 0; id < HOTKEY_COUNT; id++)
         m_options.UnregisterHotkey(id);
@@ -92,12 +92,12 @@ void ShaderBeam::Destroy()
     timeEndPeriod(1);
 }
 
-void ShaderBeam::RunBenchmark()
+void NbeamApp::RunBenchmark()
 {
     m_renderThread.Benchmark();
 }
 
-void ShaderBeam::UpdateVsyncRate()
+void NbeamApp::UpdateVsyncRate()
 {
     // get VSync duration from DWM (should match fastest display)
     DWM_TIMING_INFO dwmInfo {};
@@ -127,7 +127,7 @@ void ShaderBeam::UpdateVsyncRate()
     }
 }
 
-void ShaderBeam::SwitchProfile()
+void NbeamApp::SwitchProfile()
 {
     if(m_options.pendingProfile.empty())
     {
@@ -153,7 +153,7 @@ void ShaderBeam::SwitchProfile()
 }
 
 // The screen of the active profile detection (one-shot: the HUD can still change the display afterwards)
-void ShaderBeam::ApplyLinkDisplay()
+void NbeamApp::ApplyLinkDisplay()
 {
     const int n = (int)m_ui.m_displays.size();
     if(m_options.linkShaderDisplayNo >= 0 && m_options.linkShaderDisplayNo < n && !m_options.outputAuto) // (output "Automatic": the output follows the game window)
@@ -164,7 +164,7 @@ void ShaderBeam::ApplyLinkDisplay()
     m_options.linkCaptureDisplayNo = -1;
 }
 
-void ShaderBeam::DefaultOptions()
+void NbeamApp::DefaultOptions()
 {
     UpdateVsyncRate();
 
@@ -207,7 +207,7 @@ void ShaderBeam::DefaultOptions()
         m_options.shaderProfileNo = m_ui.m_shaders.empty() ? 0 : (decltype(m_options.shaderProfileNo))(m_ui.m_shaders.size() - 1); // too big: the highest that exists
 }
 
-void ShaderBeam::Start()
+void NbeamApp::Start()
 {
     const ULONGLONG startTick = GetTickCount64();
     RefreshAdapters(); // (a driver update replaces the graphics card objects)
@@ -296,7 +296,7 @@ void ShaderBeam::Start()
     }
     catch(std::exception& ex)
     {
-        MessageBoxA(m_options.outputWindow, ex.what(), SHADERBEAM_TITLE, MB_ICONERROR | MB_OK);
+        MessageBoxA(m_options.outputWindow, ex.what(), NBEAM_TITLE, MB_ICONERROR | MB_OK);
         PostMessage(m_options.outputWindow, WM_DESTROY, 0, 0);
         return;
     }
@@ -332,7 +332,7 @@ void ShaderBeam::Start()
             SetTimer(m_options.outputWindow, TIMER_RETRY_START, 2000, nullptr);
             return;
         }
-        MessageBoxA(m_options.outputWindow, ex.what(), SHADERBEAM_TITLE, MB_ICONERROR | MB_OK);
+        MessageBoxA(m_options.outputWindow, ex.what(), NBEAM_TITLE, MB_ICONERROR | MB_OK);
         PostMessage(m_options.outputWindow, WM_DESTROY, 0, 0);
         return;
     }
@@ -373,7 +373,7 @@ void ShaderBeam::Start()
     LsLog("effects started in %llu ms", (unsigned long long)(GetTickCount64() - startTick));
 }
 
-void ShaderBeam::Stop()
+void NbeamApp::Stop()
 {
     m_options.Save(m_shaderManager);
     if(!m_active)
@@ -389,7 +389,7 @@ void ShaderBeam::Stop()
     m_active = false;
 }
 
-std::vector<winrt::com_ptr<IDXGIAdapter2>> ShaderBeam::EnumerateAdapters()
+std::vector<winrt::com_ptr<IDXGIAdapter2>> NbeamApp::EnumerateAdapters()
 {
     winrt::com_ptr<IDXGIAdapter1>              pAdapter;
     std::vector<winrt::com_ptr<IDXGIAdapter2>> vAdapters;
@@ -410,7 +410,7 @@ std::vector<winrt::com_ptr<IDXGIAdapter2>> ShaderBeam::EnumerateAdapters()
     return vAdapters;
 }
 
-std::vector<AdapterInfo> ShaderBeam::GetAdapters()
+std::vector<AdapterInfo> NbeamApp::GetAdapters()
 {
     const auto&              dxgiAdapters = EnumerateAdapters();
     std::vector<AdapterInfo> adapters;
@@ -464,7 +464,7 @@ static BOOL CALLBACK EnumDisplayMonitorsProc(_In_ HMONITOR hMonitor, _In_ HDC hD
     return true;
 }
 
-std::vector<DisplayInfo> ShaderBeam::GetDisplays()
+std::vector<DisplayInfo> NbeamApp::GetDisplays()
 {
     std::vector<DisplayInfo> displays;
     EnumDisplayMonitors(NULL, NULL, EnumDisplayMonitorsProc, (LPARAM)&displays);
@@ -507,4 +507,4 @@ std::vector<DisplayInfo> ShaderBeam::GetDisplays()
     return displays;
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

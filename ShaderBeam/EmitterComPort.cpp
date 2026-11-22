@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- ComPort emitter (Arduino VESA / IR sender)
+Nbeam 3D Vision: shader effect overlay -- ComPort emitter (Arduino VESA / IR sender)
 Protocol (from WW's WWVESASender.ino / WWIRSender.ino): 115200 baud, one ASCII byte per eye: '0' = left, '1' = right.
   IR sketch  : '1' -> open right / close left, anything else -> open left / close right
   VESA sketch: '0' -> sync pin HIGH, anything else -> LOW
@@ -9,7 +9,7 @@ MIT License
 #include "stdafx.h"
 #include "Emitter.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 std::vector<int> EnumerateComPorts()
@@ -92,4 +92,4 @@ std::unique_ptr<IEmitter> CreateComPortEmitter()
     return std::make_unique<ComPortEmitter>();
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

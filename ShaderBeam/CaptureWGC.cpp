@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -13,7 +13,7 @@ MIT License
 #include <windows.graphics.directx.direct3d11.interop.h>
 #include <windows.graphics.capture.interop.h>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 CaptureWGC::CaptureWGC(Watcher& watcher, const Options& options) : CaptureBase(watcher, options)
@@ -239,4 +239,4 @@ bool CaptureWGC::CanUpdateCursor()
 {
     return winrt::Windows::Foundation::Metadata::ApiInformation::IsPropertyPresent(L"Windows.Graphics.Capture.GraphicsCaptureSession", L"IsCursorCaptureEnabled");
 }
-} // namespace ShaderBeam
+} // namespace Nbeam

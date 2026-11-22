@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -11,7 +11,7 @@ MIT License
 #include "Helpers.h"
 #include "Common.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 static DWORD WINAPI ThreadProc(LPVOID lpParameter)
@@ -142,4 +142,4 @@ void RenderThread::Benchmark()
     m_benchmark = true;
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

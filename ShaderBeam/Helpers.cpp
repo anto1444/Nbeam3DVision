@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -11,7 +11,7 @@ MIT License
 
 #include "Helpers.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 HRESULT Helpers::CreateD3DDevice(D3D_DRIVER_TYPE const type, winrt::com_ptr<ID3D11Device>& device)
@@ -90,6 +90,13 @@ float Helpers::GetTicks()
     }
 
     return (float)((ticks.QuadPart - startTicks.QuadPart) / (freq.QuadPart / TICKS_PER_SEC));
+}
+
+ULONGLONG Helpers::GetQPC()
+{
+    LARGE_INTEGER li;
+    QueryPerformanceCounter(&li);
+    return li.QuadPart;
 }
 
 float Helpers::QPCToTicks(ULONGLONG qpc)
@@ -207,7 +214,7 @@ std::string Helpers::WCharToString(const wchar_t* text)
     return std::string(utfString);
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam
 
 // ---- inaudible sound that keeps Windows spatial audio (Dolby Atmos) active ----
 #include <mmdeviceapi.h>
@@ -215,7 +222,7 @@ std::string Helpers::WCharToString(const wchar_t* text)
 #include <atomic>
 #include <thread>
 #include <cstring>
-namespace ShaderBeam
+namespace Nbeam
 {
 namespace
 {
@@ -366,4 +373,4 @@ void AudioKeepAliveSet(bool on)
             CoUninitialize();
     });
 }
-} // namespace ShaderBeam
+} // namespace Nbeam

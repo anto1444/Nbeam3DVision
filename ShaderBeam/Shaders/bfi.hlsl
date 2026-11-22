@@ -6,18 +6,18 @@
 
 cbuffer Params : register(b0)
 {
-    float param_gamma;
     float param_gainVsBlur;
     uint param_scanDirection;
     
     // calculated on CPU side
     float param_effectiveFramesPerHz;
-    float param_crtRasterPos;
-    float param_crtHzCounter;
+    float param_rasterPos;
+    float param_hzCounter;
     float param_blackLevel;
 };
 
-#define GAMMA                   param_gamma
+// No Gamma setting: the standard sRGB curve is used (2.4 in its power part); the light of the pulses is added in linear light.
+#define GAMMA                   2.4
 #define GAIN_VS_BLUR            param_gainVsBlur
 #define EFFECTIVE_FRAMES_PER_HZ param_effectiveFramesPerHz
 
@@ -135,9 +135,8 @@ float mod(float x, float y)
 // Encode linear color to sRGB. (applies gamma curve)
 float linear2srgb(float c)
 {
-    float3 j = float3(0.0031308 * 12.92, 12.92, 1.0 / GAMMA);
-    float2 k = float2(1.055, -0.055);
-    return clamp(j.x, c * j.y, pow(c, j.z) * k.x + k.y);
+    // exact sRGB encoding (the formula of the original shader gives wrong, even negative, values for the darkest linear values)
+    return c <= 0.0031308 ? c * 12.92 : pow(c, 1.0 / GAMMA) * 1.055 - 0.055;
 }
 float3 linear2srgb(float3 c)
 {
@@ -204,7 +203,7 @@ float3 getPixelFromOrigFrame(float2 uv, float getFromHzNumber, float currentHzCo
 }
 
 //-------------------------------------------------------------------------------------------------
-// CRT Rolling Scan Simulation With Phosphor Fade + Brightness Redistributor Algorithm
+// Rolling scan with phosphor fade + brightness redistributor algorithm
 //
 // New variable 'per-pixel MPRT' algorithm that mimics CRT phosphor decay too.
 // - We emit as many photons as possible as early as possible, and if we can't emit it all (e.g. RGB 255)
@@ -214,20 +213,54 @@ float3 getPixelFromOrigFrame(float2 uv, float getFromHzNumber, float currentHzCo
 // - This also concurrently produces a phosphor-fade style behavior.
 // - Win-win!
 //
-// Parameters:
-// - c2: total brightness * framesPerHz per channel.
-// - crtRasterPos: normalized raster position [0..1] representing current scan line
-// - phaseOffset: fractional start of the brightness interval [0..1] (0.0 at top, 1.0 at bottom).
-// - framesPerHz: Number of frames per Hz. (Does not have to be integer divisible!)
+// How the light of a pixel is shared over time: the three colour channels of a pixel share ONE pulse, as long as the brightest channel.
+// The colour ratio (hue and saturation) is the same in every refresh, only the brightness varies, so a saturated moving edge has no
+// coloured fringe. Each channel still receives exactly its own total light; a pulse longer than a refresh cycle is cut and made brighter.
 //
-float3 getPixelFromSimulatedCRT(float2 uv, float crtRasterPos, float crtHzCounter, float framesPerHz, float tubePos)
+// The code between the TEST-EXTRACT markers is also compiled by the test bench (Tests/test_bfi_sweep.cpp): keep it plain
+// C-like HLSL (float, float3, max, min, arithmetic only).
+
+// TEST-EXTRACT-BEGIN
+#define INTERVAL_OVERLAP(Astart, Aend, Bstart, Bend) max(0.0, min(Aend, Bend) - max(Astart, Bstart))
+
+// One cycle of one pixel: the pulse is as long as the brightest channel and every channel is lit at the same
+// share of its value, so the colour ratio never changes.
+// A pulse longer than one refresh cycle would reach into cycles that are not summed (only the 3 trailing ones are), and its light would be
+// lost (bright HDR pixels: SDR white sits above 1.0 in scRGB). Such a pulse is cut at one cycle and made brighter by the same factor for the
+// three channels (same energy, same hue): this is the "boost of the light" of a bright pixel.
+float3 mprtPulse(float3 photons, float start, float fStart, float fEnd, float framesPerHz)
+{
+    float len = max(photons.x, max(photons.y, photons.z));
+    if (len <= 0.0)
+        return float3(0.0, 0.0, 0.0);
+    float shown = min(len, framesPerHz);
+    return photons * (INTERVAL_OVERLAP(start, start + shown, fStart, fEnd) / shown);
+}
+
+// Light of one pixel in the output frame window [fStart, fStart + 1] (in frames), from the three trailing refresh cycles:
+// colorPrev2 / colorPrev1 / colorCurr: the photon budget of each cycle (= how long the pulse lasts), tubeFrame: where the beam of this pixel starts.
+float3 mprtLightHueSafe(float3 colorPrev2, float3 colorPrev1, float3 colorCurr, float tubeFrame, float fStart, float framesPerHz)
+{
+    float fEnd = fStart + 1.0;
+    float3 result = mprtPulse(colorPrev2, tubeFrame - framesPerHz, fStart, fEnd, framesPerHz);
+    result = result + mprtPulse(colorPrev1, tubeFrame, fStart, fEnd, framesPerHz);
+    result = result + mprtPulse(colorCurr, tubeFrame + framesPerHz, fStart, fEnd, framesPerHz);
+    return result;
+}
+// TEST-EXTRACT-END
+
+//
+// Parameters of getPixelSweep:
+// - uv: position in the picture; tubePos: where the simulated beam reaches this pixel (0 at the top for a vertical scan).
+// - rasterPos: normalized raster position [0..1] representing the current position of the simulated electron beam.
+// - hzCounter: number of the simulated CRT refresh cycle; framesPerHz: output frames per CRT refresh (not necessarily an integer).
+//
+float3 getPixelSweep(float2 uv, float rasterPos, float hzCounter, float framesPerHz, float tubePos)
 {
     // Get pixels from three consecutive refresh cycles
-    float3 pixelPrev2 = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter - 2.0, crtHzCounter));
-    float3 pixelPrev1 = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter - 1.0, crtHzCounter));
-    float3 pixelCurr = srgb2linear(getPixelFromOrigFrame(uv, crtHzCounter, crtHzCounter));
-
-    float3 result = float3(0.0, 0.0, 0.0);
+    float3 pixelPrev2 = srgb2linear(getPixelFromOrigFrame(uv, hzCounter - 2.0, hzCounter));
+    float3 pixelPrev1 = srgb2linear(getPixelFromOrigFrame(uv, hzCounter - 1.0, hzCounter));
+    float3 pixelCurr = srgb2linear(getPixelFromOrigFrame(uv, hzCounter, hzCounter));
 
     // Compute "photon budgets" for all three cycles
     float brightnessScale = framesPerHz * GAIN_VS_BLUR;
@@ -235,64 +268,11 @@ float3 getPixelFromSimulatedCRT(float2 uv, float crtRasterPos, float crtHzCounte
     float3 colorPrev1 = pixelPrev1 * brightnessScale;
     float3 colorCurr = pixelCurr * brightnessScale;
 
-    // Process each color channel independently
-    for (int ch = 0; ch < 3; ch++)
-    {
-        // Get brightness lengths for all three cycles
-        float Lprev2 = colorPrev2[ch];
-        float Lprev1 = colorPrev1[ch];
-        float Lcurr = colorCurr[ch];
-        
-        if (Lprev2 <= 0.0 && Lprev1 <= 0.0 && Lcurr <= 0.0)
-        {
-            result[ch] = 0.0;
-            continue;
-        }
-        
-        // TODO: Optimize to use only 2 frames.
-        // Unfortunately I need all 3 right now because if I only do 2,
-        // I get artifacts at either top OR bottom edge (can't eliminate both)
-        // What I may do is use a phase offset (e.g. input framebuffer chain
-        // rotates forward in middle of emulated CRT Hz), as a workaround, and
-        // see if that solves the problem and reduces the queue to 2.
-        // (Will attempt later)
+    // Convert normalized values to frame space
+    float tubeFrame = tubePos * framesPerHz;
+    float fStart = rasterPos * framesPerHz;
 
-        // Convert normalized values to frame space
-        float tubeFrame = tubePos * framesPerHz;
-        float fStart = crtRasterPos * framesPerHz;
-        float fEnd = fStart + 1.0;
-
-        // Define intervals for all three trailing refresh cycles
-        float startPrev2 = tubeFrame - framesPerHz;
-        float endPrev2 = startPrev2 + Lprev2;
-
-        float startPrev1 = tubeFrame;
-        float endPrev1 = startPrev1 + Lprev1;
-
-        float startCurr = tubeFrame + framesPerHz; // Fix seam for top edge
-        float endCurr = startCurr + Lcurr;
-        
-        // Calculate overlaps for all three cycles
-#define INTERVAL_OVERLAP(Astart, Aend, Bstart, Bend) max(0.0, min(Aend, Bend) - max(Astart, Bstart))
-        float overlapPrev2 = INTERVAL_OVERLAP(startPrev2, endPrev2, fStart, fEnd);
-        float overlapPrev1 = INTERVAL_OVERLAP(startPrev1, endPrev1, fStart, fEnd);
-        float overlapCurr = INTERVAL_OVERLAP(startCurr, endCurr, fStart, fEnd);
-
-        // Sum all overlaps for final brightness
-        float temp = overlapPrev2 + overlapPrev1 + overlapCurr;
-        if (ch == 0)
-        {
-            result.x = temp;
-        }
-        if (ch == 1)
-        {
-            result.y = temp;
-        }
-        if (ch == 2)
-        {
-            result.z = temp;
-        }
-    }
+    float3 result = mprtLightHueSafe(colorPrev2, colorPrev1, colorCurr, tubeFrame, fStart, framesPerHz);
 
     return linear2srgb(result);
 }
@@ -331,8 +311,8 @@ PSOut PSmain(PSIn input)
     float2 uv = input.vTexCoord;
 
     //-----------------------------------------------------------------------------------------
-    // Get CRT simulated version of pixel
-    float3 col = getPixelFromSimulatedCRT(uv, param_crtRasterPos, param_crtHzCounter, EFFECTIVE_FRAMES_PER_HZ, input.tubePos);
+    // Get the swept version of the pixel
+    float3 col = getPixelSweep(uv, param_rasterPos, param_hzCounter, EFFECTIVE_FRAMES_PER_HZ, input.tubePos);
     // black level: what is darker than the level becomes a pure black (true black between the lines, OLED / HDR)
     // (only when set: the output is left untouched otherwise, values above 1 are kept for HDR)
     if (param_blackLevel > 0.0)

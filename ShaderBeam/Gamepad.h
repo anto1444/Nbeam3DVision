@@ -6,7 +6,7 @@ Nbeam 3D Vision: wheel and button of the NVIDIA 3D Vision emitter (the 3D mini m
 #include <windows.h>
 #include <atomic>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 namespace Pad
 {
@@ -29,4 +29,4 @@ inline EmitterInput& Emitter()
 // NVIDIA 3D Vision emitter: reads the wheel and the button all the time, also without 3D (EmitterNvidia.cpp)
 void NvidiaKeysService(bool run);   // start / stop the background reader
 void NvidiaKeysPause(bool pause);   // the 3D emitter takes over the pipes while it runs (and reads the keys itself)
-} // namespace ShaderBeam
+} // namespace Nbeam

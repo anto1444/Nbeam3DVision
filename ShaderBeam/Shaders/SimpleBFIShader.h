@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -13,8 +13,9 @@ and the others show it darkened by "Gain vs Blur" (1.0 = fully black).
 #include <d3dcompiler.h>
 #include "ShaderProfile.h"
 #include "Helpers.h"
+#include "PhaseLock.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class SimpleBFIShader : public ShaderProfile
@@ -25,7 +26,7 @@ public:
 
     SimpleBFIShader()
     {
-        m_name = "Simple BFI";
+        m_name = "BFI";
         AddParameter("Gain vs Blur",
                      "How dark the inserted frames are.\n"
                      "- 1.0 is fully black (classic BFI).\n"
@@ -86,7 +87,13 @@ float4 PSmain(float4 pos : SV_Position, float2 uv : TEXCOORD0) : SV_Target
     void Render(const RenderContext& renderContext)
     {
         const bool  clear = renderContext.subFrameNo < m_clearFrames;
-        const float scale = clear ? 1.0f : 1.0f - m_gainVsBlur;
+        float       scale = clear ? 1.0f : 1.0f - m_gainVsBlur;
+        if(renderContext.cycleGain < 0.9995f)
+        {
+            // BFI phase lock, a cycle one refresh shorter: its light is lowered in this same pass, so the brightness stays even
+            const bool linear = renderContext.options.hardwareSrgb || renderContext.options.format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+            scale *= PhaseGainOnPicture(renderContext.cycleGain, linear);
+        }
 
         if(scale >= 0.999f)
             Passthrough(renderContext);
@@ -135,4 +142,4 @@ private:
         ctx->OMSetRenderTargets(1, &nullRtv, nullptr);
     }
 };
-} // namespace ShaderBeam
+} // namespace Nbeam

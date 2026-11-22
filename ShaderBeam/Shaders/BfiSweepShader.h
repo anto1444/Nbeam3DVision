@@ -1,36 +1,34 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
 */
 
-// From Shadertoy https://www.shadertoy.com/view/XfKfWd
-// - Improved version coming January 2025
-// - See accompanying article https://blurbusters.com/crt
-// - To study more about display science & physics, see Research Portal https://blurbusters.com/area51
-// adapted for ShaderBeam by mausimus
+// Sweep BFI via MPRT: a rolling scan (the picture is lit band by band, like a CRT beam) where the three colour channels of a pixel share
+// one pulse, so a moving coloured edge has no colour fringe. Shaders/bfi.hlsl.
+// Derived from the Blur Busters CRT Beam Simulator (Shadertoy https://www.shadertoy.com/view/XfKfWd, https://blurbusters.com/crt, MIT),
+// adapted for ShaderBeam by mausimus: see THIRD_PARTY_NOTICES.md.
 
 #pragma once
 
 #include "SinglePassShaderProfile.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
-class CRTBeamSimulatorShader : public SinglePassShaderProfile
+class BfiSweepShader : public SinglePassShaderProfile
 {
 public:
     struct
     {
-        float gamma { 2.2f };
         float gainVsBlur { 0.5f };
         int   scanDirection { 1 };
 
         // CPU-calculated
         float effectiveFramesPerHz { 4.001f };
-        float crtRasterPos { 0.0f };
-        float crtHzCounter { 0.0f };
+        float rasterPos { 0.0f };
+        float hzCounter { 0.0f };
 
         // black level (output, 0 = off)
         float blackLevel { 0.0f };
@@ -50,15 +48,14 @@ public:
 
     const std::map<int, std::string> m_lcdAntiRetentions = { { 0, "Force Off" }, { 1, "Auto" } };
 
-    CRTBeamSimulatorShader()
+    BfiSweepShader()
     {
         m_numInputs = 3;
-        m_name      = "Blur Busters CRT Beam Simulator";
-        AddParameter("Gamma", "Your display's gamma value. Necessary to prevent horizontal-bands artifacts.", &m_params.gamma, 0.5f, 5.0f);
+        m_name      = "Sweep BFI via MPRT";
         AddParameter("Gain vs Blur",
                      "Brightness-vs-motionblur tradeoff for bright pixel.\n"
                      "- Defacto simulates fast/slow phosphor.\n"
-                     "- 1.0 is unchanged brightness (same as non-CRT, but no blur reduction for brightest pixels, only for dimmer piels).\n"
+                     "- 1.0 is unchanged brightness (same as without the effect, but no blur reduction for brightest pixels, only for dimmer piels).\n"
                      "- 0.5 is half brightness spread over fewer frames (creates lower MPRT persistence for darker pixels).",
                      &m_params.gainVsBlur,
                      0.0f,
@@ -70,7 +67,7 @@ public:
                      0.0f,
                      0.2f);
         AddParameter("Scan Direction",
-                     "CRT SCAN DIRECTION. Can be useful to counteract an OS rotation of your display\n"
+                     "SCAN DIRECTION. Can be useful to counteract an OS rotation of your display\n"
                      "'None' helps remove banding, but may reduce visual quality especially on OLEDs.",
                      &m_params.scanDirection,
                      0,
@@ -79,15 +76,15 @@ public:
         // NB: this is inverted compared to original shader to be more user-friendly
         AddParameter("Slow Motion Mode",
                      "Reduced frame rate mode\n"
-                     "- This can be helpful to see individual CRT-simulated frames better (educational!)\n"
+                     "- This can be helpful to see individual frames better (educational!)\n"
                      "- 1.0 is framerate=Hz, 2.0 is framerate being half of Hz, 10 is framerate being 10% of real Hz.\n",
                      &m_fpsDivisor,
                      1,
                      100);
         AddParameter("LCD Anti-retention",
                      "Prevents image retention from BFI interfering with LCD voltage polarity inversion algorithm\n"
-                     "- It will cause occasional stutter as it desyncs CRT refresh rate from content refresh rate.\n"
-                     "- Auto-disabled on OLEDs and LCDs with odd subframe count.\n"
+                     "- It will cause occasional stutter as it desyncs the sweep refresh rate from the content refresh rate.\n"
+                     "- For LCD screens only: leave it off on OLED. Auto-disabled with an odd subframe count.\n"
                      "- Adds one input frame of latency (!)",
                      &m_lcdAntiRetention,
                      0,
@@ -108,11 +105,11 @@ public:
 
         // macros injected into the shader before compilation with non-adjustable constants (like resolution)
         D3D_SHADER_MACRO macros[2] = {
-            { "HARDWARE_SRGB", renderContext.options.hardwareSrgb ? "1" : "0" },
+            { "HARDWARE_SRGB", (renderContext.options.hardwareSrgb || renderContext.options.format == DXGI_FORMAT_R16G16B16A16_FLOAT) ? "1" : "0" }, // (float capture = already linear light)
             { NULL, NULL },
         };
 
-        SetShader(L"Shaders\\CRTBeamSimulator.hlsl", macros, renderContext);
+        SetShader(L"Shaders\\bfi.hlsl", macros, renderContext);
         SetParameterBuffer(&m_params, sizeof(m_params), renderContext);
         CreatePipeline(renderContext);
     }
@@ -130,13 +127,13 @@ public:
         // with anti-retention on we need to check if the CRT frame counter is changing
         unsigned frameNo        = (renderContext.frameNo * renderContext.options.subFrames) + renderContext.subFrameNo;
         double   effectiveFrame = frameNo / (double)m_fpsDivisor;
-        float    crtHzCounter   = (float)floor(effectiveFrame / m_cycle);
-        return crtHzCounter != m_params.crtHzCounter;
+        float    hzCounter   = (float)floor(effectiveFrame / m_cycle);
+        return hzCounter != m_params.hzCounter;
     }
 
     bool AntiRetentionRequired(const RenderContext& renderContext) const
     {
-        return m_lcdAntiRetention && renderContext.options.monitorType == MONITOR_LCD && floorf(m_framesPerHz) == m_framesPerHz && (((int)m_framesPerHz) % 2) == 0;
+        return m_lcdAntiRetention && floorf(m_framesPerHz) == m_framesPerHz && (((int)m_framesPerHz) % 2) == 0;
     }
 
     bool SupportsResync(const RenderContext& renderContext) const
@@ -162,7 +159,7 @@ public:
         if(m_fpsDivisor != 1 || m_cycle < 1.5f || (m_params.scanDirection != 1 && m_params.scanDirection != 2))
             return 0.0f;
         const double cyc   = m_cycle;
-        const double k     = floor(m_params.crtRasterPos * cyc + 1e-4);            // band of this frame (in output frames)
+        const double k     = floor(m_params.rasterPos * cyc + 1e-4);            // band of this frame (in output frames)
         const double kp    = k >= 1.0 ? k - 1.0 : floor(cyc - 1.0 + 1e-3);          // band of the previous frame
         double       limit = 0.0;
         if(m_params.scanDirection == 1)
@@ -195,13 +192,20 @@ public:
         m_cycle = m_params.effectiveFramesPerHz;
 
         // CRT refresh cycle counter
-        m_params.crtHzCounter = (float)floor(effectiveFrame / m_cycle);
+        m_params.hzCounter = (float)floor(effectiveFrame / m_cycle);
 
         // Normalized raster position [0..1] representing current position of simulated CRT electron beam
-        m_params.crtRasterPos = (float)(fmod(effectiveFrame, (double)m_cycle) / (double)m_cycle);
+        m_params.rasterPos = (float)(fmod(effectiveFrame, (double)m_cycle) / (double)m_cycle);
+        if(renderContext.cycleSubFrames >= 1 && renderContext.cycleSubFrames < renderContext.options.subFrames && m_fpsDivisor == 1)
+        {
+            // BFI phase lock, a cycle one refresh shorter (its last subframe dropped): the whole scan is made in the frames that are shown,
+            // so no band of the picture misses its light, and the pulses keep the same share of the cycle (same brightness over time)
+            m_params.effectiveFramesPerHz = (float)renderContext.cycleSubFrames;
+            m_params.rasterPos            = (float)(renderContext.subFrameNo / (double)renderContext.cycleSubFrames);
+        }
 
         UpdateParameters(renderContext);
         RenderPipeline(renderContext);
     }
 };
-} // namespace ShaderBeam
+} // namespace Nbeam

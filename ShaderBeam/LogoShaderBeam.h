@@ -4,8 +4,8 @@ Source: Misc/icon.png of the ShaderBeam project (MIT).
 */
 #pragma once
 
-static const int kLogoShaderBeamSize = 64;
-static const unsigned char kLogoShaderBeamRgba[64 * 64 * 4] = {
+static const int kLogoNbeamSize = 64;
+static const unsigned char kLogoNbeamRgba[64 * 64 * 4] = {
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,

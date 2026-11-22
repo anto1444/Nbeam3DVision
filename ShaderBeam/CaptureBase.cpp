@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -11,7 +11,7 @@ MIT License
 #include "Helpers.h"
 #include <map>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 namespace
@@ -343,4 +343,4 @@ void CaptureBase::CopyTrimToOutputSize(ID3D11DeviceContext* context, ID3D11Textu
     context->CopySubresourceRegion(output, 0, dx, dy, 0, source, 0, &box);
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- game frame-rate sync through RTSS (see FrameLimiter.h)
+Nbeam 3D Vision: shader effect overlay -- game frame-rate sync through RTSS (see FrameLimiter.h)
 MIT License
 */
 
@@ -15,7 +15,7 @@ MIT License
 #include <algorithm>
 #include "FrameLimiter.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 namespace
@@ -551,4 +551,4 @@ void FrameLimiter::Release()
     Set("off");
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

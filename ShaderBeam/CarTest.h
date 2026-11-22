@@ -5,7 +5,7 @@ MIT License
 
 #pragma once
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 // Motion test: a process of its own ("Nbeam3DVision.exe /cartest x y w h nbeamPid") shows detailed cars scrolling in a borderless DirectX
@@ -30,4 +30,4 @@ struct CarTestParams
 
 int RunCarTest(HINSTANCE instance, const wchar_t* cmdLine);
 
-} // namespace ShaderBeam
+} // namespace Nbeam

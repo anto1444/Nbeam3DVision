@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- stereo emitter manager
+Nbeam 3D Vision: shader effect overlay -- stereo emitter manager
 MIT License
 */
 
@@ -13,7 +13,7 @@ MIT License
 #include <thread>
 #include <vector>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class EmitterManager
@@ -27,6 +27,10 @@ public:
     bool Start(StereoEmitterSettings* settings, const EmitterEnv& env);
     void Stop();
     bool Active() const { return !m_emitters.empty(); }
+    // true once when the screen delay keeps moving and the offset correction was paused for too long: the renderer should restart (render thread)
+    bool TakeRestartRequest() { return m_restartWanted.exchange(false); }
+    // true once when the glasses signals are stuck (signals waiting, none sent for 3 s): the emitter timing is inconsistent and Nbeam closes (render thread)
+    bool TakeStuckRequest() { return m_stuckWanted.exchange(false); }
     bool Poll(); // render thread: takes the emitters opened by the start thread; true when they were just taken (the status changed)
 
     // eye of the content frame about to be presented (call before Present, render thread)
@@ -41,6 +45,8 @@ public:
     // the length of the presentation queue was changed live (render thread, before a frame): the screen delay is going to change by the same number
     // of refreshes. The change is taken at once when the statistics show it, instead of after two readings.
     void AnnounceQueue(int oldQueue, int newQueue);
+    double GridPhaseShift(long long grid, double refresh);
+    void   ShiftWaiting(long long shift);
 
     // one line per emitter for the UI ("NVIDIA: connected", "COM3: failed to open", ...)
     std::vector<std::string> Status() const;
@@ -128,7 +134,41 @@ private:
     std::atomic<bool>   m_applyQueued { false }; // a request to send the held back Open Duration is waiting in the queue
     long long           m_deferSince { 0 };      // when the Open Duration was held back (given up after 100 ms)
     long long           m_lastShiftQpc { 0 };  // when the Open Duration was last nudged by the offset correction (at most twice a second)
+    UINT                m_prevMeasured { 0 };  // statistics: the measured present of the last reading, the last present then, and how long it stood still
+    UINT                m_prevLastRead { 0 };
+    int                 m_frozenN { 0 };
+    long long           m_lastZeroNudgeQpc { 0 }; // last correction made without a missed refresh behind it
+    std::atomic<long long> m_lastSentQpc { 0 };      // the last signal sent (sync thread): when, and for which eye
+    std::atomic<int>       m_lastSentEye { -1 };
+    std::atomic<int>       m_repeatEye { -1 };       // a signal to send again as soon as its time has come (-1 = none), see the Offset correction method 1
+    std::atomic<long long> m_repeatDue { 0 };
+    void                   SendRepeat(bool wait);
+    long long           m_tentShift { 0 };        // waiting signals already moved on a first reading of a new screen delay (QPC), 0 = none
+    long long           m_tentDelta { 0 };
+    long long           m_tentFailedQpc { 0 };    // last first reading nobody confirmed (noisy statistics: no more guesses for a while)        // the delay that reading had
+    long long           m_vbSyncQpc { 0 };        // a real refresh (hardware time of the statistics), the reference of the classic timing
+    double              m_phaseRef { 0.0 };       // phase of the present grid against the refreshes when the Sync Offset was set (kept over rebuilds)
+    double              m_phaseRefR { 0.0 };      // refresh period it was taken with (0 = not taken)
     long long           m_deltaCand { 0 };     // screen delay read last (a new delay is taken when it is read twice in a row)
+    // unstable screen delay (it keeps moving by one refresh or more, not while Windows composes): the offset correction is paused, a delay is only
+    // taken when it fills most of the last readings, and after 5 s the renderer is asked to restart (twice a minute at most)
+    long long           m_dHist[8] {};               // last readings of the screen delay
+    unsigned            m_dHistN { 0 };
+    long long           m_chg[8] {};                 // times of the last accepted changes of the screen delay
+    unsigned            m_chgN { 0 };
+    long long           m_lastChgQpc { 0 };
+    long long           m_lastChgLogQpc { 0 };
+    bool                m_unstable { false };
+    long long           m_unstableSince { 0 };
+    std::atomic<bool>   m_restartWanted { false };
+    // stuck sync thread detection: signals wait in the queue but none is sent
+    std::atomic<long long> m_sentCount { 0 }; // signals sent (sync thread)
+    long long           m_stuckSeen { -1 }, m_stuckSinceQpc { 0 };
+    std::atomic<bool>   m_stuckWanted { false };
+    void                StuckCheck(long long now);
+    bool                DeltaStable(long long delta) const;
+    void                NoteDeltaChange(long long from, long long to);
+    void                CheckUnstable(long long now);
     int                 m_lastComp { -1 };     // how Windows shows the picture (DXGI_FRAME_PRESENTATION_MODE), -1 = unknown
     winrt::com_ptr<IDXGISwapChainMedia> m_media;
     bool                m_mediaTried { false };
@@ -155,4 +195,4 @@ private:
     std::atomic<bool>       m_stop { false };
 };
 
-} // namespace ShaderBeam
+} // namespace Nbeam
