@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -15,7 +15,7 @@ MIT License
 
 #define TICKS_PER_SEC 1000.0f
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class Helpers
@@ -25,6 +25,7 @@ public:
     static winrt::com_ptr<ID3D11Device> CreateD3DDevice(IDXGIAdapter* adapter);
     static void                         InitQPC();
     static float                        GetTicks();
+    static ULONGLONG                    GetQPC();
     static float                        QPCToTicks(ULONGLONG qpc);
     static float                        QPCToDeltaMs(ULONGLONG qpc);
     static void                         Throw(HRESULT hr, const char* action);
@@ -67,4 +68,4 @@ private:
 // spatial audio (Dolby Atmos) active: with no stream running, Atmos often falls back to the stereo mix after a while or after a mode change.
 // The thread follows the default device when it changes and tries again by itself when the device goes away.
 void AudioKeepAliveSet(bool on);
-} // namespace ShaderBeam
+} // namespace Nbeam

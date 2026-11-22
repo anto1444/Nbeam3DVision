@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- stereo emitter settings
+Nbeam 3D Vision: shader effect overlay -- stereo emitter settings
 Plain data only (no Windows / D3D dependency) so it can be shared by Options, ini, UI and the emitters.
 Parameter names are the usual ones of active 3D emitter software (emitter, ComPort, NVIDIA groups).
 MIT License
@@ -11,7 +11,7 @@ MIT License
 #include <cstdint>
 #include <vector>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 enum class Eye : int { Left = 0, Right = 1 };
@@ -134,6 +134,8 @@ struct StereoEmitterSettings
         timingActive = idx;
     }
     bool          fullSbs { false };      // experimental, SBS only: the game window is twice the screen width, each eye shown whole (not squeezed)
+    int           desyncMethod { 0 };             // Offset correction method: 0 = Open Duration -1 / +1 us (old), 1 = the signal that went out too early after a missed refresh is sent again at its right time
+    float         expPeriodMarginPct { 0.0f };    // experiment (profile key expPeriodMarginPct=0..100): the free-running period of the NVIDIA emitter is this much longer than the eye period
     bool          offsetCorrection { false }; // a medium or strong micro-desync nudges the Open Duration by 1 us (the emitter then restarts its offset)
     mutable bool  swapEyes { false };     // reverses the eye order (mutable: the rate in use loads its own, see ActivateTiming)
     bool          scanoutSync { false };  // the glasses follow the real display refreshes (DXGI frame statistics) instead of the moment Present returned
@@ -160,4 +162,4 @@ struct StereoEmitterSettings
 // implemented in EmitterComPort.cpp (Windows) -- numbers of COM ports present, ascending
 std::vector<int> EnumerateComPorts();
 
-} // namespace ShaderBeam
+} // namespace Nbeam

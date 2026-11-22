@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -16,8 +16,11 @@ MIT License
 struct ImFont;
 struct ImGuiStyle;
 
-namespace ShaderBeam
+namespace Nbeam
 {
+    // Mouse movement since the last look (raw input, summed by the window procedure, read by the render thread: see OwnPointerWanted)
+    extern std::atomic<long> g_rawMouseX, g_rawMouseY;
+
 
 class UI
 {
@@ -163,4 +166,4 @@ private:
     bool            m_hasError { false };
     std::string     m_errorMessage;
 };
-} // namespace ShaderBeam
+} // namespace Nbeam

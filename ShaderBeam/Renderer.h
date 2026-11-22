@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -11,6 +11,7 @@ MIT License
 #include "UI.h"
 #include "Charts.h"
 #include "RenderContext.h"
+#include "PhaseLock.h"
 #include "ShaderManager.h"
 #include "EmitterManager.h"
 #include "StereoConvert.h"
@@ -20,7 +21,7 @@ MIT License
 #include "StereoDetect.h"
 #include <deque>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class CaptureBase;
@@ -45,7 +46,7 @@ public:
     void                                   AdaptQueue();        // Auto queue length (Queued Frames = Auto): one frame more when frames are late, one less after a long calm
     void                                   ApplyQueueNow();     // the queue length in use is applied live (frame latency) and announced to the glasses timing
     int                                    QueueFramesNow() const;
-    void                                   AdaptFrameBuffer(); // adapted buffer size (Frame buffer and Hybrid), called every loop of the render thread
+    void                                   AdaptFrameBuffer(); // adapted buffer size (Frame buffer), called every loop of the render thread
     int                                    FrameBufferLimit() const; // ring size: 5 frames, or more with the map buffer (as many frames as fit in about 512 MB, up to 30)
     bool                                   MapSync() const; // 2D to 3D (AI) with "Map buffer": each image waits for its own depth map
     bool                                   BufferActive() const; // anti-stutter buffer in use (Options::frameBuffer)
@@ -115,7 +116,7 @@ private:
     bool                                         m_ringPrimed { false };
     int                                          m_ringSkip { 0 };
     double                                       m_ringIntervalMs { 8.0 };
-    // adapted buffer size (Frame buffer: 1 up to the value chosen, one step per 2 seconds; Hybrid: 0 or 1)
+    // adapted buffer size (Frame buffer: 1 up to the value chosen, one step per 2 seconds)
     int                                          m_fbMode { 0 };
     double                                       m_fbSliceMax { 0.0 };
     double                                       m_fbSlices[2] { 0.0, 0.0 };
@@ -123,9 +124,6 @@ private:
     std::chrono::steady_clock::time_point        m_fbSliceStart {};
     std::chrono::steady_clock::time_point        m_fbLowSince {};
     bool                                         m_fbUnderrun { false };
-    std::chrono::steady_clock::time_point        m_fbEntries[3] {}; // hybrid: the last 3 times the buffer came in (to spot a back-and-forth)
-    int                                          m_fbEntryNext { 0 };
-    std::chrono::steady_clock::time_point        m_fbHoldUntil {};  // hybrid: the buffer stays in until then (back-and-forth)
     double                                       m_fbMeanMs { 8.0 };
     std::chrono::steady_clock::time_point        m_ringLastArrival {};
     std::vector<std::chrono::steady_clock::time_point> m_ringTime; // capture time of each ring frame (2D to 3D (AI): pairs images and depth maps)
@@ -164,20 +162,10 @@ private:
 
     int  m_appliedSubFrames { 0 };
     void ApplySubFramesLive();
-    // BFI phase lock (BFI sync 1 / 3): ages of the game frames when the cycle took them, and the shift asked for the cycle
+    // BFI phase lock (BFI sync 1): ages of the game frames when the cycle took them, and the shift asked for the cycle
     bool                PhaseLockActive() const;
-    void                PhaseReset(int state);
-    std::vector<double> m_phaseAges;
-    double              m_phaseWindowStart { 0.0 };
-    double              m_phaseIgnoreUntil { 0.0 };
-    double              m_phaseGuard { -1.0 };  // shortest wait seen for a frame that was still taken (ms): a frame needs about that much to be ready
-    bool                m_phaseFirst { true };   // first measure (1 s) not made yet
-    double              m_phaseP { 0.0 };       // refresh period and SubFrames the measures are for
-    int                 m_phaseN { 0 };
-    int                 m_phaseSkip { 0 };          // cycles still to shorten by one refresh (each one moves the cycle one refresh earlier)
-    bool                m_phaseShortCycle { false }; // the cycle being shown is one refresh shorter (its last subframe dropped)
-    float               m_phaseGain { 1.0f };        // light of that cycle (Simple BFI: lowered so the brightness stays even)
-    double              m_phaseLastSample { 0.0 }; // time of the last frame measured (a long gap = pause: the measure starts again)
+    PhaseLock           m_phase;               // the logic (PhaseLock.h)
+    void                PhaseApply();          // mirrors it to the options (HUD) and to the render context (the cycle being shown)
     void Create();
     void StartEmitters();
     void ResetModeState();
@@ -268,4 +256,4 @@ private:
     winrt::com_ptr<ID3D11Debug> m_debug { nullptr };
 #endif
 };
-} // namespace ShaderBeam
+} // namespace Nbeam

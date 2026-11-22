@@ -100,7 +100,25 @@ void FlushIniWrites()
 } // namespace
 
 #define LOAD_BOOL(ini, var) var = ini.has(#var) ? ini.get(#var) == "1" : var;
-#define LOAD_INT(ini, var) var = ini.has(#var) ? std::stoi(ini.get(#var)) : var;
+// A value of a profile that is not a number (edited by hand, damaged file) leaves its field as it was: the rest of the profile is still read.
+// A float that is not finite (nan, inf) is refused too: clamp() lets a NaN through.
+static bool ParseInt(const std::string& t, int& out)
+{
+    try { out = std::stoi(t); return true; } catch(...) { return false; }
+}
+static bool ParseFloat(const std::string& t, float& out)
+{
+    try
+    {
+        const float v = std::stof(t);
+        if(!std::isfinite(v))
+            return false;
+        out = v;
+        return true;
+    }
+    catch(...) { return false; }
+}
+#define LOAD_INT(ini, var) { int v_; if(ini.has(#var) && ParseInt(ini.get(#var), v_)) var = v_; }
 
 #define SAVE_VERSION(ini) ini["version"] = "2";
 #define SAVE_BOOL(ini, var) ini[#var] = var ? "1" : "0";
@@ -108,7 +126,7 @@ void FlushIniWrites()
 
 #define ACTIVE_PROFILE_FILE "Nbeam3DVision.profile.txt"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 static std::mutex& MonitorsMutex()
 {
@@ -278,11 +296,7 @@ void LsLogWriter(LsLogState* st)
                 break;
             if(!f)
             {
-                wchar_t path[MAX_PATH * 2] = {};
-                GetModuleFileNameW(nullptr, path, MAX_PATH * 2);
-                std::wstring p(path);
-                const auto   slash = p.find_last_of(L"\\/");
-                p                  = (slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1)) + L"Nbeam_ls.log";
+                const std::wstring p = Options::LogFile(L"Nbeam_ls.log").wstring();
                 if(_wfopen_s(&f, p.c_str(), L"ab") != 0)
                     f = nullptr;
                 if(!f)
@@ -364,7 +378,11 @@ void DeleteEventLogs()
         s_recent.clear();
     }
     for(const wchar_t* name : { L"Nbeam_ls.log", L"Nbeam_desync.log", L"Nbeam_crash.txt", L"Nbeam_emitter_input.log" })
-        DeleteFileW((Options::ExeDir() / name).c_str());
+    {
+        DeleteFileW((Options::ExeDir() / L"log" / name).c_str());
+        DeleteFileW((Options::ExeDir() / name).c_str()); // (a file left by an older version, next to the exe)
+    }
+    RemoveDirectoryW((Options::ExeDir() / L"log").c_str()); // (only when it is empty)
 }
 
 std::vector<std::string> LsLogRecent(int ms)
@@ -598,6 +616,13 @@ std::filesystem::path Options::ExeDir()
 std::filesystem::path Options::ProfilesDir()
 {
     return ExeDir() / "Profils";
+}
+
+std::filesystem::path Options::LogFile(const wchar_t* name)
+{
+    const auto dir = ExeDir() / L"log";
+    CreateDirectoryW(dir.c_str(), nullptr); // (already there: nothing happens)
+    return dir / name;
 }
 
 static bool s_firstRun = false;
@@ -853,7 +878,7 @@ void Options::LoadApp()
             }
             setWinMax = a.has("setWinMax") && a.get("setWinMax") == "1";
             if(a.has("hzSwitchMs"))
-                try { hzSwitchMs = std::clamp(std::stod(a.get("hzSwitchMs")), 100.0, 10000.0); } catch(...) { }
+                try { const double d = std::stod(a.get("hzSwitchMs")); if(std::isfinite(d)) hzSwitchMs = std::clamp(d, 100.0, 10000.0); } catch(...) { }
             if(a.has("hzSwitchN"))
                 hzSwitchCount = std::clamp(atoi(a.get("hzSwitchN").c_str()), 0, 1000);
         }
@@ -862,7 +887,11 @@ void Options::LoadApp()
             auto h = ini.get("hud");
             auto f = [&](const char* k, float& v, float lo, float hi) {
                 if(h.has(k))
-                    try { v = std::clamp(std::stof(h.get(k)), lo, hi); } catch(...) { }
+                {
+                    float x;
+                    if(ParseFloat(h.get(k), x))
+                        v = std::clamp(x, lo, hi);
+                }
             };
             f("r", hud.r, 0.0f, 1.0f);
             f("g", hud.g, 0.0f, 1.0f);
@@ -1715,7 +1744,7 @@ void Options::Save(const ShaderManager& shaderManager) const
         SAVE_BOOL(s, rememberSettings);
         if(rememberSettings)
         {
-            SAVE_INT(s, shaderProfileNo)
+            s["shaderKind"] = std::to_string(shaderProfileNo); // 0 = BFI, 1 = Sweep BFI via MPRT (profiles before this version: "shaderProfileNo", see Load)
             SAVE_INT(s, captureAdapterNo)
             SAVE_INT(s, shaderAdapterNo)
             SAVE_INT(s, captureDisplayNo)
@@ -1788,12 +1817,25 @@ void Options::Load(ShaderManager& shaderManager)
             LOAD_BOOL(s, rememberSettings);
             if(rememberSettings)
             {
-                LOAD_INT(s, shaderProfileNo)
+                // shaderKind: 0 = BFI, 1 = Sweep BFI via MPRT. Older profiles saved shaderProfileNo (0 = CRT Beam Simulator, 1 = Simple BFI,
+                // 2 = Variable MPRT Beam): the CRT Beam Simulator is gone, its nearest shader is the sweep
+                if(s.has("shaderKind"))
+                {
+                    int kind = 0;
+                    if(ParseInt(s.get("shaderKind"), kind))
+                        shaderProfileNo = kind;
+                }
+                else
+                {
+                    int legacy = 0;
+                    if(s.has("shaderProfileNo") && ParseInt(s.get("shaderProfileNo"), legacy))
+                        shaderProfileNo = legacy == 1 ? 0 : 1;
+                }
                 LOAD_INT(s, captureAdapterNo)
                 LOAD_INT(s, shaderAdapterNo)
                 LOAD_INT(s, captureDisplayNo)
                 LOAD_INT(s, shaderDisplayNo)
-                // (adapters / displays / capture / split-screen numbers: fitted to what exists in ShaderBeam::Start / Init, the highest one when too big)
+                // (adapters / displays / capture / split-screen numbers: fitted to what exists in Nbeam::Start / Init, the highest one when too big)
                 captureAdapterNo = (std::max)(captureAdapterNo, 0);
                 shaderAdapterNo  = (std::max)(shaderAdapterNo, 0);
                 captureDisplayNo = (std::max)(captureDisplayNo, 0);
@@ -1831,26 +1873,26 @@ void Options::Load(ShaderManager& shaderManager)
                 LOAD_INT(s, subFramesMode)
                 if(subFramesMode != SF_AUTO)
                     subFramesMode = SF_MANUAL; // (the removed Adaptive mode of earlier builds falls back to Manual)
-                try
                 {
-                    if(s.has("lowSubFrames"))
-                        lowFps.threshold = std::clamp(std::stoi(s.get("lowSubFrames")), 2, (int)MAX_SUBFRAMES); // (the old lowFpsThreshold, in fps, is ignored)
-                    if(s.has("lowFpsMode"))
-                        lowFps.mode = std::clamp(std::stoi(s.get("lowFpsMode")), 0, 1);
+                    // (each field on its own: a bad number only loses that field)
+                    int   iv = 0;
+                    float fv = 0.0f;
+                    if(s.has("lowSubFrames") && ParseInt(s.get("lowSubFrames"), iv))
+                        lowFps.threshold = std::clamp(iv, 2, (int)MAX_SUBFRAMES); // (the old lowFpsThreshold, in fps, is ignored)
+                    if(s.has("lowFpsMode") && ParseInt(s.get("lowFpsMode"), iv))
+                        lowFps.mode = std::clamp(iv, 0, 1);
                     uniformBrightness = s.has("uniformBrightness") && s.get("uniformBrightness") == "1";
-                    if(s.has("bfiSync"))
-                        bfiSync = std::clamp(std::stoi(s.get("bfiSync")), 0, 3);
+                    if(s.has("bfiSync") && ParseInt(s.get("bfiSync"), iv))
+                        bfiSync = iv >= 3 ? 1 : std::clamp(iv, 0, 2); // (the removed Hybrid and Frame warp, 3 and 4, become the phase lock)
                     else // (profiles of earlier builds: phase lock, or the frame buffer that was set)
                         bfiSync = s.has("phaseLock") && s.get("phaseLock") == "1" ? 1 : frameBuffer != 0 ? 2 : 0;
-                    if(s.has("phaseInterval"))
-                        phaseInterval = std::clamp(std::stof(s.get("phaseInterval")), 0.1f, 2.0f);
+                    if(s.has("phaseInterval") && ParseFloat(s.get("phaseInterval"), fv))
+                        phaseInterval = std::clamp(fv, 0.1f, 2.0f);
                     // the captured program comes from the active profile link (captureProcess is not stored in profiles)
                     captureWindow = captureProcess.empty() ? NULL : FindCaptureWindow();
-                    if(s.has("autoInterval"))
-                        autoSub.intervalSec = std::clamp(std::stof(s.get("autoInterval")), 0.1f, 2.0f);
+                    if(s.has("autoInterval") && ParseFloat(s.get("autoInterval"), fv))
+                        autoSub.intervalSec = std::clamp(fv, 0.1f, 2.0f);
                 }
-                catch(...)
-                { }
                 LoadEmitterSettings(ini, emitter);
 
                 if(!appHotkeys && ini.has("hotkeys"))
@@ -1879,7 +1921,9 @@ void Options::Load(ShaderManager& shaderManager)
                         {
                         case ParamInt:
                         {
-                            int v = std::stoi(shader[param.name]);
+                            int v = 0;
+                            if(!ParseInt(shader[param.name], v))
+                                break; // (not a number: the default stays)
                             if(!param.dropdown.empty())
                             {
                                 // a list: a number that is not in it becomes the highest one below it (the highest of the list when too big)
@@ -1895,8 +1939,12 @@ void Options::Load(ShaderManager& shaderManager)
                             break;
                         }
                         case ParamFloat:
-                            *param.p.fp.value = std::clamp(std::stof(shader[param.name]), param.p.fp.min, param.p.fp.max);
+                        {
+                            float fv = 0.0f;
+                            if(ParseFloat(shader[param.name], fv))
+                                *param.p.fp.value = std::clamp(fv, param.p.fp.min, param.p.fp.max);
                             break;
+                        }
                         }
                     }
                 }
@@ -1906,4 +1954,4 @@ void Options::Load(ShaderManager& shaderManager)
     catch(...)
     { }
 }
-} // namespace ShaderBeam
+} // namespace Nbeam

@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- 3D source decoding
+Nbeam 3D Vision: shader effect overlay -- 3D source decoding
 MIT License
 */
 
@@ -9,7 +9,7 @@ MIT License
 #include "StereoConvert.h"
 #include "Helpers.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 static const char kStereoHlsl[] = R"HLSL(
@@ -276,4 +276,4 @@ void StereoConverter::Downscale(ID3D11DeviceContext* ctx, ID3D11ShaderResourceVi
     Draw(ctx, source, nullptr, target, dstW, dstH);
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

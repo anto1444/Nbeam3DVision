@@ -10,9 +10,11 @@ Copyright (c) 2025-2026 mausimus - https://github.com/mausimus/ShaderBeam
 
 License: MIT
 
-## CRT Beam Simulator
+## Blur Busters CRT Beam Simulator
 
-CRT simulation shader (`Shaders/CRTBeamSimulator.hlsl`). Please credit Blur Busters and Timothy Lottes if this algorithm is used.
+The MPRT sweep shader (`Shaders/bfi.hlsl`) is derived from the Blur Busters CRT beam simulation algorithm. Please credit Blur Busters and Timothy Lottes if this algorithm is used.
+
+The sweep uses one shared pulse per pixel instead of one per colour channel (no colour fringes). The "Variable MPRT" principle is Blur Busters'; the idea of keeping the hue was seen in BFI Presenter (GPL-3.0, https://github.com/artzox/BFI-Presenter) and the code here is written independently, no code of BFI Presenter is included.
 
 Copyright (c) 2024 Mark Rejhon (@BlurBusters) & Timothy Lottes (@NOTimothyLottes) - https://github.com/blurbusters/crt-beam-simulator
 

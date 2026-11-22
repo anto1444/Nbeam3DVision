@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- stereo emitter interface
+Nbeam 3D Vision: shader effect overlay -- stereo emitter interface
 MIT License
 */
 
@@ -9,7 +9,7 @@ MIT License
 #include <memory>
 #include <string>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 // true when an NVIDIA 3D Vision USB emitter is plugged in and its driver is loaded (no pipe is opened)
@@ -65,4 +65,4 @@ public:
 std::unique_ptr<IEmitter> CreateComPortEmitter();
 std::unique_ptr<IEmitter> CreateNvidiaEmitter();
 
-} // namespace ShaderBeam
+} // namespace Nbeam

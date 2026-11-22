@@ -15,7 +15,7 @@ MIT License
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 
-namespace ShaderBeam
+namespace Nbeam
 {
 namespace
 {
@@ -167,7 +167,7 @@ static std::vector<uint32_t> MakeLogoTile(int size)
     {
         HGDIOBJ old = SelectObject(dc, bmp);
         memset(bits, 0, (size_t)size * size * 4);
-        if(HICON icon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_SHADERBEAM), IMAGE_ICON, size, size, LR_DEFAULTCOLOR))
+        if(HICON icon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_NBEAM), IMAGE_ICON, size, size, LR_DEFAULTCOLOR))
         {
             DrawIconEx(dc, 0, 0, icon, size, size, 0, nullptr, DI_NORMAL);
             DestroyIcon(icon);
@@ -486,7 +486,7 @@ int RunCarTest(HINSTANCE instance, const wchar_t* cmdLine)
     wc.cbSize        = sizeof(wc);
     wc.lpfnWndProc   = TestProc;
     wc.hInstance     = instance;
-    wc.hIcon         = LoadIcon(instance, MAKEINTRESOURCE(IDI_SHADERBEAM));
+    wc.hIcon         = LoadIcon(instance, MAKEINTRESOURCE(IDI_NBEAM));
     wc.hIconSm       = LoadIcon(instance, MAKEINTRESOURCE(IDI_SMALL));
     wc.hCursor       = NULL;
     wc.hbrBackground = (HBRUSH)GetStockObject(BLACK_BRUSH);
@@ -526,4 +526,4 @@ int RunCarTest(HINSTANCE instance, const wchar_t* cmdLine)
     }
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -9,7 +9,7 @@ MIT License
 
 #include "ShaderProfile.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 void ShaderProfile::Passthrough(const RenderContext& renderContext)
@@ -76,4 +76,4 @@ bool ShaderProfile::NewInputRequired(const RenderContext& renderContext) const
     return renderContext.subFrameNo == 0;
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

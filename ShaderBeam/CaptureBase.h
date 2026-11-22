@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -10,7 +10,7 @@ MIT License
 #include "Common.h"
 #include "Watcher.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class CaptureBase
@@ -60,4 +60,4 @@ private:
     void CopyStagingToOutput(const winrt::com_ptr<ID3D11Texture2D>& outputTexture);
 };
 
-} // namespace ShaderBeam
+} // namespace Nbeam

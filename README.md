@@ -1,6 +1,6 @@
 # Nbeam 3D Vision
 
-**Version 3.0.0 — par anto1444, 2026**
+**Version 3.1.0 — par anto1444, 2026**
 
 <p align="center"><img src="docs/nbeam.jpg" alt="Nbeam 3D Vision" width="420"></p>
 
@@ -8,13 +8,13 @@
 
 Nbeam 3D Vision est une surcouche (overlay) Windows qui s'affiche par-dessus un jeu ou une vidéo et réunit, sur **n'importe quel écran** :
 
-- le **BFI** et le **CRT Beam Simulator** pour supprimer le flou de mouvement d'un écran LCD/OLED rapide ;
+- le **BFI** et le **balayage BFI via MPRT** pour supprimer le flou de mouvement d'un écran LCD/OLED rapide ;
 - la **3D active** (lunettes NVIDIA 3D Vision ou émetteur Arduino) à partir d'un contenu 3D en côte à côte, haut/bas, damier ou entrelacé (lignes ou colonnes), avec ou sans les effets ci-dessus, ou depuis une image 2D grâce à l'IA ;
 - des **profils** par jeu, chargés automatiquement.
 
 > **Attention** — ce logiciel produit des images qui clignotent très vite. Prudence si vous êtes photosensible.
 
-> **Attention — risque pour l'écran** : un écran trop lent peut **marquer temporairement la dalle** (rémanence) avec le BFI ou la simulation CRT. Utilisation **à vos risques et périls**.
+> **Attention — risque pour l'écran** : un écran trop lent peut **marquer temporairement la dalle** (rémanence) avec le BFI ou le balayage MPRT. Utilisation **à vos risques et périls**.
 
 ## Avertissement au premier démarrage
 
@@ -29,28 +29,33 @@ Au tout premier lancement (quand le dossier `Profils` est créé), Nbeam affiche
 
 ## Démarrage rapide
 
-1. Placez `Nbeam3DVision.exe` dans un dossier où il peut écrire.
+1. Placez `Nbeam3DVision.exe` dans un dossier où il peut écrire (gardez le dossier `Shaders\` à côté).
 2. Lancez-le : le dossier `Profils\` et le profil d'exemple `Defaut.ini` sont créés.
 3. Dans le HUD, choisissez l'**écran de sortie** (votre écran rapide) et le nombre de **sous-images**, puis lancez votre jeu.
 
 Principe : Nbeam **capture** l'écran ou la fenêtre d'un programme, applique l'effet puis **réaffiche** l'image en plein écran au rythme de l'écran de sortie. Les **sous-images** sont le nombre d'images affichées pour chaque image du contenu : sur 240 Hz, 4 sous-images = un contenu à 60 images/s.
 
-## BFI simple
+## Choix de l'effet : BFI ou balayage MPRT
+
+Dans « Shader », un **interrupteur vertical** choisit l'effet : **BFI** en haut, **Balayage MPRT** en bas.
+
+## BFI
 
 Insère des images noires entre les images du jeu.
 
 - **Images claires** : nombre de sous-images qui montrent l'image (jamais plus que le nombre de sous-images). Moins d'images claires = mouvement plus net, mais moins lumineux et plus de scintillement.
 - **Gain vs flou** : noirceur des images insérées. 1 = noir complet (BFI classique) ; plus bas, une partie de l'image reste visible (plus lumineux, moins de scintillement, un peu plus de flou).
 
-## CRT Beam Simulator
+## Balayage BFI via MPRT
 
-Reproduit le balayage d'un tube cathodique : l'image est « dessinée » ligne par ligne sur les sous-images, avec une fin de persistance du phosphore. Le mouvement est net et plus doux que le BFI classique.
+Reproduit le balayage d'un tube cathodique : l'image est « dessinée » bande par bande sur les sous-images, avec une fin de persistance. Le mouvement est net et plus doux que le BFI classique.
+
+Chaque pixel reçoit **une seule impulsion de lumière**, aussi longue que son canal le plus fort et partagée par les trois canaux de couleur : le rapport de couleur est le même à chaque sous-image, donc **un bord en mouvement n'a pas de frange de couleur**, et chaque canal reçoit toujours exactement sa lumière. Une impulsion plus longue qu'un cycle est raccourcie et rendue plus lumineuse du même facteur sur les trois canaux (même énergie, même teinte) : les pixels très clairs gardent leur lumière, y compris en HDR. Il n'y a pas de réglage de gamma : la courbe sRGB standard est fixe.
 
 - **Gain vs flou** : compromis luminosité / flou. 1 = luminosité inchangée ; plus bas = moins de flou sur les zones sombres, au prix de la luminosité.
-- **Gamma** : le gamma de votre écran (évite les bandes horizontales).
-- **Direction du balayage**, **Mode ralenti** (pour observer la simulation), **Anti-rétention LCD** (évite la rétention d'image sur LCD), **Niveau de noir** (ce qui est plus sombre devient un noir pur ; utile sur OLED et en HDR).
+- **Direction du balayage**, **Mode ralenti** (pour observer l'effet), **Anti-rétention LCD** (évite la rétention d'image sur LCD), **Niveau de noir** (ce qui est plus sombre devient un noir pur ; utile sur OLED et en HDR).
 
-> **Images en file à 0 (tearing) : déconseillé avec le BFI et le CRT.** La déchirure peut couper une image claire ou noire en deux et provoquer des bandes ou un scintillement irrégulier. Gardez une valeur de file de 1 ou plus, ou placez la ligne de tearing tout en haut de l'image (masquée) avec le contrôle du tearing.
+> **Images en file à 0 (tearing) : déconseillé avec le BFI et le balayage MPRT.** La déchirure peut couper une image claire ou noire en deux et provoquer des bandes ou un scintillement irrégulier. Gardez une valeur de file de 1 ou plus, ou placez la ligne de tearing tout en haut de l'image (masquée) avec le contrôle du tearing.
 
 ### BFI adaptatif (Sous-images : Auto)
 
@@ -81,10 +86,10 @@ Avec la **2D vers 3D (IA)**, le tampon d'image fonctionne comme ailleurs. La syn
 - La bascule des yeux se fait à Hz de l'écran ÷ sous-images ; chaque œil reçoit la moitié. En 3D, les sous-images sont **liées à la fréquence de l'émetteur** (480 Hz et émetteur à 120 Hz → 4). La case **Auto** de la synchronisation détecte la fréquence de l'émetteur entre 80 et 165 Hz (hors de cette plage, rien ne se passe et l'émetteur reste éteint).
 - **Synchro des lunettes automatique** : les lunettes suivent les vrais rafraîchissements de l'écran (statistiques DXGI) dès que Windows les fournit, sinon la synchronisation classique prend le relais ; une ligne sous « Inverser les yeux » indique le mode utilisé. Le **Sync Offset** est toujours compté depuis l'affichage réel de l'image : changer les images en file ou de mode de synchro ne le dérègle pas. Une image envoyée en retard (surcharge, chargement du jeu) est remise sur le rythme régulier de l'écran, les lunettes ne se décalent plus.
 - Réglez d'abord **Sync Offset**, puis **Open Duration**, en regardant l'image à travers les lunettes, **avec les raccourcis clavier** (le HUD affiché fausse le rythme).
-- **Correction de l'offset** (au-dessus de « Inverser les yeux », désactivée par défaut) : à basse file d'images, l'écran décale parfois l'image d'un rafraîchissement (micro-désynchronisation des lunettes). Avec cette option, Nbeam règle alors la durée d'ouverture 1 µs en dessous de la valeur que vous avez réglée, puis de nouveau sur cette valeur à la fois suivante ; l'émetteur redémarre ainsi son offset. Seule la valeur que vous avez réglée est enregistrée. Avec des sous-images noires (BFI / CRT), le changement part dans la première image noire. Au plus deux fois par seconde. **Attention : ce paramètre peut créer de légers scintillements ; si vous y êtes sensible, désactivez-le et augmentez les images en file.**
-- **Suivi d'événements** : la touche O (3D active) enregistre les 3 dernières secondes du timing des lunettes dans `Nbeam_desync.log`, à presser juste après une désynchronisation pour voir quand elle s'est produite. L'option « Enregistrer le journal d'événements » (section Application, activée par défaut) coupe tout le suivi d'événements quand elle est décochée.
+- **Correction de l'offset** (au-dessus de « Inverser les yeux », désactivée par défaut) : à basse file d'images, l'écran décale parfois l'image d'un rafraîchissement (micro-désynchronisation des lunettes). Avec cette option, Nbeam règle alors la durée d'ouverture 1 µs en dessous de la valeur que vous avez réglée, puis de nouveau sur cette valeur à la fois suivante ; l'émetteur redémarre ainsi son offset. Seule la valeur que vous avez réglée est enregistrée. Avec des sous-images noires (BFI / balayage MPRT), le changement part dans la première image noire. Au plus deux fois par seconde. **Attention : ce paramètre peut créer de légers scintillements ; si vous y êtes sensible, désactivez-le et augmentez les images en file.**
+- **Suivi d'événements** : la touche O (3D active) enregistre les 3 dernières secondes du timing des lunettes dans `log\Nbeam_desync.log`, à presser juste après une désynchronisation pour voir quand elle s'est produite. Tous les fichiers de suivi (`Nbeam_ls.log`, `Nbeam_desync.log`, `Nbeam_emitter_input.log`, rapport de plantage) sont rangés dans le dossier **`log`**, à côté de l'exe. L'option « Enregistrer le journal d'événements » (section Application, activée par défaut) coupe tout le suivi d'événements quand elle est décochée.
 - Le **tearing** (option des images en file, 0 = tearing autorisé) donne la latence la plus basse en 2D ; le **contrôle du tearing** place la ligne de déchirure (0 = tout en haut, masquée).
-- **Beam racing** (avec les images en file à 0) : Nbeam lit la position réelle du balayage de l'écran et n'envoie l'image que là où la déchirure ne se voit pas. BFI et image simple : juste avant le retour vertical (aucune déchirure visible). CRT Beam Simulator (balayage haut-bas ou bas-haut) : aussi au-dessus des bandes allumées, pour une latence plus basse. L'**avance du tearing** compense le délai d'envoi (augmentez-la si une déchirure apparaît en haut de l'image). Occupe un cœur du processeur ; nécessite un écran dont la position de balayage est lisible et rien par-dessus la fenêtre de Nbeam. Fonction expérimentale. **Inactif en 3D** : les lunettes gardent la synchronisation classique.
+- **Beam racing** (avec les images en file à 0) : Nbeam lit la position réelle du balayage de l'écran et n'envoie l'image que là où la déchirure ne se voit pas. BFI et image simple : juste avant le retour vertical (aucune déchirure visible). Balayage MPRT (balayage haut-bas ou bas-haut) : aussi au-dessus des bandes allumées, pour une latence plus basse. L'**avance du tearing** compense le délai d'envoi (augmentez-la si une déchirure apparaît en haut de l'image). Occupe un cœur du processeur ; nécessite un écran dont la position de balayage est lisible et rien par-dessus la fenêtre de Nbeam. Fonction expérimentale. **Inactif en 3D** : les lunettes gardent la synchronisation classique.
 
 **2D vers 3D (IA)** : un modèle de profondeur estime la profondeur de chaque pixel pour créer les deux vues. Il faut placer à côté de l'exe `onnxruntime.dll`, `onnxruntime_providers_shared.dll` et un modèle `.onnx` (ex. `model_fp16.onnx`) ; ces fichiers ne sont exigés que pour cette source. Les bords gauche et droit sont masqués par des bandes noires droites (à la profondeur de l'écran) ; **Inverser les yeux** inverse aussi la profondeur ; l'**anti-halo** (jusqu'à 300 %) limite le débordement de la profondeur d'un objet sur le fond ; le **Tampon de carte** cale la profondeur sur l'image (voir Tampon d'image).
 
@@ -105,6 +110,8 @@ Les raccourcis sont les mêmes pour tous les profils : changer de profil ne les 
 
 Un **profil** est un fichier `.ini` du dossier `Profils\` qui mémorise tous les réglages de rendu, d'affichage et de 3D. On en change depuis le HUD ou le menu de l'icône de notification.
 
+Dans **Gérer les profils** : réglages actifs, création (**Créer un profil** puis **Enregistrer sous**, avec le bouton **Explorateur** juste à côté pour ouvrir le dossier des profils) et renommage. Le **Profil à régler** est la première ligne de **Test de mouvement**.
+
 Une **détection de profil** associe un programme (`.exe`) à un profil. Pour ajouter un programme, saisissez son nom d'exe, ou, depuis le programme lui-même, appuyez sur le raccourci **Ajouter le programme aux profils** (Ctrl+Maj+P par défaut) : son exe est ajouté à la liste. Ensuite :
 
 - quand le programme est détecté (fenêtre visible dans la barre des tâches, après un délai réglable), son profil est chargé ; il n'est capturé qu'une fois qu'il montre du mouvement (deux contrôles à 1 seconde d'écart : pas de capture sur une bannière de lancement) et le HUD se réduit. Tant que la fenêtre est illisible (masquée ou toute blanche) ou immobile (menu fixe, fenêtre de configuration graphique du jeu), rien n'est appliqué ;
@@ -122,11 +129,11 @@ Une **détection de profil** associe un programme (`.exe`) à un profil. Pour aj
 
 ## Tutos d'usage
 
-**Un jeu 60 images/s sur un écran 240 Hz, sans flou** : créez un profil, choisissez le CRT Beam Simulator ou le BFI simple, 4 sous-images, plafonnez le jeu à 60 images/s, puis liez le `.exe` du jeu à ce profil dans « Détection de profil ».
+**Un jeu 60 images/s sur un écran 240 Hz, sans flou** : créez un profil, choisissez le balayage MPRT ou le BFI, 4 sous-images, plafonnez le jeu à 60 images/s, puis liez le `.exe` du jeu à ce profil dans « Détection de profil ».
 
-**Un jeu en 3D (côte à côte)** : choisissez le format source SBS, l'émetteur de vos lunettes, puis réglez Sync Offset et Open Duration. En 3D, chaque œil reçoit la moitié des sous-images : visez 240 Hz ou plus pour garder du BFI/CRT en plus.
+**Un jeu en 3D (côte à côte)** : choisissez le format source SBS, l'émetteur de vos lunettes, puis réglez Sync Offset et Open Duration. En 3D, chaque œil reçoit la moitié des sous-images : visez 240 Hz ou plus pour garder du BFI / balayage MPRT en plus.
 
-**3D sans crosstalk (fantômes entre les yeux)** : cumulez la 3D avec le BFI ou le CRT Beam Simulator. Choisissez le format source (ex. SBS) et l'émetteur, puis activez le CRT Beam Simulator ou le BFI simple avec au moins 2 sous-images par œil (visez 240 Hz ou plus : 4 sous-images donnent 2 images pour chaque œil). Les images noires ou le balayage CRT effacent l'image de l'œil précédent avant que l'autre œil s'ouvre, ce qui réduit fortement les doubles images. Ajustez ensuite Open Duration (plus court = moins de fantômes) et Sync Offset en regardant à travers les lunettes.
+**3D sans crosstalk (fantômes entre les yeux)** : cumulez la 3D avec le BFI ou le balayage MPRT. Choisissez le format source (ex. SBS) et l'émetteur, puis activez le balayage MPRT ou le BFI avec au moins 2 sous-images par œil (visez 240 Hz ou plus : 4 sous-images donnent 2 images pour chaque œil). Les images noires ou le balayage effacent l'image de l'œil précédent avant que l'autre œil s'ouvre, ce qui réduit fortement les doubles images. Ajustez ensuite Open Duration (plus court = moins de fantômes) et Sync Offset en regardant à travers les lunettes.
 
 **Regarder une vidéo 2D en 3D** : choisissez « 2D vers 3D (IA) », puis réglez la force de la profondeur (2 à 4 % est confortable) et la convergence. Laissez **Tampon de carte** coché pour que la profondeur colle à l'image (la latence ajoutée n'a pas d'importance pour une vidéo) ; pour un jeu rapide, décochez-le si la latence gêne.
 
@@ -145,7 +152,7 @@ Une **détection de profil** associe un programme (`.exe`) à un profil. Pour aj
 Nbeam 3D Vision repose sur le travail d'autres auteurs, un grand merci à eux :
 
 - **[ShaderBeam](https://github.com/mausimus/ShaderBeam)** par **mausimus** (licence MIT) : la base de tout ce projet (capture, rendu, BFI, structure du logiciel).
-- **[CRT Beam Simulator](https://github.com/blurbusters/crt-beam-simulator)** par **Mark Rejhon (Blur Busters)** et **Timothy Lottes** : l'algorithme et les shaders de simulation CRT ([article](https://blurbusters.com/crt)).
+- **[CRT Beam Simulator](https://github.com/blurbusters/crt-beam-simulator)** par **Mark Rejhon (Blur Busters)** et **Timothy Lottes** : l'algorithme de simulation CRT dont dérive le balayage BFI via MPRT ([article](https://blurbusters.com/crt)).
 - **[Dear ImGui](https://github.com/ocornut/imgui)** par Omar Cornut et ses contributeurs : l'interface (HUD).
 - **[Inter](https://rsms.me/inter/)** par The Inter Project Authors (licence SIL OFL 1.1) : la police du HUD.
 - **[ONNX Runtime](https://github.com/microsoft/onnxruntime)** (Microsoft, MIT) et **[DirectML](https://github.com/microsoft/DirectML)** : l'inférence IA.

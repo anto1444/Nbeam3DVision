@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- stereo emitter manager
+Nbeam 3D Vision: shader effect overlay -- stereo emitter manager
 MIT License
 */
 
@@ -11,7 +11,7 @@ MIT License
 #include <cmath>
 #include <cstdlib>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 double EmitterManager::s_latencyQpc[16] = {};
@@ -48,7 +48,27 @@ bool EmitterManager::Start(StereoEmitterSettings* settings, const EmitterEnv& en
     m_traceStart     = 0;
     m_lastState      = 0;
     m_presentNoValid = false;
+    m_dHistN         = 0;
+    m_chgN           = 0;
+    m_lastChgQpc     = 0;
+    m_lastChgLogQpc  = 0;
+    m_unstable       = false;
+    m_unstableSince  = 0;
+    m_restartWanted  = false;
+    m_stuckWanted    = false;
+    m_stuckSeen      = -1;
+    m_stuckSinceQpc  = 0;
     m_lastComp       = -1;
+    m_frozenN        = 0;
+    m_prevMeasured   = 0;
+    m_prevLastRead   = 0;
+    m_lastZeroNudgeQpc = 0;
+    m_tentShift      = 0;
+    m_lastSentQpc    = 0;
+    m_lastSentEye    = -1;
+    m_repeatEye      = -1;
+    m_tentDelta      = 0;
+    m_tentFailedQpc  = 0;
     m_media          = nullptr;
     m_mediaTried     = false;
 
@@ -216,13 +236,45 @@ void EmitterManager::DrawOverlay(const EmitterFrame& f)
 // Offset correction: every micro-desync (screen delay moved, present grid jumped, Windows composition over) changes the Open Duration by 1 us,
 // alternately one below the value set by the user and back to it. The emitter takes the new duration at its next signal and restarts its
 // offset. Not more than twice a second, and not while Windows composes the picture (the delay then keeps going back and forth).
+// Called by the render thread with each frame. Signals wait in the queue but the sync thread has sent none for 3 s: it waits for a time that
+// cannot come (the frame statistics of Windows contradict themselves) or a write to the emitter is blocked. The glasses cannot work: Nbeam
+// asks to close with an error (restarting Windows solves it).
+void EmitterManager::StuckCheck(long long now)
+{
+    size_t queued;
+    {
+        std::lock_guard<std::mutex> l(m_mutex);
+        queued = m_queue.size();
+    }
+    const long long sent = m_sentCount.load();
+    if(queued == 0 || sent != m_stuckSeen)
+    {
+        m_stuckSeen     = sent;
+        m_stuckSinceQpc = now; // (something moves, or nothing waits: the time without a signal starts again)
+        return;
+    }
+    if(now - m_stuckSinceQpc > 3 * m_qpcFreq && !m_stuckWanted.load())
+    {
+        m_stuckWanted = true;
+        std::thread([queued]() { LsLog("glasses signals stuck for 3 s with %zu waiting: inconsistent emitter timing, Nbeam closes", queued); }).detach();
+    }
+}
+
 void EmitterManager::NudgeOffset(const char* why, int refreshes)
 {
-    if(!m_s || !m_s->offsetCorrection || m_lastComp == 0)
+    if(!m_s || !m_s->offsetCorrection || m_s->desyncMethod != 0 || m_lastComp == 0 || m_unstable) // (unstable screen delay: each correction would restart the offset again)
         return;
     const long long now = Qpc();
     if(m_lastShiftQpc != 0 && (double)(now - m_lastShiftQpc) < 0.5 * (double)m_qpcFreq)
         return;
+    // a correction with no missed refresh behind it (Windows composition over, present grid moved) is only worth it now and then: each one moves
+    // the Open Duration by 1 us, and they came in the hundreds (visible flicker)
+    if(refreshes == 0)
+    {
+        if(m_lastZeroNudgeQpc != 0 && (double)(now - m_lastZeroNudgeQpc) < 15.0 * (double)m_qpcFreq)
+            return;
+        m_lastZeroNudgeQpc = now;
+    }
     m_lastShiftQpc = now;
     // the value of the user (profile, slider, wheel) is the reference: the Open Duration goes one below it, then back to it, and so on, so that
     // reloading a profile or many corrections never move the glasses away from the value that was set
@@ -237,6 +289,78 @@ void EmitterManager::NudgeOffset(const char* why, int refreshes)
     m_deferSince        = now;
     Rec('N', dir, refreshes);
     LsLog("offset correction (%s, %d refresh(es)): Open Duration %.0f us (set value %.0f us)", why, refreshes, n.openDurationUs, n.openBase);
+}
+
+// a delay is taken in an unstable state when at least 6 of the last 8 readings have it
+bool EmitterManager::DeltaStable(long long delta) const
+{
+    if(m_dHistN < 8)
+        return false;
+    int n = 0;
+    for(int i = 0; i < 8; i++)
+        n += m_dHist[i] == delta ? 1 : 0;
+    return n >= 6;
+}
+
+static void LsLogAsync(std::string line)
+{
+    std::thread([line]() { LsLog("%s", line.c_str()); }).detach(); // (the log is never written on the render thread)
+}
+
+// An accepted change of the screen delay (not announced, not while Windows composes). 4 changes within 3 s: the delay is unstable.
+void EmitterManager::NoteDeltaChange(long long from, long long to)
+{
+    if(m_lastComp == 0)
+        return;
+    const long long now = Qpc();
+    m_chg[m_chgN++ % 8] = now;
+    m_lastChgQpc        = now;
+    const bool two  = m_chgN >= 2 && now - m_chg[(m_chgN - 2) % 8] < 3 * m_qpcFreq;
+    const bool four = m_chgN >= 4 && now - m_chg[(m_chgN - 4) % 8] < 3 * m_qpcFreq;
+    if(four && !m_unstable)
+    {
+        m_unstable      = true;
+        m_unstableSince = now;
+        Rec('U');
+        LsLogAsync("screen delay unstable (4 changes within 3 s): offset correction paused");
+    }
+    // each change of a moving delay is written: the sense (+ / -), the delay before and after, the length of the queue
+    if(two && (m_lastChgLogQpc == 0 || now - m_lastChgLogQpc >= m_qpcFreq / 4))
+    {
+        m_lastChgLogQpc = now;
+        char buf[160];
+        snprintf(buf, sizeof(buf), "screen delay %+lld refresh(es): delay %lld -> %lld, queue %d%s", to - from, from, to, m_env.queuedFrames, m_unstable ? " (unstable)" : "");
+        LsLogAsync(buf);
+    }
+}
+
+// Every frame: the delay is stable again after 3 s without a change (or while Windows composes the picture); unstable for more than 5 s: the
+// renderer is asked to restart, as the user does by hand (at most twice a minute)
+void EmitterManager::CheckUnstable(long long now)
+{
+    if(!m_unstable)
+        return;
+    if(m_lastComp == 0 || now - m_lastChgQpc > 3 * m_qpcFreq)
+    {
+        m_unstable      = false;
+        m_unstableSince = 0;
+        LsLogAsync("screen delay stable again: offset correction on");
+        return;
+    }
+    if(now - m_unstableSince < 5 * m_qpcFreq)
+        return;
+    static long long s_restartQpc[2] = { 0, 0 };
+    if(s_restartQpc[0] == 0 || now - s_restartQpc[0] > 60 * m_qpcFreq)
+    {
+        s_restartQpc[0] = s_restartQpc[1];
+        s_restartQpc[1] = now;
+        m_restartWanted = true;
+        Rec('R');
+        LsLogAsync("screen delay keeps moving for more than 5 s: the renderer is asked to restart");
+    }
+    else
+        LsLogAsync("screen delay keeps moving: no restart (2 already within a minute)");
+    m_unstableSince = now; // (the next try, if it still moves, 5 s later)
 }
 
 bool EmitterManager::ScanoutTime(long long& vblankQpc)
@@ -268,14 +392,42 @@ bool EmitterManager::ScanoutTime(long long& vblankQpc)
     }
     else if(FAILED(sc->GetLastPresentCount(&last)) || FAILED(sc->GetFrameStatistics(&st)))
         return false;
-    if(st.SyncQPCTime.QuadPart == 0 || st.PresentCount == 0)
+    if(st.SyncQPCTime.QuadPart == 0)
+        return false;
+    m_vbSyncQpc = st.SyncQPCTime.QuadPart; // (a real refresh, even when the present counters are of no use: they were absurd for hours on a direct display)
+    if(st.PresentCount == 0)
         return false;
     // statistics that no longer follow the presents (Windows composes the picture and drops or holds frames: the last measured present is
     // far behind): the screen time would be extrapolated from them and drift a little more at every frame, then jump back when they are
     // updated (the glasses timing swept back and forth every second until the renderer was restarted). The classic timing is used meanwhile.
-    if((long long)last - (long long)st.PresentCount > 12)
+    // (frozen = the measured present did not move for 8 frames in a row while new presents were made; or the gap grew far beyond the queue.
+    // A fixed gap of 12 presents was reached by a deep queue on a fast display: the exact timing was lost for good after a rebuild of the 3D.)
+    if(st.PresentCount != m_prevMeasured)
+        m_frozenN = 0;
+    else if(last != m_prevLastRead)
+        m_frozenN++;
+    m_prevMeasured = st.PresentCount;
+    m_prevLastRead = last;
+    const long long lag = (long long)last - (long long)st.PresentCount;
+    if(m_frozenN >= 8 || lag > (std::max)(12 + 8LL * std::clamp(m_env.queuedFrames, 0, 15), (long long)(0.2 * (m_env.vsyncRateHz > 1.0 ? m_env.vsyncRateHz : 60.0))))
     {
         m_trace.staleStats++; Rec('T');
+        if(m_tentShift != 0)
+        {
+            ShiftWaiting(-m_tentShift); // (a first reading nobody confirmed)
+            m_tentShift     = 0;
+            m_tentFailedQpc = Qpc();
+        }
+        // (told once in a while, with the numbers: they say whether the statistics are frozen or the queue is just deep)
+        static std::atomic<long long> s_lastStaleLog { 0 };
+        const long long nowQ = Qpc();
+        if(nowQ - s_lastStaleLog.load() > 5 * m_qpcFreq)
+        {
+            s_lastStaleLog = nowQ;
+            char buf[200];
+            snprintf(buf, sizeof(buf), "statistics behind the presents: present %u, measured %u (%lld behind, frozen for %d frames), screen delay %lld, queue %d: classic timing meanwhile", (unsigned)last, (unsigned)st.PresentCount, lag, m_frozenN, m_delta, m_env.queuedFrames);
+            LsLogAsync(buf);
+        }
         m_lastPresentNo  = last;
         m_presentNoValid = true;
         return false;
@@ -321,20 +473,72 @@ bool EmitterManager::ScanoutTime(long long& vblankQpc)
     // delay (in refreshes) between a present and its refresh. A new value is taken once it is read twice in a row: a single odd reading
     // (statistics read while Windows changes how it shows the picture) no longer moves the glasses back and forth.
     const long long delta = (long long)st.PresentRefreshCount - (long long)st.PresentCount;
+    m_dHist[m_dHistN++ % 8] = delta;
+    CheckUnstable(Qpc());
+    // A real change of the screen delay is a few refreshes (queue, missed refresh), dozens at most. A jump of thousands comes from statistics that contradict
+    // themselves (seen: -3947, +62784947 refreshes) or from a reference taken while they did: the classic timing is used meanwhile and the
+    // waiting signals are left alone. Once the same value fills 6 of the last 8 readings it is the new reference, without any correction
+    // (a restart of the 3D emitters, a new swap chain...): the exact screen time is used again right away.
+    // (more than half a second worth of refreshes: a rebuild of the 3D, a switch between direct and composed display, a long stall of the render
+    // thread move the delay by dozens of refreshes on a fast display, 16 refreshes are only 33 ms at 480 Hz)
+    const long long maxJump = (std::max)(64LL, (long long)(0.5 * (m_env.vsyncRateHz > 1.0 ? m_env.vsyncRateHz : 60.0)));
+    if(m_haveDelta && std::llabs(delta - m_delta) > maxJump)
+    {
+        int same = 0;
+        for(int i = 0; i < 8 && i < m_dHistN; i++)
+            same += m_dHist[i] == delta ? 1 : 0;
+        if(same < 6)
+        {
+            m_trace.staleStats++; Rec('T', (int)std::clamp<long long>(delta - m_delta, -100000, 100000));
+            m_lastPresentNo  = last;
+            m_presentNoValid = true;
+            return false;
+        }
+        m_haveDelta = false;
+        m_dHistN    = 0;
+        Rec('Z', (int)std::clamp<long long>(delta - m_delta, -100000, 100000));
+        char buf[200];
+        snprintf(buf, sizeof(buf), "screen delay %+lld refreshes at once and stayed there: taken as the new reference (present %u, measured %u)", delta - m_delta, (unsigned)last, (unsigned)st.PresentCount);
+        LsLogAsync(buf);
+    }
+    if(m_tentShift != 0 && delta != m_tentDelta)
+    {
+        ShiftWaiting(-m_tentShift); // the first reading was an odd one (or the delay moved again): back
+        m_tentShift     = 0;
+        m_tentFailedQpc = Qpc();
+    }
     if(m_haveDelta && delta != m_delta)
     {
         const bool announced = m_expectShift != 0 && delta - m_delta == m_expectShift && Qpc() < m_expectUntilQpc; // (the queue was changed on purpose)
-        if(!announced && delta != m_deltaCand)
+        // (while the delay is unstable a new value must also fill most of the last readings: the most frequent value, not the last two)
+        if(!announced && (delta != m_deltaCand || (m_unstable && !DeltaStable(delta))))
         {
             m_deltaCand = delta;
             m_trace.deltaFiltered++; Rec('f');
+            // A real missed refresh is seen on the first reading, and the signal of the frame that just reached the screen can be due before the
+            // second one (2 ms later at 480 Hz): it went out one to three refreshes too early and the emitter needed seconds to find its offset again.
+            // The waiting signals are moved at once, and moved back if the next reading does not confirm (a small change only, not on a composed picture).
+            if(!announced && m_lastComp != 0 && !m_unstable && m_tentShift == 0 && std::llabs(delta - m_delta) <= 8 && (m_tentFailedQpc == 0 || Qpc() - m_tentFailedQpc > 5 * m_qpcFreq))
+            {
+                const double maxS = m_periodUs * m_qpcFreq / 1e6;
+                m_tentShift = (long long)std::clamp((double)(delta - m_delta) * m_refreshQpc, -maxS, maxS);
+                m_tentDelta = delta;
+                ShiftWaiting(m_tentShift);
+            }
             vblankQpc = 0;
-            const long long refresh0 = (long long)last + m_delta; // (the value in use stays for this frame)
+            const long long refresh0 = (long long)last + (m_tentShift != 0 ? delta : m_delta); // (the value in use stays for this frame, unless the waiting signals were just moved to the new one)
             m_lastSyncQpc   = st.SyncQPCTime.QuadPart;
             m_lastSyncCount = (long long)st.SyncRefreshCount;
             vblankQpc       = st.SyncQPCTime.QuadPart + (long long)((double)(refresh0 - (long long)st.SyncRefreshCount) * m_refreshQpc);
             m_lastPresentNo  = last;
             m_presentNoValid = true;
+            // (same check as for a normal reading: the delay still in use can be a wrong one, left by statistics that were absurd before)
+            const long long aheadF = vblankQpc - Qpc();
+            if(aheadF < -(long long)nominal || aheadF > (long long)(nominal * 12.0))
+            {
+                m_trace.badScanout++; Rec('X');
+                return false;
+            }
             return true;
         }
         if(announced)
@@ -346,7 +550,10 @@ bool EmitterManager::ScanoutTime(long long& vblankQpc)
         m_trace.lastDelta = delta - m_delta;
         Rec('M', (int)(delta - m_delta), m_lastComp);
         if(!announced)
+        {
+            NoteDeltaChange(m_delta, delta);
             NudgeOffset("screen delay", (int)(delta - m_delta));
+        }
         // The frames now reach the screen (delta - m_delta) refreshes later (a refresh missed: a sub-frame shown twice) or earlier. The signals
         // already waiting were timed on the old screen times: with a negative Sync Offset the signal of the next eye was planned one eye period
         // after the start of this eye, and this eye now lasts one refresh more, so the glasses opened too early until the next eye. They are moved
@@ -354,19 +561,28 @@ bool EmitterManager::ScanoutTime(long long& vblankQpc)
         // (not more than one eye period either way: a bigger jump is a reading error, and not while Windows composes the picture, where the
         // delay keeps going back and forth)
         const double    maxShift = m_periodUs * m_qpcFreq / 1e6;
-        const long long shift    = (long long)std::clamp((double)(delta - m_delta) * m_refreshQpc, -maxShift, maxShift);
-        if(m_lastComp != 0)
+        long long       shift    = (long long)std::clamp((double)(delta - m_delta) * m_refreshQpc, -maxShift, maxShift);
+        if(m_tentShift != 0 && delta == m_tentDelta)
         {
-            std::lock_guard<std::mutex> l(m_mutex);
-            for(auto& q : m_queue)
+            shift -= m_tentShift; // (already moved on the first reading)
+            m_tentShift = 0;
+        }
+        if(shift != 0)
+            ShiftWaiting(shift);
+        // Method 1 of the Offset correction: the signal sent just before this reading was planned on the old delay: it went out too early by the same number of refreshes.
+        if(!announced && m_s && m_s->offsetCorrection && m_s->desyncMethod == 1 && m_lastComp != 0 && !m_unstable && delta > m_delta && delta - m_delta <= 8 && m_refreshQpc > 0.0)
+        {
+            const long long now  = Qpc();
+            const long long sent = m_lastSentQpc.load();
+            if(sent != 0 && (double)(now - sent) < 3.0 * m_refreshQpc && m_lastSentEye.load() >= 0 && m_repeatEye.load() < 0)
             {
-                q.dueQpc += shift;
-                m_trace.signalsMoved++;
+                m_repeatDue = (std::max)(now, sent + (long long)((double)(delta - m_delta) * m_refreshQpc));
+                m_repeatEye = m_lastSentEye.load();
+                m_cv.notify_one();
+                char buf[160];
+                snprintf(buf, sizeof(buf), "early signal sent again: +%lld refresh(es), %.1f ms after the first one", delta - m_delta, (double)(m_repeatDue.load() - sent) * 1000.0 / (double)m_qpcFreq);
+                LsLogAsync(buf);
             }
-            long long cur = m_curDue.load();
-            if(cur != 0 && m_curDue.compare_exchange_strong(cur, cur + shift))
-                m_trace.signalsMoved++;
-            m_cv.notify_one();
         }
     }
     m_deltaCand = delta;
@@ -415,11 +631,52 @@ long long EmitterManager::GridPresent(long long tp, double periodQpc)
         m_gridQpc  = (double)tp; // a lasting change (new mode...): the grid moves to it
         m_gridMiss = 0;
         m_trace.gridJumps++; Rec('J');
-        NudgeOffset("grid jump", 0);
+        // (the timing follows the real refreshes, not the moment Present returns: the glasses did not move, nothing to correct)
+        if(m_phaseRefR <= 0.0 && m_lastState != 1)
+            NudgeOffset("grid jump", 0);
     }
     else
         m_gridQpc = predicted; // Present late (overload): the regular time is kept, the glasses do not move
     return (long long)m_gridQpc;
+}
+
+// The signals waiting to be sent are moved (a frame reached the screen later or earlier than planned). Not while Windows composes the picture,
+// where the delay keeps going back and forth.
+void EmitterManager::ShiftWaiting(long long shift)
+{
+    if(m_lastComp == 0)
+        return;
+    std::lock_guard<std::mutex> l(m_mutex);
+    for(auto& q : m_queue)
+    {
+        q.dueQpc += shift;
+        m_trace.signalsMoved++;
+    }
+    long long cur = m_curDue.load();
+    if(cur != 0 && m_curDue.compare_exchange_strong(cur, cur + shift))
+        m_trace.signalsMoved++;
+    m_cv.notify_one();
+}
+
+// The moment Present returns has an arbitrary phase against the refreshes, and it moves after a rebuild, a change of the queue or a lost
+// lock of the grid: the classic timing (grid + delay) moved with it, and the Sync Offset had to be set again. The phase is taken against the real
+// refreshes once, and only its CHANGE is taken out (never more than half a refresh either way).
+double EmitterManager::GridPhaseShift(long long grid, double refresh)
+{
+    if(m_vbSyncQpc == 0 || refresh <= 0.0)
+        return 0.0;
+    double phi = std::fmod((double)(grid - m_vbSyncQpc), refresh);
+    if(phi < 0.0)
+        phi += refresh;
+    if(m_phaseRefR <= 0.0 || std::fabs(m_phaseRefR - refresh) > 0.01 * refresh)
+    {
+        m_phaseRef  = phi; // first time, or another display mode
+        m_phaseRefR = refresh;
+        return 0.0;
+    }
+    double d = phi - m_phaseRef;
+    d -= refresh * std::round(d / refresh);
+    return d;
 }
 
 void EmitterManager::AnnounceQueue(int oldQueue, int newQueue)
@@ -460,7 +717,7 @@ void EmitterManager::AfterPresent(Eye eye, int subFrameNo)
     {
         // classic timing: the grid Present time plus the learned delay (else about one refresh per queued frame)
         const double lat = s_latencyQpc[q] > 0.0 ? s_latencyQpc[q] : (double)q * nominal;
-        presentQpc       = grid + (long long)lat;
+        presentQpc       = grid + (long long)lat - (long long)GridPhaseShift(grid, m_refreshQpc > 0.0 ? m_refreshQpc : nominal);
         if(m_s)
             m_s->scanoutSyncState = -1;
         if(m_lastState == 1)
@@ -471,6 +728,7 @@ void EmitterManager::AfterPresent(Eye eye, int subFrameNo)
         m_lastState = -1;
     }
     TraceTick(tp);
+    StuckCheck(tp);
 
     bool hardware = false;
     for(auto& e : m_emitters)
@@ -545,7 +803,7 @@ void EmitterManager::Rec(char type, int a, int b, int c)
 }
 
 // O key: the events of the last 3 seconds before the press (frame by frame, signal by signal) and the lines of the log of the same moment, written
-// to Nbeam_desync.log next to the program. Each line has the clock time, and the time before the press.
+// to Nbeam_desync.log in the log folder next to the program. Each line has the clock time, and the time before the press.
 void EmitterManager::DumpRecent(long long pressQpc)
 {
     if(!g_logEnabled)
@@ -566,7 +824,7 @@ void EmitterManager::DumpRecent(long long pressQpc)
     char                     buf[256];
     snprintf(buf, sizeof(buf), "=== O pressed at %02d:%02d:%02d.%03d: last 3 s, %d events (F = frame queued: eye, signal planned after the screen time (us), queue; S = signal sent: eye, late (us), write (us); "
                                "D = signal dropped, late (us); Q = queue full; M = screen delay moved (refreshes), display mode; L/B = statistics lost / back; T = stale statistics; X = bad screen time; "
-                               "J = present grid moved; P = present count gap; C = display mode change; f = odd screen delay ignored) | sync offset %.0f us, eye period %.0f us ===\r\n",
+                               "J = present grid moved; P = present count gap; C = display mode change; f = odd screen delay ignored; Z = lasting jump of the delay taken as reference; U = delay unstable, correction paused; R = renderer restart asked; Y = early signal sent again) | sync offset %.0f us, eye period %.0f us ===\r\n",
              st.wHour, st.wMinute, st.wSecond, st.wMilliseconds, (int)ev.size(), m_s ? (double)m_s->syncOffsetUs : 0.0, m_periodUs);
     out += buf;
     for(const auto& l : lines)
@@ -580,12 +838,8 @@ void EmitterManager::DumpRecent(long long pressQpc)
         snprintf(buf, sizeof(buf), "  %02d:%02d:%02d.%03d  %c  %d %d %d\r\n", (int)(ms / 3600000), (int)(ms / 60000 % 60), (int)(ms / 1000 % 60), (int)(ms % 1000), e.type, e.a, e.b, e.c);
         out += buf;
     }
-    wchar_t path[MAX_PATH * 2] = {};
-    GetModuleFileNameW(nullptr, path, MAX_PATH * 2);
-    std::wstring p(path);
-    const auto   slash = p.find_last_of(L"\\/");
-    p                  = (slash == std::wstring::npos ? std::wstring() : p.substr(0, slash + 1)) + L"Nbeam_desync.log";
-    FILE* f            = nullptr;
+    const std::wstring p = Options::LogFile(L"Nbeam_desync.log").wstring();
+    FILE*              f = nullptr;
     if(_wfopen_s(&f, p.c_str(), L"ab") == 0 && f)
     {
         fwrite(out.data(), 1, out.size(), f);
@@ -629,6 +883,26 @@ void EmitterManager::TraceTick(long long now)
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
 
+// Method 1 of the Offset correction: the signal that went out too early because a missed refresh was only seen afterwards is sent again
+// at its right time. Called by the sync thread: waiting for it (idle thread), or just sending it when its time has come (busy waiting for the next signal).
+void EmitterManager::SendRepeat(bool wait)
+{
+    const int eye = m_repeatEye.load();
+    if(eye < 0)
+        return;
+    const long long due = m_repeatDue.load();
+    while(wait && !m_stop && Qpc() < due)
+        YieldProcessor();
+    if(Qpc() < due)
+        return;
+    if(m_repeatEye.exchange(-1) < 0)
+        return;
+    for(auto& e : m_emitters)
+        if(!e->IsOnScreen())
+            e->Sync((Eye)eye);
+    Rec('Y', eye);
+}
+
 void EmitterManager::ThreadProc()
 {
     MmcssGames mmcss; // the glasses signals keep their timing while the game loads / compiles shaders
@@ -650,18 +924,35 @@ void EmitterManager::ThreadProc()
         Request r;
         {
             std::unique_lock<std::mutex> l(m_mutex);
-            m_cv.wait(l, [&] { return m_stop || !m_queue.empty(); });
+            m_cv.wait(l, [&] { return m_stop || !m_queue.empty() || m_repeatEye.load() >= 0; });
             if(m_stop)
                 return;
+            if(m_queue.empty())
+            {
+                l.unlock();
+                SendRepeat(true);
+                continue;
+            }
             r = m_queue.front();
             m_queue.pop_front();
             m_curDue = r.dueQpc; // (the signal being waited for can still be moved, see ScanoutTime)
+        }
+        // a time more than a second ahead cannot be right (the whole queue would wait behind it): the request is given up
+        if(r.dueQpc - Qpc() > m_qpcFreq)
+        {
+            m_curDue = 0;
+            if(r.applyTimings)
+                m_applyQueued = false;
+            m_droppedSignals++;
+            Rec('D', -1);
+            continue;
         }
         // wait until its time; the time is read again while waiting (moved when a frame reached the screen later than planned)
         for(;;)
         {
             if(m_stop)
                 return;
+            SendRepeat(false);
             const long long compQpc     = (long long)(m_writeCompUs.load() * m_qpcFreq / 1000000);
             const long long due         = m_curDue.load() - compQpc;
             const double    remainingUs = (due - Qpc()) * 1000000.0 / m_qpcFreq;
@@ -681,7 +972,7 @@ void EmitterManager::ThreadProc()
                     Sleep(1);
             }
             else if(!timer.h && remainingUs > 2500)
-                Sleep(1); // timeBeginPeriod(1) is active in ShaderBeam
+                Sleep(1); // timeBeginPeriod(1) is active in Nbeam
             else
                 YieldProcessor();
         }
@@ -718,6 +1009,9 @@ void EmitterManager::ThreadProc()
                 e->Sync(r.eye);
         const int writeUs = (int)((Qpc() - w0) * 1000000 / m_qpcFreq);
         Rec('S', (int)r.eye, lateUs, writeUs);
+        m_lastSentEye = (int)r.eye;
+        m_lastSentQpc = Qpc();
+        m_sentCount++;
         m_writeSumUs += writeUs;
         m_writeCount++;
         int curMax = m_writeMaxUs.load();
@@ -732,4 +1026,4 @@ void EmitterManager::ThreadProc()
     }
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

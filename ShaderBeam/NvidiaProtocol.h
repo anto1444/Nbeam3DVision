@@ -10,6 +10,7 @@ MIT License
 
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
@@ -19,7 +20,7 @@ MIT License
 #include <string>
 #include <vector>
 
-namespace ShaderBeam::Nv
+namespace Nbeam::Nv
 {
 
 // ---- USB identification ----------------------------------------------------------------------
@@ -44,6 +45,7 @@ struct Timings
 {
     float syncRateHz;     // eye switch rate in Hz; |value| used, 0 -> period treated as 1 us
     float openDurationUs; // config +8
+    float periodMarginPct { 0.0f }; // the free-running period of the emitter is this much longer than 1 / syncRateHz (experiment)
 };
 
 // cvttss2si semantics: truncate toward zero, 0x80000000 on overflow / NaN
@@ -63,7 +65,7 @@ inline void PutLE32(std::vector<uint8_t>& out, uint32_t v)
 inline std::vector<std::vector<uint8_t>> BuildProgrammingPackets(const Timings& t)
 {
     const float rate   = std::fabs(t.syncRateHz);
-    const float period = rate == 0.0f ? 1.0f : 1000000.0f / rate; // microseconds
+    const float period = rate == 0.0f ? 1.0f : 1000000.0f / rate * (1.0f + (std::max)(0.0f, t.periodMarginPct) / 100.0f); // microseconds
     const float one    = 1.0f;
 
     const int32_t vW      = CvtTruncSS2SI(one); // fourth timing value: fixed at 0 (no effect)
@@ -94,4 +96,4 @@ inline std::vector<std::vector<uint8_t>> BuildProgrammingPackets(const Timings& 
     return p;
 }
 
-} // namespace ShaderBeam::Nv
+} // namespace Nbeam::Nv

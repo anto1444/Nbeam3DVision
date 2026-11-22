@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -9,7 +9,7 @@ MIT License
 
 #include "ShaderProfile.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class SinglePassShaderProfile : public ShaderProfile
@@ -35,4 +35,4 @@ private:
     winrt::com_ptr<ID3D11SamplerState> m_samplerState;
     winrt::com_ptr<ID3D11Buffer>       m_constantBuffer;
 };
-} // namespace ShaderBeam
+} // namespace Nbeam

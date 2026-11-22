@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -18,7 +18,7 @@ MIT License
 #include <atomic>
 #include <thread>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 static double NowMs()
@@ -240,8 +240,9 @@ void Renderer::ReloadLive()
     m_appliedSubFrames         = m_options.subFrames;
     m_renderContext.frameNo    = 0;
     m_renderContext.subFrameNo = 0;
-    PhaseReset(0);
-    m_options.phaseCorrections = 0;
+    m_phase.Reset(0);
+    m_phase.corrections = 0;
+    PhaseApply();
     ResetModeState();
     StartEmitters();
     m_ui.ShowBanner();
@@ -437,7 +438,8 @@ void Renderer::ApplySubFramesLive()
     m_appliedSubFrames         = m_options.subFrames;
     m_renderContext.frameNo    = 0;
     m_renderContext.subFrameNo = 0;
-    PhaseReset(0); // (the phase is searched again)
+    m_phase.Reset(0); // (the phase is searched again)
+    PhaseApply();
     m_shaderManager.SubFramesChanged(m_renderContext);
     m_emitters.SetSubFrames(m_options.subFrames);
 }
@@ -450,6 +452,10 @@ void Renderer::Render(bool present, bool ui)
     // eye of the content frame being rendered (before the frame counters advance)
     if(m_emitters.Poll())
         m_ui.m_emitterStatus = m_emitters.Status(); // the emitters opened by their own thread are ready
+    if(m_emitters.TakeRestartRequest())
+        PostMessage(m_options.outputWindow, WM_USER_RESTART, NB_RESTART_TAG, 0); // the screen delay keeps moving: restart, as by hand
+    if(m_emitters.TakeStuckRequest())
+        PostMessage(m_options.outputWindow, WM_USER_EMITTERSTUCK, 0, 0); // the glasses signals are stuck: error, Nbeam closes
     const int  emitFrameNo    = m_renderContext.frameNo;
     const int  emitSubFrameNo = m_renderContext.subFrameNo;
     const bool emit           = present && m_emitters.Active() && !EffectsHidden();
@@ -548,21 +554,19 @@ void Renderer::Render(bool present, bool ui)
     m_renderContext.deviceContext->OMSetRenderTargets(1, null, NULL);
 
     // BFI phase lock: a move is made of cycles one refresh shorter (their last subframe dropped), never more than one refresh per cycle;
-    // the light of such a cycle is lowered (Simple BFI) so the brightness stays even (ApplyCaptureTone)
+    // the shader of the cycle works for the shorter length (the sweep) and lowers its light (BFI) so the brightness stays even
     m_renderContext.subFrameNo++;
-    if(m_phaseShortCycle && m_renderContext.subFrameNo >= m_options.subFrames - 1)
+    if(m_phase.shortCycle && m_renderContext.subFrameNo >= m_options.subFrames - 1)
         m_renderContext.subFrameNo = m_options.subFrames;
     if(m_renderContext.subFrameNo >= m_options.subFrames)
     {
         m_renderContext.frameNo++;
         m_renderContext.subFrameNo = 0;
-        m_phaseShortCycle          = false;
-        if(m_phaseSkip > 0 && m_options.subFrames > 1)
-        {
-            m_phaseSkip--;
-            m_phaseShortCycle = true;
-            m_phaseGain       = PhaseShortCycleGain();
-        }
+        if(m_options.subFrames > 1)
+            m_phase.BeginCycle();
+        else
+            m_phase.shortCycle = false;
+        PhaseApply();
     }
 
     // beam racing: where the tear may land in this frame (CRT bands); full-frame effects, 3D, split screen and on-screen emitters: vblank
@@ -857,12 +861,6 @@ void Renderer::ApplyCaptureTone()
     const float black = m_options.captureBlack;
     const float grey  = m_options.captureGrey;
     float       gain  = m_options.captureGain * m_uniformGain; // (Auto: Uniform brightness)
-    if(m_phaseShortCycle && m_phaseGain < 0.9995f && !EffectsOff())
-    {
-        // phase lock: the light of a shortened cycle, in linear light; the picture is gamma encoded unless sRGB hardware or HDR (float)
-        const bool linear = m_options.hardwareSrgb || m_options.format == DXGI_FORMAT_R16G16B16A16_FLOAT;
-        gain *= linear ? m_phaseGain : powf(m_phaseGain, 1.0f / 2.2f);
-    }
     const bool  tone  = black > 0.0005f || fabsf(grey - 1.0f) > 0.005f || fabsf(gain - 1.0f) > 0.0005f;
     if(!tone)
         return;
@@ -944,7 +942,7 @@ float4 PStone(float4 pos : SV_Position) : SV_Target
 // With tearing (queue 0) the flip happens at once, wherever the scanout is: the tear lands there. Beam racing reads the real scanout
 // line (D3DKMTGetScanLine, gdi32) and sends the flip only when the tear will be invisible for the current effect:
 //  - BFI, 3D, plain picture: in the vertical blank (the flip is sent `beamLead` % of a refresh before it, to make up for its delay);
-//  - CRT Beam Simulator (vertical scan): anywhere above the bands lit by the previous and the new frame (lower latency), else the vblank.
+//  - MPRT sweep (vertical scan): anywhere above the bands lit by the previous and the new frame (lower latency), else the vblank.
 // One flip per refresh. If the scanout cannot be read, the normal tearing path is used.
 namespace
 {
@@ -1336,7 +1334,7 @@ void Renderer::UpdateSubFramesMode()
         m_options.subFrames = next;
     m_ui.m_flickerHz = m_bypass ? 0.0f : (float)(m_options.vsyncRate / (std::max)(1, m_options.subFrames));
 
-    // Uniform brightness (Simple BFI): the brightness of the BFI is (clear + dark x (1 - gain vs blur)) / SubFrames, so it changes with
+    // Uniform brightness (BFI): the brightness of the BFI is (clear + dark x (1 - gain vs blur)) / SubFrames, so it changes with
     // the SubFrames. The picture is kept at the brightness the BFI has at the SubFrames threshold (the darkest point of the range: the
     // higher the threshold, the darker), by dimming every other case (fewer SubFrames, doubled or disabled BFI above it).
     if(m_options.uniformBrightness && !EffectsOff()) // effects hidden: the picture as it is
@@ -1406,7 +1404,7 @@ Eye Renderer::StereoImageEye()
 // ---- BFI phase lock ---------------------------------------------------------------------------------------------------------------
 // A game frame is only taken at the start of a BFI cycle (subframe 0): one that arrives just after it waits almost a whole cycle. The
 // cycle can only be moved by whole refreshes: a move is made of cycles one refresh shorter (their last subframe dropped, one refresh per
-// cycle at most, their light lowered with Simple BFI so the brightness stays even); one refresh later = N - 1 shorter cycles,
+// cycle at most, their light lowered with BFI so the brightness stays even); one refresh later = N - 1 shorter cycles,
 // so the best position is computed from the real spread of the frame arrivals, micro-variations of the game included:
 //  - each frame gives its phase: how long before the start of a cycle it arrived (its wait, modulo the cycle);
 //  - for every possible shift (0 to SubFrames - 1 refreshes earlier) the wait of every frame is predicted: taken by the same cycle if it
@@ -1415,7 +1413,7 @@ Eye Renderer::StereoImageEye()
 //  - the cheapest shift is applied if it saves at least half a refresh. No search, no trial and error: one move at most per measure
 //    (one measure every second);
 //  - a frame that just missed its cycle (game slower than the cycle, drifting to the edge) moves the cycle one refresh later at once.
-// 2D only, captured process, no buffer in use (hybrid: paused while the buffer is in use, the position kept); with BFI auto the SubFrames
+// 2D only, captured process, no buffer in use; with BFI auto the SubFrames
 // may change: the measure starts again for the new cycle.
 bool Renderer::PhaseLockActive() const
 {
@@ -1423,14 +1421,9 @@ bool Renderer::PhaseLockActive() const
            m_options.subFrames > 1 && !Bypassing();
 }
 
-// Light of a cycle one refresh shorter, so the brightness stays even: a cycle of N refreshes gives E(N) = clear + dark x (1 - gain vs
-// blur); the shortened one (its last subframe dropped) must give E(N) x (N - 1) / N over its N - 1 refreshes. Never above 1 (the
-// light can only be lowered). Simple BFI only: the CRT Beam Simulator keeps its light (its scan is not spread over the shorter cycle).
+// Light of a cycle one refresh shorter (Simple BFI; the MPRT sweep spreads its scan over the shorter cycle and needs none): PhaseLock.h.
 float Renderer::PhaseShortCycleGain() const
 {
-    const int N = m_options.subFrames;
-    if(N < 2)
-        return 1.0f;
     int   clearFrames = -1;
     float darkGain    = 1.0f;
     for(const auto& p : m_shaderManager.GetParameterInfos())
@@ -1440,150 +1433,32 @@ float Renderer::PhaseShortCycleGain() const
         else if(p.type == ParameterType::ParamFloat && p.name == "Gain vs Blur")
             darkGain = *p.p.fp.value;
     }
-    if(clearFrames <= 0)
-        return 1.0f; // not the Simple BFI
-    const float dark   = 1.0f - std::clamp(darkGain, 0.0f, 1.0f);
-    auto        energy = [&](int n) { const int c = (std::min)(clearFrames, n); return (float)c + (float)(n - c) * dark; };
-    const float full   = energy(N);
-    const float shortE = energy(N - 1);
-    if(shortE <= 0.0f)
-        return 1.0f;
-    return std::clamp(full * (float)(N - 1) / (float)N / shortE, 0.0f, 1.0f);
+    const bool linear = m_options.hardwareSrgb || m_options.format == DXGI_FORMAT_R16G16B16A16_FLOAT;
+    return PhaseShortCycleGainFor(m_options.subFrames, clearFrames, darkGain, linear);
 }
 
-void Renderer::PhaseReset(int state)
+// the HUD values, and the cycle being shown for the shaders
+void Renderer::PhaseApply()
 {
-    m_phaseLastSample = 0.0;
-    m_phaseAges.clear();
-    m_phaseWindowStart   = 0.0;
-    m_phaseIgnoreUntil   = 0.0;
-    m_phaseGuard         = -1.0;
-    m_phaseFirst         = true;
-    m_phaseSkip          = 0; // (a shortened cycle already started ends normally)
-    m_options.phaseState = state;
+    m_options.phaseState       = m_phase.state;
+    m_options.phaseWaitMs      = m_phase.waitMs;
+    m_options.phaseCorrections = m_phase.corrections;
+    const bool shorter         = m_phase.shortCycle && m_options.subFrames > 1 && !EffectsOff();
+    m_renderContext.cycleSubFrames = shorter ? m_options.subFrames - 1 : 0;
+    m_renderContext.cycleGain      = shorter ? PhaseShortCycleGain() : 1.0f;
 }
 
 void Renderer::PhaseSample(double ageMs)
 {
     if(!PhaseLockActive())
     {
-        if(m_options.phaseState != 0 || m_phaseSkip)
-            PhaseReset(0);
+        m_phase.Stop();
+        PhaseApply();
         return;
     }
-    const double now = NowMs();
-    const double P   = 1000.0 / (std::max)((double)m_options.vsyncRate, 1.0);
-    const int    N   = m_options.subFrames;
-    const double C   = P * N; // one BFI cycle
-    if(m_phaseLastSample > 0.0 && now - m_phaseLastSample > 500.0 && m_options.phaseState != 0)
-    {
-        // back after a pause (hybrid: the buffer was in use; or the game paused): the position is kept, the measure starts again
-        m_phaseAges.clear();
-        m_phaseIgnoreUntil = now + 300.0;
-        m_phaseWindowStart = m_phaseIgnoreUntil;
-        m_phaseSkip = 0;
-    }
-    m_phaseLastSample = now;
-    if(m_options.phaseState == 0 || N != m_phaseN || fabs(P - m_phaseP) > 0.05)
-    {
-        // (re)start: nothing known yet
-        PhaseReset(1);
-        m_phaseN           = N;
-        m_phaseP           = P;
-        m_phaseWindowStart = now;
-        m_phaseIgnoreUntil = now + 300.0;
-    }
-    if(m_phaseSkip || m_phaseShortCycle || now < m_phaseIgnoreUntil || ageMs < 0.0 || ageMs > 1000.0)
-        return; // a move on its way or just made, or a frame without a usable time
-    m_phaseAges.push_back(ageMs);
-    if(!m_phaseFirst && m_options.phaseState == 2 && ageMs > C - P * 0.5) // (only while locked on a steady rate)
-    {
-        if(m_options.BfiSyncMode() == 3 && ageMs > C + P)
-            m_fbUnderrun = true; // hybrid: a real jolt (the frame came more than a refresh late), the buffer comes in
-        // a frame just missed its cycle (the game drifted to the edge, slower than the cycle): one refresh later at once, without
-        // waiting for the end of the measure (otherwise the frames would go on alternating taken / missed: doubled and skipped frames)
-        // (N - 1 cycles one refresh shorter = one refresh later; the first one already takes the frames away from the edge)
-        m_phaseSkip                = N - 1;
-        m_options.phaseCorrections = m_options.phaseCorrections + 1;
-        m_phaseAges.clear();
-        m_phaseIgnoreUntil = now + (N + 3) * C;
-        m_phaseWindowStart = m_phaseIgnoreUntil;
-        return;
-    }
-    const double window = std::clamp((double)m_options.phaseInterval, 0.1, 2.0) * 1000.0; // "Measure interval"
-    if(now - m_phaseWindowStart < window)
-        return;
-    std::vector<double> a;
-    a.swap(m_phaseAges);
-    m_phaseWindowStart = now;
-    if(a.size() < 8)
-        return; // too few game frames (pause, loading...)
-    m_phaseFirst = false;
-    std::sort(a.begin(), a.end());
-    // a frame needs a little time to be ready after Windows made it: the shortest waits seen for frames that were taken tell how much
-    const double low = a[a.size() / 50];
-    m_phaseGuard     = m_phaseGuard < 0.0 ? low : (std::min)(m_phaseGuard, low);
-    const double g   = std::clamp(m_phaseGuard, 0.2, P * 0.75);
-    const double m   = (std::max)(0.4, P * 0.15); // margin for the variations not seen yet
-    // cost of each shift: mean wait + a heavy price for the frames at the edge (they would be taken one cycle, missed the next)
-    double bestCost = 0.0, cost0 = 0.0, risky0 = 0.0, bestRisky = 0.0;
-    int    best     = 0;
-    for(int k = 0; k < N; k++)
-    {
-        double sum = 0.0;
-        int    risky = 0;
-        for(const double age : a)
-        {
-            double x = fmod(age, C) - k * P; // wait if this frame is taken by the same cycle, once the cycle comes k refreshes earlier
-            if(x < g - C)
-                x += C;
-            sum += x >= g ? x : x + C;
-            if(fabs(x - g) < m || fabs(x + C - g) < m)
-                risky++;
-        }
-        const double frac = (double)risky / a.size();
-        const double cost = sum / a.size() + 2.0 * C * frac;
-        if(k == 0)
-        {
-            cost0  = cost;
-            risky0 = frac;
-        }
-        if(k == 0 || cost < bestCost)
-        {
-            bestCost  = cost;
-            best      = k;
-            bestRisky = frac;
-        }
-    }
-    {
-        // the wait now (median), for the HUD
-        std::vector<double> w;
-        w.reserve(a.size());
-        for(const double age : a)
-        {
-            const double x = fmod(age, C);
-            w.push_back(x >= g ? x : x + C);
-        }
-        std::nth_element(w.begin(), w.begin() + w.size() / 2, w.end());
-        m_options.phaseWaitMs = (float)w[w.size() / 2];
-    }
-    int shift = 0;
-    if(best != 0 && bestCost < cost0 - P * 0.5)
-        shift = best;
-    // locked; "unsteady" when even the best position leaves many frames at the edge (game far from a steady rate)
-    m_options.phaseState = (shift ? bestRisky : risky0) > 0.10 ? 3 : 2;
-    if(m_options.phaseState == 3 && m_options.BfiSyncMode() == 3)
-    {
-        m_fbUnderrun = true; // hybrid: the game jolts, the buffer comes in (it goes away after 1 calm second)
-        return;
-    }
-    if(shift)
-    {
-        m_phaseSkip                = shift; // one refresh per cycle, over "shift" cycles
-        m_options.phaseCorrections = m_options.phaseCorrections + 1;
-        m_phaseIgnoreUntil = now + (shift + 3) * C; // the frames of the move itself are not measured
-        m_phaseWindowStart = m_phaseIgnoreUntil;
-    }
+    const double P = 1000.0 / (std::max)((double)m_options.vsyncRate, 1.0);
+    m_phase.Sample(NowMs(), ageMs, P, m_options.subFrames, (double)m_options.phaseInterval);
+    PhaseApply();
 }
 
 static float HalfToFloat(uint16_t h)
@@ -1971,7 +1846,7 @@ int Renderer::FrameBufferLimit() const
 
 void Renderer::EnsureRing()
 {
-    const int n    = MapSync() ? FrameBufferLimit() : (m_options.BfiSyncMode() == 3 ? 1 : 5); // room for the largest size: no re-creation when the size or the value chosen changes
+    const int n    = MapSync() ? FrameBufferLimit() : 5; // room for the largest size: no re-creation when the size or the value chosen changes
     const int want = n + 3;
     if((int)m_ring.size() == want)
         return;
@@ -1998,9 +1873,6 @@ void Renderer::EnsureRing()
 //    (beyond the usual one) of the last 2 seconds, in content frames, plus one after a frame that did not come in time. The size changes
 //    by one frame at a time, at most one change every 2 seconds (each change shows a frame twice or drops one: never several at once);
 //    it goes down after 2 calm seconds; when the value chosen is lowered, the size comes down to it the same way.
-//  - Hybrid: buffer of the jolts (0 or 1 game frame): a gap longer than the usual one by more than 30 % of a content frame, or a frame
-//    that missed its cycle under the phase lock (m_fbUnderrun), brings the buffer of one frame at once; after 3 calm seconds (at a
-//    natural repeat, 6 s at most) it goes back to 0 and the phase lock takes over again; 3 entries within 30 s keep it in for 30 s.
 void Renderer::AdaptFrameBuffer()
 {
     const int mode = m_options.BfiSyncMode();
@@ -2020,10 +1892,7 @@ void Renderer::AdaptFrameBuffer()
         m_fbSlices[0] = m_fbSlices[1] = 0.0;
         m_fbMeanMs                = -1.0; // (taken from the first frames)
         m_fbUnderrun              = false;
-        m_fbEntryNext             = 0;
-        m_fbEntries[0] = m_fbEntries[1] = m_fbEntries[2] = {};
-        m_fbHoldUntil             = {};
-        m_options.frameBufferAuto = mode == 3 ? 0 : 1; // (hybrid: the phase lock first; Frame buffer: the smallest size first)
+        m_options.frameBufferAuto = 1; // (the smallest size first)
         double m, a;
         int    n;
         m_watcher.TakeGapStats(m, a, n); // forget what came before
@@ -2044,35 +1913,6 @@ void Renderer::AdaptFrameBuffer()
             extraNow   = (std::max)(0.0, maxMs - m_fbMeanMs);
             m_fbMeanMs = m_fbMeanMs * 0.9 + meanMs * 0.1;
         }
-    }
-    if(mode == 3)
-    {
-        // Hybrid. Each change of the buffer shows a frame twice (in) or drops one (out): to keep them rare,
-        //  - the buffer goes out only after 3 calm seconds, and at a moment when a frame came a little longer than usual (a repeat or a drop
-        //    happens anyway), or after 6 calm seconds at most;
-        //  - when it came in 3 times within 30 seconds (back and forth), it stays in for 30 more seconds.
-        constexpr double kExitCalmSec = 3.0, kExitMaxSec = 6.0, kFlapWindowSec = 30.0, kFlapHoldSec = 30.0;
-        if(late || extraNow > 0.3 * (std::max)(content, 1.0))
-        {
-            m_fbLowSince = now;
-            if(m_options.frameBufferAuto == 0)
-            {
-                m_fbEntries[m_fbEntryNext] = now;
-                m_fbEntryNext              = (m_fbEntryNext + 1) % 3;
-                const auto oldest          = m_fbEntries[m_fbEntryNext]; // (the oldest of the last 3)
-                if(oldest.time_since_epoch().count() != 0 && std::chrono::duration<double>(now - oldest).count() <= kFlapWindowSec)
-                    m_fbHoldUntil = now + std::chrono::milliseconds((long long)(kFlapHoldSec * 1000.0));
-            }
-            m_options.frameBufferAuto = 1;
-        }
-        else if(m_options.frameBufferAuto != 0 && now >= m_fbHoldUntil)
-        {
-            const double calm    = std::chrono::duration<double>(now - m_fbLowSince).count();
-            const bool   natural = extraNow >= 0.1 * (std::max)(content, 1.0); // a frame a little longer than usual
-            if(calm >= kExitCalmSec && (natural || calm >= kExitMaxSec))
-                m_options.frameBufferAuto = 0; // calm: back to the phase lock
-        }
-        return;
     }
     // Frame buffer: 1 up to the value chosen
     m_fbSliceMax = (std::max)(m_fbSliceMax, extraNow);
@@ -2621,4 +2461,4 @@ void Renderer::WaitTillIdle()
     }
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

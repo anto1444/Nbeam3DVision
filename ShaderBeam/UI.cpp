@@ -1,11 +1,12 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
 */
 
 #include "stdafx.h"
+#include <cmath>
 
 #include "UI.h"
 #include "Helpers.h"
@@ -123,8 +124,8 @@ static bool WindowsHdrOn(HWND hWnd)
 extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam);
 
 // About: one line per row, each centred in the window (the version is the one of the release notes below)
-const char* SHADERBEAM_ABOUT = SHADERBEAM_TITLE "\n"
-                               "Version 3.0.0\n"
+const char* NBEAM_ABOUT = NBEAM_TITLE "\n"
+                               "Version 3.1.0\n"
                                "Made by anto1444, 2026\n"
                                "\n"
                                "Based on ShaderBeam (c) 2025-2026 mausimus\n"
@@ -134,8 +135,8 @@ const char* SHADERBEAM_ABOUT = SHADERBEAM_TITLE "\n"
                                "by Mark Rejhon @BlurBusters and\n"
                                "Timothy Lottes @NOTimothyLottes\n"
                                "https://blurbusters.com/crt";
-const char* SHADERBEAM_ABOUT_FR = SHADERBEAM_TITLE "\n"
-                                  "Version 3.0.0\n"
+const char* NBEAM_ABOUT_FR = NBEAM_TITLE "\n"
+                                  "Version 3.1.0\n"
                                   "Fait par anto1444, 2026\n"
                                   "\n"
                                   "Bas\303\251 sur ShaderBeam (c) 2025-2026 mausimus\n"
@@ -159,7 +160,7 @@ static bool IsProtectedHotkey(int id)
     return id == HOTKEY_TOGGLEUI || id == HOTKEY_EFFECTS;
 }
 
-static void CancelCaptureNow(ShaderBeam::Options& o)
+static void CancelCaptureNow(Nbeam::Options& o)
 {
     if(s_captureId < 0 && !o.hotkeysSuspended)
         return;
@@ -173,7 +174,7 @@ static void CancelCaptureNow(ShaderBeam::Options& o)
 
 static std::string s_hotkeyError;
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 // scroll position survives restarts (the ImGui context is recreated each time)
@@ -199,12 +200,12 @@ static float      s_startDpi     = 96.0f; // Windows scale (dpi) at the start: t
 static float      s_appliedScale = 1.0f;
 
 // the ShaderBeam logo (embedded RGBA, straight alpha)
-static winrt::com_ptr<ID3D11ShaderResourceView> CreateShaderBeamLogoTexture(ID3D11Device* device)
+static winrt::com_ptr<ID3D11ShaderResourceView> CreateNbeamLogoTexture(ID3D11Device* device)
 {
     winrt::com_ptr<ID3D11ShaderResourceView> srv;
     D3D11_TEXTURE2D_DESC td {};
-    td.Width            = kLogoShaderBeamSize;
-    td.Height           = kLogoShaderBeamSize;
+    td.Width            = kLogoNbeamSize;
+    td.Height           = kLogoNbeamSize;
     td.MipLevels        = 1;
     td.ArraySize        = 1;
     td.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
@@ -212,8 +213,8 @@ static winrt::com_ptr<ID3D11ShaderResourceView> CreateShaderBeamLogoTexture(ID3D
     td.Usage            = D3D11_USAGE_IMMUTABLE;
     td.BindFlags        = D3D11_BIND_SHADER_RESOURCE;
     D3D11_SUBRESOURCE_DATA sd {};
-    sd.pSysMem     = kLogoShaderBeamRgba;
-    sd.SysMemPitch = kLogoShaderBeamSize * 4;
+    sd.pSysMem     = kLogoNbeamRgba;
+    sd.SysMemPitch = kLogoNbeamSize * 4;
     winrt::com_ptr<ID3D11Texture2D> tex;
     if(SUCCEEDED(device->CreateTexture2D(&td, &sd, tex.put())))
         device->CreateShaderResourceView(tex.get(), nullptr, srv.put());
@@ -224,7 +225,7 @@ static winrt::com_ptr<ID3D11ShaderResourceView> CreateShaderBeamLogoTexture(ID3D
 static winrt::com_ptr<ID3D11ShaderResourceView> CreateLogoTexture(ID3D11Device* device)
 {
     winrt::com_ptr<ID3D11ShaderResourceView> srv;
-    HICON icon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_SHADERBEAM), IMAGE_ICON, 64, 64, LR_DEFAULTCOLOR);
+    HICON icon = (HICON)LoadImageW(GetModuleHandleW(nullptr), MAKEINTRESOURCEW(IDI_NBEAM), IMAGE_ICON, 64, 64, LR_DEFAULTCOLOR);
     if(!icon)
         return srv;
     ICONINFO ii {};
@@ -322,7 +323,7 @@ void UI::Start(HWND window, float scale, winrt::com_ptr<ID3D11Device> device, wi
     ImGui_ImplWin32_Init(window);
     ImGui_ImplDX11_Init(device.get(), context.get());
     m_logo   = CreateLogoTexture(device.get());
-    m_logoSB = CreateShaderBeamLogoTexture(device.get());
+    m_logoSB = CreateNbeamLogoTexture(device.get());
 
     ImGuiStyle& style      = ImGui::GetStyle();
     style.Alpha            = 1;
@@ -445,33 +446,71 @@ bool UI::Input(HWND hWnd, UINT msg, WPARAM wParam, LPARAM lParam)
     return false;
 }
 
-// "Draw a pointer" (Direct presentation, HUD hidden): the Windows pointer is hidden over Nbeam, so Nbeam draws one with the picture (it follows
-// the BFI and the 3D) while the real pointer moves, and for 3 seconds after. A pointer that stays where it is (a game that keeps it in the
-// middle of the window while the mouse turns the camera) is never drawn. Render thread only.
+std::atomic<long> g_rawMouseX { 0 }, g_rawMouseY { 0 };
+
+// "Draw a pointer" (Direct presentation, HUD hidden): the Windows pointer is hidden over Nbeam (WM_SETCURSOR), so Nbeam draws one with the
+// picture (it follows the BFI and the 3D) while the mouse moves, and stops 1 s after the mouse stops. Windows cannot tell whether the game shows
+// its pointer (the pointer is over Nbeam, not over the game), so it is looked at from the mouse: when the game captures it to turn the camera,
+// the mouse moves (raw input) but the pointer does not follow (the game puts it back or locks it): nothing is drawn until the pointer follows
+// the mouse again (a menu opened). Render thread only.
 static bool OwnPointerWanted(const Options& o, bool windowMode)
 {
-    static POINT     s_anchor {};
-    static bool      s_have  = false;
-    static ULONGLONG s_moved = 0;
+    static POINT     s_last {}, s_winPos {};
+    static ULONGLONG s_still = 0, s_winStart = 0, s_lastCall = 0; // since when the pointer has not moved / start of the 250 ms look / last call
+    static long      s_winRawX = 0, s_winRawY = 0;
+    static bool      s_have = false, s_captured = false;
     POINT            p {};
-    if(!o.drawPointer || !o.directPresent || o.ui || windowMode || !GetCursorPos(&p))
+    if(!o.drawPointer || !o.DirectActive() || o.ui || windowMode || !GetCursorPos(&p))
     {
         s_have = false;
         return false;
     }
     const ULONGLONG now = GetTickCount64();
-    if(!s_have)
+    const long      rx = g_rawMouseX.exchange(0), ry = g_rawMouseY.exchange(0);
+    if(!s_have || now - s_lastCall > 500) // not looked at for a while: start again
     {
-        s_anchor = p;
-        s_have   = true;
-        s_moved  = 0;
+        s_have     = true;
+        s_captured = false;
+        s_last     = p;
+        s_still    = now;
+        s_winStart = 0;
     }
-    else if(abs(p.x - s_anchor.x) >= 6 || abs(p.y - s_anchor.y) >= 6)
+    s_lastCall = now;
+    if(p.x != s_last.x || p.y != s_last.y)
     {
-        s_anchor = p;
-        s_moved  = now;
+        s_last  = p;
+        s_still = now;
     }
-    return s_moved != 0 && now - s_moved < 3000;
+    if(s_winStart == 0)
+    {
+        s_winStart = now;
+        s_winPos   = p;
+        s_winRawX = s_winRawY = 0;
+    }
+    s_winRawX += rx;
+    s_winRawY += ry;
+    if(now - s_winStart >= 250)
+    {
+        // net movement of the mouse over 250 ms and net movement of the pointer: a pointer that follows the mouse moves about as much
+        const double n = std::sqrt((double)s_winRawX * s_winRawX + (double)s_winRawY * s_winRawY);
+        const double d = std::sqrt((double)(p.x - s_winPos.x) * (p.x - s_winPos.x) + (double)(p.y - s_winPos.y) * (p.y - s_winPos.y));
+        // (a pointer pushed against the edge of the screen does not move either: not a capture)
+        const int  vx = GetSystemMetrics(SM_XVIRTUALSCREEN), vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+        const int  vw = GetSystemMetrics(SM_CXVIRTUALSCREEN), vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+        const bool atEdge = p.x <= vx + 2 || p.y <= vy + 2 || p.x >= vx + vw - 3 || p.y >= vy + vh - 3;
+        if(n >= 40 && !atEdge)
+        {
+            const bool was = s_captured;
+            if(d * 8 < n)
+                s_captured = true;
+            else if(d * 3 >= n)
+                s_captured = false;
+            if(was != s_captured)
+                std::thread([c = s_captured, n, d]() { LsLog("own pointer: mouse %s (mouse %.0f, pointer %.0f px in 250 ms)", c ? "captured by the game" : "free", n, d); }).detach();
+        }
+        s_winStart = 0;
+    }
+    return !s_captured && now - s_still <= 1000;
 }
 
 bool UI::RenderRequired() const
@@ -506,7 +545,7 @@ static bool FpsCapCombo(const char* id, int& mode, bool rtss, bool dc, bool mixe
         ImGui::EndCombo();
     }
     if(ImGui::IsItemHovered())
-        ImGui::SetTooltip("%s", Tr("Experimental. Caps the frame rate of this program automatically while it is detected. RTSS (RivaTuner Statistics Server): in 3D, half the 3D rate (e.g. 60 fps for a 120 Hz 3D); with BFI or CRT, the content rate (screen Hz / SubFrames); without effects there is no cap. It is followed live; Nbeam starts RTSS minimized if it is not running, and only changes the frame limit of the program in RTSS (the previous limit comes back when the program closes or Nbeam quits). Display Commander / ReLimiter (ReShade addons): Nbeam writes the \"Frame limit\" of this program (one per screen) in the DisplayCommander.ini / relimiter.ini next to the game, for every program at once, when Nbeam starts, when its screen changes and after the game closes, so it is ready before the game starts (the addon reads it only then; it does not follow the 3D / BFI changes). A game without that file is ignored."));
+        ImGui::SetTooltip("%s", Tr("Experimental. Caps the frame rate of this program automatically while it is detected. RTSS (RivaTuner Statistics Server): in 3D, half the 3D rate (e.g. 60 fps for a 120 Hz 3D); with BFI or MPRT sweep, the content rate (screen Hz / SubFrames); without effects there is no cap. It is followed live; Nbeam starts RTSS minimized if it is not running, and only changes the frame limit of the program in RTSS (the previous limit comes back when the program closes or Nbeam quits). Display Commander / ReLimiter (ReShade addons): Nbeam writes the \"Frame limit\" of this program (one per screen) in the DisplayCommander.ini / relimiter.ini next to the game, for every program at once, when Nbeam starts, when its screen changes and after the game closes, so it is ready before the game starts (the addon reads it only then; it does not follow the 3D / BFI changes). A game without that file is ignored."));
     return changed;
 }
 
@@ -667,7 +706,7 @@ void UI::RenderHudHeader(float height)
     if(m_logo)
         dl->AddImage(ImTextureRef((ImTextureID)(uintptr_t)m_logo.get()), ImVec2(logoX, p0.y + (height - logoSz) * 0.5f), ImVec2(logoX + logoSz, p0.y + (height + logoSz) * 0.5f));
     dl->AddText(font, titleSz, ImVec2(titleX, p0.y + height * 0.5f - titleSz * 0.95f), cOnAcc, title);
-    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v3.0.0");
+    dl->AddText(font, verSz, ImVec2(titleX, p0.y + height * 0.5f + fs * 0.1f), cOnAcc, "v3.1.0");
 
     // output mode (like "3440 x 1440 | 240Hz")
     char mode[64];
@@ -1026,7 +1065,7 @@ void UI::Render()
                     ShowHelpMarker(Tr("How many screen refreshes make one game image (Content FPS = screen Hz / SubFrames). Example: a 240 Hz screen with 4 = 60 images per second.\nWith BFI auto (below), Nbeam picks it for you from the game's frame rate."));
             }
 
-            // "Clear Frames" (Simple BFI shader) sits right below SubFrames
+            // "Clear Frames" (BFI shader) sits right below SubFrames
             for(const auto& p : m_shaderManager.GetParameterInfos())
                 if(p.type == ParameterType::ParamInt && p.name == "Clear Frames" && p.dropdown.empty())
                 {
@@ -1044,17 +1083,16 @@ void UI::Render()
                 //  - None (not recommended): a game frame is taken at the start of each cycle;
                 //  - Phase lock (2D): the cycle is moved so the game frames arrive just before the visible subframe;
                 //  - Frame buffer: game frames kept in advance to smooth an irregular frame rate (also in 3D);
-                //  - Hybrid (2D): phase lock while the game is steady, a buffer of one frame only during its jolts (gone after 1 calm second).
                 // "BFI auto" (2D): the SubFrames follow the measured game frame rate; it works with every choice above.
                 const bool in3D = m_options.emitter.sourceFormat != StereoSource::Off;
-                int        mode = std::clamp(m_options.BfiSyncMode(), 0, 3); // (3D: always the frame buffer, the menu is hidden)
-                static const char* modeNames[] = { "None (not recommended)", "Phase lock (best latency)", "Frame buffer (best stability)", "Hybrid" };
+                int        mode = std::clamp(m_options.BfiSyncMode(), 0, 2); // (3D: always the frame buffer, the menu is hidden)
+                static const char* modeNames[] = { "None (not recommended)", "Phase lock (best latency)", "Frame buffer (best stability)" };
                 if(!in3D) // in 3D the frame buffer is always used: no choice
                 {
                 ImGui::PushItemWidth(m_fontSize * 16);
                 if(ImGui::BeginCombo(Tr("BFI sync"), Tr(modeNames[mode]), 0))
                 {
-                    for(int i = 0; i < 4; i++)
+                    for(int i = 0; i < 3; i++)
                     {
                         if(ImGui::Selectable(Tr(modeNames[i]), i == mode) && i != mode)
                         {
@@ -1067,12 +1105,12 @@ void UI::Render()
                     ImGui::EndCombo();
                 }
                 ImGui::PopItemWidth();
-                ShowHelpMarker(Tr("How the BFI follows the game images (only while a program is captured).\nNone (not recommended): simple, but the wait before each image can be long.\nPhase lock (2D): keeps the wait short and steady.\nFrame buffer: keeps a few game images in advance so an irregular game stays smooth, with a little more delay.\nHybrid (2D): phase lock, plus a small buffer only when the game stutters.\nBFI auto (below) works with every choice."));
+                ShowHelpMarker(Tr("How the BFI follows the game images (only while a program is captured).\nNone (not recommended): simple, but the wait before each image can be long.\nPhase lock (2D): keeps the wait short and steady.\nFrame buffer: keeps a few game images in advance so an irregular game stays smooth, with a little more delay.\nBFI auto (below) works with every choice."));
                 }
                 // the exact cap for the game (the content rate of the display, with its real refresh rate)
                 static ULONGLONG s_hzTick = 0;
                 static double    s_hzExact = 0.0;
-                if((mode == 1 || mode == 3) && GetTickCount64() - s_hzTick > 2000)
+                if(mode == 1 && GetTickCount64() - s_hzTick > 2000)
                 {
                     s_hzTick  = GetTickCount64();
                     s_hzExact = m_options.shaderDisplayNo < m_displays.size() ? ExactRefreshRate(m_displays[m_options.shaderDisplayNo].monitor) : 0.0;
@@ -1094,24 +1132,21 @@ void UI::Render()
                     ImGui::TextDisabled("(%.0f ms)", 1000.0 * m_options.EffectiveFrameBuffer() * (std::max)(1, m_options.frameBufferStep) * (std::max)(m_options.subFrames, 1) * ((m_options.StereoAllowed() && m_options.emitter.sourceFormat != StereoSource::Off) ? 2.0 : 1.0) / (std::max)(m_options.vsyncRate, 1.0f));
                     ShowHelpMarker(Tr("Keeps a few game images in advance so an irregular game stays smooth, at the cost of a little delay. The value is the most it may use: Nbeam only uses what the game needs, and shows it next to the slider.\nOnly works while a program (.exe) is captured."));
                 }
-                if((mode == 1 || mode == 3) && !in3D)
+                if(mode == 1 && !in3D)
                 {
                     ImGui::PushItemWidth(m_fontSize * 16);
                     SliderFloatStep(Tr("Measure interval"), &m_options.phaseInterval, 0.1f, 2.0f, "%.1f s", 0.1f);
                     ImGui::PopItemWidth();
                     ShowHelpMarker(Tr("Phase lock gives a shorter and steadier delay: Nbeam watches when the game images arrive and shifts its cycle to match. This sets how often it checks, 0.1 to 2 seconds (default 1).\nTip: cap the game close to the rate shown (RTSS, Reflex...) for the best result."));
-                    const bool   buffering = mode == 3 && m_options.EffectiveFrameBuffer() > 0;
                     const int    state     = m_options.phaseState;
-                    const char*  st        = buffering ? Tr("paused, buffer in use") : state == 2 ? Tr("locked") : state == 3 ? Tr("unsteady game frame rate") : state == 1 ? Tr("measuring...") : Tr("waiting for the game");
-                    const ImVec4 col       = buffering ? ImVec4(0.55f, 0.75f, 1.0f, 1.0f) : state == 2 ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : state == 3 ? ImVec4(1.0f, 0.65f, 0.25f, 1.0f) : ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
+                    const char*  st        = state == 2 ? Tr("locked") : state == 3 ? Tr("unsteady game frame rate") : state == 1 ? Tr("measuring...") : Tr("waiting for the game");
+                    const ImVec4 col       = state == 2 ? ImVec4(0.45f, 0.85f, 0.45f, 1.0f) : state == 3 ? ImVec4(1.0f, 0.65f, 0.25f, 1.0f) : ImVec4(0.75f, 0.75f, 0.75f, 1.0f);
                     ImGui::TextColored(col, "%s %s", Tr("Phase:"), st);
-                    if(state >= 1 && !buffering)
+                    if(state >= 1)
                     {
                         ImGui::SameLine();
                         ImGui::TextDisabled(Tr("(wait %.1f ms, %d corrections)"), m_options.phaseWaitMs, m_options.phaseCorrections);
                     }
-                    if(mode == 3)
-                        ImGui::TextDisabled(Tr("Buffer: %d frame(s)"), m_options.EffectiveFrameBuffer());
                     ImGui::TextDisabled(Tr("Cap the game at %.3f fps"), cap);
                 }
                 // BFI auto: the SubFrames follow the game frame rate (2D)
@@ -1139,7 +1174,7 @@ void UI::Render()
                         ImGui::PushItemWidth(m_fontSize * 16);
                         SliderFloatStep(Tr("Detection interval"), &m_options.autoSub.intervalSec, 0.1f, 2.0f, "%.1f s", 0.1f);
                         ImGui::PopItemWidth();
-                        ShowHelpMarker(Tr("How often the game frame rate is measured to choose SubFrames, from 0 to 5 seconds. 0 = as fast as practical (every 0.25 s). Short = follows frame rate changes quickly, long = steadier."));
+                        ShowHelpMarker(Tr("How often the game frame rate is measured to choose SubFrames, from 0.1 to 2 seconds (default 1). Short = follows frame rate changes quickly, long = steadier."));
                     }
                 }
             }
@@ -1169,27 +1204,16 @@ void UI::Render()
 
             SectionHeader(Tr("Shader"));
 
-            if(ImGui::BeginCombo(Tr("Type"), Tr(m_shaders[m_options.shaderProfileNo].name.c_str()), 0))
             {
-                for(const auto& shader : m_shaders)
+                // two choices, one above the other, with a vertical switch: up = BFI, down = sweep BFI via MPRT
+                bool sweep = m_options.shaderProfileNo == 1;
+                if(VerticalSelector("##shaderkind", Tr("BFI"), Tr("MPRT sweep"), &sweep))
                 {
-                    auto selected = shader.no == m_options.shaderProfileNo;
-                    if(ImGui::Selectable(Tr(shader.name.c_str()), selected))
-                    {
-                        if(shader.no != m_options.shaderProfileNo)
-                        {
-                            m_options.shaderProfileNo = shader.no;
-                            m_liveReloadRequired      = true; // the shader is switched live (no restart)
-                        }
-                    }
-                    if(selected)
-                    {
-                        ImGui::SetItemDefaultFocus();
-                    }
+                    m_options.shaderProfileNo = sweep ? 1 : 0;
+                    m_liveReloadRequired      = true; // the shader is switched live (no restart)
                 }
-                ImGui::EndCombo();
             }
-            ShowHelpMarker(Tr("Shader effect to use."));
+            ShowHelpMarker(Tr("Effect to use. BFI (switch up): black frames inserted between the images. MPRT sweep (switch down): the picture is lit band by band like a CRT beam, with one pulse per pixel as long as its brightest colour, so a moving coloured edge has no colour fringe."));
 
             // with a single subframe the effects are not visible: the parameters are greyed out
             const bool noEffects = m_options.subFrames <= 1;
@@ -1468,7 +1492,7 @@ void UI::Render()
                     ImGui::PopStyleColor();
                 }
                 ToggleSwitch(Tr("Beam racing"), &m_options.beamRacing);
-                ShowHelpMarker(Tr("Hides the tearing where the effect makes it invisible, by following the real position of the screen scan. With BFI and plain picture, the image is sent just before the screen refresh: no visible tear, a little more delay. CRT Beam Simulator can reach an even lower delay. Not used in 3D. Uses one processor core while waiting; the Nbeam window must be shown directly (nothing over it)."));
+                ShowHelpMarker(Tr("Hides the tearing where the effect makes it invisible, by following the real position of the screen scan. With BFI and plain picture, the image is sent just before the screen refresh: no visible tear, a little more delay. The MPRT sweep can reach an even lower delay. Not used in 3D. Uses one processor core while waiting; the Nbeam window must be shown directly (nothing over it)."));
                 if(m_options.beamRacing)
                 {
                     ImGui::SliderInt(Tr("Tearing lead"), &m_options.beamLead, 0, 20, "%d %%");
@@ -1489,11 +1513,11 @@ void UI::Render()
             // "Direct presentation" (experimental): the overlay is no longer a layered window, so Windows can show it directly (renderer restart)
             if(ToggleSwitch(Tr("Direct presentation (experimental)"), &m_options.directPresent))
                 PostMessage(m_options.outputWindow, WM_USER_RESTART, NB_RESTART_TAG, 0);
-            ShowHelpMarker(Tr("Experimental. Windows shows Nbeam directly on the screen instead of blending it with the desktop: about one refresh less delay and a steadier BFI. There is no click-through any more: while the HUD is hidden, the overlay ignores clicks and hides the Windows pointer. Games that read the mouse directly keep working; games and menus that need the Windows pointer will not get the clicks. Nothing must be shown over Nbeam (notifications, Discord or Steam overlays...). See the line below."));
+            ShowHelpMarker(Tr("Experimental. Windows shows Nbeam directly on the screen instead of blending it with the desktop: about one refresh less delay and a steadier BFI. There is no click-through any more: while the HUD is hidden, the overlay ignores clicks and hides the Windows pointer. Games that read the mouse directly keep working; games and menus that need the Windows pointer will not get the clicks. While the game is not the window in front (Alt+Tab, another program), Direct presentation is switched off so you can use the other program with the mouse; it comes back when the game is in front again. Nothing must be shown over Nbeam (notifications, Discord or Steam overlays...). See the line below."));
             if(m_options.directPresent)
             {
                 ToggleSwitch(Tr("Draw a pointer (direct presentation)"), &m_options.drawPointer);
-                ShowHelpMarker(Tr("Direct presentation hides the Windows pointer over Nbeam. This draws one in its place, with the picture (it follows the BFI and the 3D), while the mouse moves and for 3 seconds after. A game that keeps the pointer in the middle of the window while the mouse turns the camera never gets one. Turn it off if the game draws its own pointer."));
+                ShowHelpMarker(Tr("Direct presentation hides the Windows pointer over Nbeam. This draws one in its place, with the picture (it follows the BFI and the 3D), while the mouse moves (it disappears after 1 second without movement). It is not drawn while a game has captured the mouse to turn the camera (the mouse moves but the pointer stays put or is put back in the middle). Turn it off if the game draws its own pointer."));
             }
             {
                 const int   pm = m_options.presentMode;
@@ -1572,163 +1596,6 @@ void UI::Render()
                     else
                         ImGui::Text("%s (%s)", m_options.profileFile.c_str(), adjusting ? Tr("adjusting") : Tr("detected program"));
                     ImGui::PushItemWidth(m_fontSize * 14);
-                    // "Profile to adjust": a field with the name of the profile (rewrite it to rename the profile), the arrow picks the
-                    // profile to adjust (the motion test opens with it), the Delete button sends it to the recycle bin
-                    static std::string s_profSel;            // the profile shown in the field
-                    static char        s_profBuf[128] = "";
-                    static std::string s_profBufFor  = "\x01";
-                    static std::string s_profNote;           // a refused rename (name taken, invalid...)
-                    if(adjusting)
-                        s_profSel = m_options.profileFile;
-                    if(!s_profSel.empty() && std::find(s_profiles.begin(), s_profiles.end(), s_profSel) == s_profiles.end() && !adjusting)
-                        s_profSel.clear(); // (deleted or renamed outside Nbeam)
-                    if(s_profBufFor != s_profSel)
-                    {
-                        std::string shown = s_profSel;
-                        if(shown.size() > 4 && _stricmp(shown.c_str() + shown.size() - 4, ".ini") == 0)
-                            shown.resize(shown.size() - 4); // the name without .ini
-                        strncpy_s(s_profBuf, shown.c_str(), sizeof(s_profBuf) - 1);
-                        s_profBufFor = s_profSel;
-                    }
-                    ImGui::SetNextItemWidth(m_fontSize * 14 - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x);
-                    if(s_profSel.empty())
-                        ImGui::BeginDisabled();
-                    ImGui::InputTextWithHint("##profname", Tr("(choose)"), s_profBuf, sizeof(s_profBuf));
-                    if(ImGui::IsItemDeactivatedAfterEdit() && !s_profSel.empty())
-                    {
-                        // rename: Profils\old.ini -> Profils\new.ini, the programs and the active settings follow
-                        std::string name = s_profBuf;
-                        for(char& c : name)
-                            if(strchr("\\/:*?\"<>|", c))
-                                c = '_';
-                        while(!name.empty() && (name.back() == ' ' || name.back() == '.'))
-                            name.pop_back();
-                        if(!name.empty() && (name.size() < 4 || _stricmp(name.c_str() + name.size() - 4, ".ini") != 0))
-                            name += ".ini";
-                        s_profNote.clear();
-                        if(name.empty() || _stricmp(name.c_str(), "imgui.ini") == 0)
-                            s_profNote = Tr("Invalid name.");
-                        else if(_stricmp(name.c_str(), s_profSel.c_str()) != 0 || name != s_profSel)
-                        {
-                            const auto from = Options::ProfilesDir() / s_profSel;
-                            const auto to   = Options::ProfilesDir() / name;
-                            if(_stricmp(name.c_str(), s_profSel.c_str()) != 0 && std::filesystem::exists(to))
-                                s_profNote = Tr("A profile with this name already exists.");
-                            else if(!MoveFileExW(from.wstring().c_str(), to.wstring().c_str(), 0))
-                                s_profNote = Tr("The profile could not be renamed.");
-                            else
-                            {
-                                {
-                                    std::lock_guard<std::recursive_mutex> renameLock(m_options.linksMutex);
-                                    for(auto& l : m_options.profileLinks)
-                                        if(_stricmp(l.profile.c_str(), s_profSel.c_str()) == 0)
-                                            l.profile = name;
-                                }
-                                if(_stricmp(m_options.profileFile.c_str(), s_profSel.c_str()) == 0)
-                                    m_options.profileFile = name;
-                                m_options.SaveApp();
-                                s_profSel       = name;
-                                s_profilesDirty = true;
-                            }
-                        }
-                        s_profBufFor = "\x01"; // the field shows the real name again
-                    }
-                    if(s_profSel.empty())
-                        ImGui::EndDisabled();
-                    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-                    if(ImGui::ArrowButton("##profarrow", ImGuiDir_Down))
-                    {
-                        s_profiles = Options::ListProfiles(); // the list is read again each time it opens
-                        SortNoCase(s_profiles);
-                        ImGui::OpenPopup("##proflist");
-                    }
-                    if(ImGui::BeginPopup("##proflist"))
-                    {
-                        if(s_profiles.empty())
-                            ImGui::TextDisabled("%s", Tr("(none)"));
-                        for(const auto& name : s_profiles)
-                        {
-                            const bool selected = adjusting && name == m_options.profileFile;
-                            if(ImGui::Selectable(name.c_str(), selected) && !selected)
-                            {
-                                s_profSel             = name;
-                                s_profNote.clear();
-                                m_options.testProfile = name;
-                                PostMessage(m_options.outputWindow, WM_USER_GLASSESTEST, 1, 0); // the motion test opens with it
-                            }
-                        }
-                        ImGui::EndPopup();
-                    }
-                    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
-                    ImGui::TextUnformatted(Tr("Profile to adjust"));
-                    ShowHelpMarker(Tr("Profiles only apply while their program runs (see the program list below); otherwise the desktop settings are used.\nThe arrow picks a profile to adjust: the motion test opens with it loaded. Change the settings and watch the result. Ending the test (Windows key or Escape) saves the profile and goes back to the desktop settings.\nRewrite the name in the field to rename the profile; Delete sends it to the recycle bin."));
-                    {
-                        // Delete: the profile goes to the recycle bin (not the one being adjusted)
-                        const bool canDelete = !s_profSel.empty() && !(adjusting && s_profSel == m_options.profileFile);
-                        ImGui::SameLine();
-                        if(!canDelete)
-                            ImGui::BeginDisabled();
-                        if(ImGui::Button(Tr("Delete")))
-                            ImGui::OpenPopup("##profdelete");
-                        if(!canDelete)
-                            ImGui::EndDisabled();
-                        if(adjusting && ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                            ImGui::SetTooltip("%s", Tr("End the motion test first."));
-                        if(ImGui::BeginPopup("##profdelete"))
-                        {
-                            ImGui::Text("%s %s ?", Tr("Delete the profile"), s_profSel.c_str());
-                            if(ImGui::Button(Tr("Delete")))
-                            {
-                                // to the recycle bin (double zero-terminated path list)
-                                std::wstring path = (Options::ProfilesDir() / s_profSel).wstring();
-                                path.push_back(L'\0');
-                                SHFILEOPSTRUCTW op {};
-                                op.wFunc  = FO_DELETE;
-                                op.pFrom  = path.c_str();
-                                op.fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_SILENT | FOF_NOERRORUI;
-                                if(SHFileOperationW(&op) == 0 && !op.fAnyOperationsAborted)
-                                {
-                                    {
-                                        std::lock_guard<std::recursive_mutex> deleteLock(m_options.linksMutex);
-                                        for(auto& l : m_options.profileLinks)
-                                            if(_stricmp(l.profile.c_str(), s_profSel.c_str()) == 0)
-                                                l.profile.clear(); // the programs that used it: no profile until one is chosen
-                                    }
-                                    m_options.SaveApp();
-                                    s_profSel.clear();
-                                    s_profilesDirty = true;
-                                }
-                                else
-                                    s_profNote = Tr("The profile could not be deleted.");
-                                ImGui::CloseCurrentPopup();
-                            }
-                            ImGui::SameLine();
-                            if(ImGui::Button(Tr("Cancel")))
-                                ImGui::CloseCurrentPopup();
-                            ImGui::EndPopup();
-                        }
-                    }
-                    ImGui::SameLine();
-                    {
-                        // small Explorer (folder) button: opens the Profils folder
-                        const float  bh = ImGui::GetFrameHeight();
-                        const ImVec2 p  = ImGui::GetCursorScreenPos();
-                        if(ImGui::Button("##openProfiles", ImVec2(bh * 1.3f, bh)))
-                        {
-                            Options::EnsureProfilesDir();
-                            ShellExecuteW(nullptr, L"open", Options::ProfilesDir().wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-                        }
-                        if(ImGui::IsItemHovered())
-                            ImGui::SetTooltip("%s", Tr("Open the Profils folder in the Explorer"));
-                        ImDrawList*  dl = ImGui::GetWindowDrawList();
-                        const ImVec2 c(p.x + bh * 0.65f, p.y + bh * 0.5f);
-                        const float  u  = bh * 0.30f;
-                        const ImU32  fc = IM_COL32(245, 200, 80, 255), fb = IM_COL32(225, 170, 50, 255);
-                        dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.95f), ImVec2(c.x - u * 0.1f, c.y - u * 0.4f), fb, u * 0.12f);
-                        dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.55f), ImVec2(c.x + u * 1.25f, c.y + u * 0.95f), fc, u * 0.12f);
-                    }
-                    if(!s_profNote.empty())
-                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.4f, 1.0f), "%s", s_profNote.c_str());
                     ImGui::InputText(Tr("Create a profile"), s_newProfile, sizeof(s_newProfile));
                     ImGui::SameLine();
                     if(ImGui::Button(Tr("Save as")) && s_newProfile[0])
@@ -1750,7 +1617,26 @@ void UI::Render()
                             s_newProfile[0]       = 0;
                         }
                     }
-                    ShowHelpMarker(Tr("Saves the current settings as a profile under a new name (or overwrites an existing profile). Then link it to a program (below) and adjust it with \"Profile to adjust\"."));
+                    ImGui::SameLine();
+                    {
+                        // small Explorer (folder) button: opens the Profils folder
+                        const float  bh = ImGui::GetFrameHeight();
+                        const ImVec2 p  = ImGui::GetCursorScreenPos();
+                        if(ImGui::Button("##openProfiles", ImVec2(bh * 1.3f, bh)))
+                        {
+                            Options::EnsureProfilesDir();
+                            ShellExecuteW(nullptr, L"open", Options::ProfilesDir().wstring().c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+                        }
+                        if(ImGui::IsItemHovered())
+                            ImGui::SetTooltip("%s", Tr("Open the Profils folder in the Explorer"));
+                        ImDrawList*  dl = ImGui::GetWindowDrawList();
+                        const ImVec2 c(p.x + bh * 0.65f, p.y + bh * 0.5f);
+                        const float  u  = bh * 0.30f;
+                        const ImU32  fc = IM_COL32(245, 200, 80, 255), fb = IM_COL32(225, 170, 50, 255);
+                        dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.95f), ImVec2(c.x - u * 0.1f, c.y - u * 0.4f), fb, u * 0.12f);
+                        dl->AddRectFilled(ImVec2(c.x - u * 1.25f, c.y - u * 0.55f), ImVec2(c.x + u * 1.25f, c.y + u * 0.95f), fc, u * 0.12f);
+                    }
+                    ShowHelpMarker(Tr("Saves the current settings as a profile under a new name (or overwrites an existing profile). Then link it to a program (below) and adjust it with \"Profile to adjust\" (Motion test)."));
                     ImGui::PopItemWidth();
                 }
             }
@@ -2031,7 +1917,7 @@ void UI::Render()
                             }
                             if(ImGui::IsItemDeactivatedAfterEdit())
                                 save = true;
-                            ShowHelpMarker(Tr("When a program is detected, its profile is loaded. When it closes, the desktop settings come back.\nWrite the name of the program (e.g. game.exe) or add it from the taskbar, then choose the profile to use on each screen. You can also press the \"Add the program to the profiles\" hotkey while it is in front.\nA program can have up to 3 profiles, one per screen. The main Windows screen is used first."));
+                            ShowHelpMarker(Tr("When a program is detected, its profile is loaded. When it closes, the desktop settings come back.\nWrite the name of the program (e.g. game.exe) or add it from the taskbar, then choose the profile to use on each screen. You can also press the \"Add the program to the profiles\" hotkey while it is in front.\nA program can have up to 3 profiles, one per screen. The output screen (where Nbeam displays) is used first."));
                             auto& head = m_options.profileLinks[grp[0]];
                             int   dropMember = -1;
                             if(ImGui::BeginTable("##progtable", 2, ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerH | ImGuiTableFlags_SizingStretchProp))
@@ -2143,7 +2029,7 @@ void UI::Render()
                                             save = true;
                                         ImGui::EndDisabled();
                                         if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                                            ImGui::SetTooltip("%s", addon ? Tr("Frame limit of this program on this screen (0 = no limit, up to 1000 fps; ReLimiter: at least 30). When this screen is the Windows main display, Nbeam writes it in the DisplayCommander.ini / relimiter.ini next to the game when Nbeam starts and each time the main display changes, for every program at once, so it is ready before the game starts. A game without that file is ignored.")
+                                            ImGui::SetTooltip("%s", addon ? Tr("Frame limit of this program on this screen (0 = no limit, up to 1000 fps; ReLimiter: at least 30). When this screen is the output screen, Nbeam writes it in the DisplayCommander.ini / relimiter.ini next to the game when Nbeam starts and each time the output screen changes, for every program at once, so it is ready before the game starts. A game without that file is ignored.")
                                                                           : Tr("Used when \"Auto fps cap\" is Display Commander or ReLimiter."));
                                     }
                                     rowLabel(Tr("Activation delay"), true);
@@ -2433,7 +2319,7 @@ void UI::Render()
                                     if(ImGui::IsItemDeactivatedAfterEdit())
                                         save = true;
                                     if(ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
-                                        ImGui::SetTooltip("%s", Tr("Frame limit of every program on this screen whose \"Auto fps cap\" is Display Commander or ReLimiter (0 = no limit, up to 1000 fps; ReLimiter: at least 30). The limits of the Windows main display are written in the DisplayCommander.ini / relimiter.ini next to each game when Nbeam starts and each time the main display changes, for every program at once. A game without that file is ignored."));
+                                        ImGui::SetTooltip("%s", Tr("Frame limit of every program on this screen whose \"Auto fps cap\" is Display Commander or ReLimiter (0 = no limit, up to 1000 fps; ReLimiter: at least 30). The limits of the output screen are written in the DisplayCommander.ini / relimiter.ini next to each game when Nbeam starts and each time the output screen changes, for every program at once. A game without that file is ignored."));
                                 }
                                 rowLabel(Tr("Activation delay"), true);
                                 {
@@ -2569,6 +2455,115 @@ void UI::Render()
             {
             SectionHeader(Tr("Motion test"));
             {
+                // "Profile to adjust", first line of the motion test: the field with the name of the profile (rewrite it to rename the profile)
+                // and the arrow that picks the profile to adjust (the test opens with it loaded)
+                if(s_profilesDirty)
+                {
+                    s_profiles      = Options::ListProfiles();
+                    SortNoCase(s_profiles);
+                    s_profilesDirty = false;
+                }
+                const bool programRuns = !m_options.captureProcess.empty() && !m_options.motionTest;
+                const bool adjusting   = m_options.motionTest && !m_options.IsDesktopSettings();
+                if(!programRuns)
+                {
+                    ImGui::PushItemWidth(m_fontSize * 14);
+                    // "Profile to adjust": a field with the name of the profile (rewrite it to rename the profile), the arrow picks the
+                    // profile to adjust (the motion test opens with it)
+                    static std::string s_profSel;            // the profile shown in the field
+                    static char        s_profBuf[128] = "";
+                    static std::string s_profBufFor  = "\x01";
+                    static std::string s_profNote;           // a refused rename (name taken, invalid...)
+                    if(adjusting)
+                        s_profSel = m_options.profileFile;
+                    if(!s_profSel.empty() && std::find(s_profiles.begin(), s_profiles.end(), s_profSel) == s_profiles.end() && !adjusting)
+                        s_profSel.clear(); // (deleted or renamed outside Nbeam)
+                    if(s_profBufFor != s_profSel)
+                    {
+                        std::string shown = s_profSel;
+                        if(shown.size() > 4 && _stricmp(shown.c_str() + shown.size() - 4, ".ini") == 0)
+                            shown.resize(shown.size() - 4); // the name without .ini
+                        strncpy_s(s_profBuf, shown.c_str(), sizeof(s_profBuf) - 1);
+                        s_profBufFor = s_profSel;
+                    }
+                    ImGui::SetNextItemWidth(m_fontSize * 14 - ImGui::GetFrameHeight() - ImGui::GetStyle().ItemInnerSpacing.x);
+                    if(s_profSel.empty())
+                        ImGui::BeginDisabled();
+                    ImGui::InputTextWithHint("##profname", Tr("(choose)"), s_profBuf, sizeof(s_profBuf));
+                    if(ImGui::IsItemDeactivatedAfterEdit() && !s_profSel.empty())
+                    {
+                        // rename: Profils\old.ini -> Profils\new.ini, the programs and the active settings follow
+                        std::string name = s_profBuf;
+                        for(char& c : name)
+                            if(strchr("\\/:*?\"<>|", c))
+                                c = '_';
+                        while(!name.empty() && (name.back() == ' ' || name.back() == '.'))
+                            name.pop_back();
+                        if(!name.empty() && (name.size() < 4 || _stricmp(name.c_str() + name.size() - 4, ".ini") != 0))
+                            name += ".ini";
+                        s_profNote.clear();
+                        if(name.empty() || _stricmp(name.c_str(), "imgui.ini") == 0)
+                            s_profNote = Tr("Invalid name.");
+                        else if(_stricmp(name.c_str(), s_profSel.c_str()) != 0 || name != s_profSel)
+                        {
+                            const auto from = Options::ProfilesDir() / s_profSel;
+                            const auto to   = Options::ProfilesDir() / name;
+                            if(_stricmp(name.c_str(), s_profSel.c_str()) != 0 && std::filesystem::exists(to))
+                                s_profNote = Tr("A profile with this name already exists.");
+                            else if(!MoveFileExW(from.wstring().c_str(), to.wstring().c_str(), 0))
+                                s_profNote = Tr("The profile could not be renamed.");
+                            else
+                            {
+                                {
+                                    std::lock_guard<std::recursive_mutex> renameLock(m_options.linksMutex);
+                                    for(auto& l : m_options.profileLinks)
+                                        if(_stricmp(l.profile.c_str(), s_profSel.c_str()) == 0)
+                                            l.profile = name;
+                                }
+                                if(_stricmp(m_options.profileFile.c_str(), s_profSel.c_str()) == 0)
+                                    m_options.profileFile = name;
+                                m_options.SaveApp();
+                                s_profSel       = name;
+                                s_profilesDirty = true;
+                            }
+                        }
+                        s_profBufFor = "\x01"; // the field shows the real name again
+                    }
+                    if(s_profSel.empty())
+                        ImGui::EndDisabled();
+                    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+                    if(ImGui::ArrowButton("##profarrow", ImGuiDir_Down))
+                    {
+                        s_profiles = Options::ListProfiles(); // the list is read again each time it opens
+                        SortNoCase(s_profiles);
+                        ImGui::OpenPopup("##proflist");
+                    }
+                    if(ImGui::BeginPopup("##proflist"))
+                    {
+                        if(s_profiles.empty())
+                            ImGui::TextDisabled("%s", Tr("(none)"));
+                        for(const auto& name : s_profiles)
+                        {
+                            const bool selected = adjusting && name == m_options.profileFile;
+                            if(ImGui::Selectable(name.c_str(), selected) && !selected)
+                            {
+                                s_profSel             = name;
+                                s_profNote.clear();
+                                m_options.testProfile = name;
+                                PostMessage(m_options.outputWindow, WM_USER_GLASSESTEST, 1, 0); // the motion test opens with it
+                            }
+                        }
+                        ImGui::EndPopup();
+                    }
+                    ImGui::SameLine(0, ImGui::GetStyle().ItemInnerSpacing.x);
+                    ImGui::TextUnformatted(Tr("Profile to adjust"));
+                    ShowHelpMarker(Tr("Profiles only apply while their program runs (see the program list below); otherwise the desktop settings are used.\nThe arrow picks a profile to adjust: the motion test opens with it loaded. Change the settings and watch the result. Ending the test (Windows key or Escape) saves the profile and goes back to the desktop settings.\nRewrite the name in the field to rename the profile."));
+                    if(!s_profNote.empty())
+                        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.4f, 1.0f), "%s", s_profNote.c_str());
+                    ImGui::PopItemWidth();
+                }
+            }
+            {
                 // the test itself is started / stopped with the "Motion test" button of the bottom bar
                 ImGui::PushItemWidth(m_fontSize * 16);
                 int speed = m_options.ufoSpeed;
@@ -2670,7 +2665,7 @@ void UI::Render()
                         DeleteEventLogs();
                     m_options.SaveApp();
                 }
-                ShowHelpMarker(Tr("Nbeam writes its events (Nbeam_ls.log), the capture of the O key (Nbeam_desync.log), the crash report and the log of the emitter reader next to the program. Untick to delete all of them and record nothing any more: no event and no history of Nbeam is kept."));
+                ShowHelpMarker(Tr("Nbeam writes its events (Nbeam_ls.log), the capture of the O key (Nbeam_desync.log), the crash report and the log of the emitter reader in the \"log\" folder next to the program. Untick to delete all of them and record nothing any more: no event and no history of Nbeam is kept."));
             }
 
             }
@@ -2925,7 +2920,7 @@ void UI::Render()
                         ImGui::SetCursorPos(back);
                     }
                     // credits, each line centred
-                    const std::string about = fr ? SHADERBEAM_ABOUT_FR : SHADERBEAM_ABOUT;
+                    const std::string about = fr ? NBEAM_ABOUT_FR : NBEAM_ABOUT;
                     size_t start = 0;
                     while(start <= about.size())
                     {
@@ -4239,4 +4234,4 @@ void UI::ScanWindows()
     }
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

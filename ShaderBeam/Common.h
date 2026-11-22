@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -15,10 +15,10 @@ MIT License
 #include <string>
 #include <vector>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
-#define SHADERBEAM_TITLE "Nbeam 3D Vision"
+#define NBEAM_TITLE "Nbeam 3D Vision"
 
 #define MIN_SUBFRAMES 1
 #define MAX_SUBFRAMES 20
@@ -32,6 +32,7 @@ namespace ShaderBeam
 #define WM_USER_NOWINDOW (WM_USER + 2)
 #define WM_USER_EFFECTS (WM_USER + 4) // window mode: wParam 1 = activate the effects, 0 = deactivate, 2 = the window mode option changed
 #define WM_USER_AUTOSOURCE (WM_USER + 6) // Auto source found a 3D format: wParam = StereoSource (0 = back to 2D)
+#define WM_USER_EMITTERSTUCK (WM_USER + 7) // the glasses signals are stuck (inconsistent emitter timing): error message, then Nbeam closes
 #define WM_USER_GLASSESTEST (WM_USER + 5) // 3D panel: wParam = glasses test to show (1, 2), 0 = end it
 #define TIMER_RETRY_START 3 // window timer: the start failed (no display, Windows / graphics card error): try again
 
@@ -227,22 +228,21 @@ struct Options
     int  splitScreen { 0 };
     bool splitInvert { false }; // split-screen: the effect on the other half (right / bottom)
     bool hardwareSrgb { false };
-    // BFI sync (profile, the menu shown while a program is captured): 0 = none, 1 = phase lock, 2 = frame buffer (frameBuffer), 3 = hybrid
-    // (phase lock while the game is steady, a buffer of one frame during its jolts, gone after 1 calm second)
+    // BFI sync (profile, the menu shown while a program is captured): 0 = none, 1 = phase lock, 2 = frame buffer (frameBuffer)
     int  bfiSync { 0 };
     int  frameBuffer { 0 };    // "Frame buffer": the most game frames kept in advance (1..5, at least 1; the renderer uses 1 up to it); profile setting
     mutable int frameBufferStep { 1 }; // buffer: content frames (eye pairs in 3D) each game frame is shown for (game fps = a divisor of the content rate, SubFrames Manual)
-    mutable int frameBufferAuto { 0 }; // the buffer the renderer currently uses (Frame buffer: 1 up to the value chosen; hybrid: 0 or 1)
-    // the BFI sync really used: the phase lock and the hybrid are 2D only, in 3D they are hidden and work as None
+    mutable int frameBufferAuto { 0 }; // the buffer the renderer currently uses (1 up to the value chosen)
     // queued presentation frames; 3D needs at least 3 (0 = the default, which is 3): with 1, 2 or tearing allowed 3D is not available
     // Auto queue: starts at 3 and goes up to 6 when frames are late (Renderer::AdaptQueue); QueueSetting() is the length in use
     int  QueueSetting() const { return queueAuto ? queueAutoCur : maxQueuedFrames; }
     bool QueueAllows3D() const { const int q = QueueSetting(); return q == 0 || (q >= 3 && q < QUEUE_TEARING); }
-    int  BfiSyncMode() const { return emitter.sourceFormat != StereoSource::Off ? 2 : bfiSync; } // in 3D the frame buffer is always used
-    int  BufferSetting() const { return BfiSyncMode() == 2 ? (std::min)((std::max)(frameBuffer, 1), 5) : BfiSyncMode() == 3 ? 1 : 0; } // the most the buffer may use (0 = none)
-    bool FrameBufferIsAuto() const { return BufferSetting() > 0; } // the size is adapted by the renderer (Frame buffer and Hybrid)
-    int  EffectiveFrameBuffer() const { return FrameBufferIsAuto() ? (std::max)(frameBufferAuto, BfiSyncMode() == 2 ? 1 : 0) : 0; }
-    bool PhaseLockWanted() const { return BfiSyncMode() == 1 || BfiSyncMode() == 3; }
+    int  BfiSyncMode() const { return emitter.sourceFormat != StereoSource::Off ? 2 : bfiSync; } // in 3D the frame buffer is always used (the phase lock is 2D only)
+    bool FrameBufferMode() const { return BfiSyncMode() == 2; } // the mode that keeps game frames in advance and adapts the size
+    int  BufferSetting() const { return FrameBufferMode() ? (std::min)((std::max)(frameBuffer, 1), 5) : 0; } // the most the buffer may use (0 = none)
+    bool FrameBufferIsAuto() const { return BufferSetting() > 0; } // the size is adapted by the renderer
+    int  EffectiveFrameBuffer() const { return FrameBufferIsAuto() ? (std::max)(frameBufferAuto, 1) : 0; }
+    bool PhaseLockWanted() const { return BfiSyncMode() == 1; }
     mutable float captureBlack { 0.0f };  // black level of the captured image in scRGB units (nits / 80)
     mutable float captureGain { 1.0f };   // brightness gain of the captured image (1 = unchanged)
     mutable float captureGrey { 1.0f };   // grey level (gamma) of the captured image
@@ -256,6 +256,8 @@ struct Options
     int  tearingLine { 0 };     // tearing control: where the flip happens in the refresh (0 = right after vblank, hidden at the top; 100 = bottom), profile setting
     bool Tearing() const { return QueueSetting() == QUEUE_TEARING; }
     bool beamRacing { false }; // tearing: the flip is timed on the real scanout position so the tear lands where the effect hides it; profile setting
+    bool directSuspended { false }; // runtime: the captured game lost the focus, so Direct presentation is off until it is in front again
+    bool DirectActive() const { return directPresent && !directSuspended; }
     bool drawPointer { false };   // "Draw a pointer" (profile, with Direct presentation): Nbeam draws a pointer while the real one moves (see UI.cpp)
     bool directPresent { false }; // "Direct presentation" (experimental, profile): the overlay is never a layered window, so Windows can show it
                                   // directly (independent flip / hardware plane) instead of composing it; no click-through (see SetClickThrough)
@@ -307,6 +309,7 @@ struct Options
     bool        IsDesktopSettings() const { return _stricmp(profileFile.c_str(), DESKTOP_SETTINGS) == 0; }
     static std::filesystem::path ExeDir();
     static std::filesystem::path ProfilesDir();   // "Profils" folder next to the exe: where the profile .ini files live
+    static std::filesystem::path LogFile(const wchar_t* name); // "log" folder next to the exe (created when needed): where the log files live
     static bool                  FirstRun(); // true when the profile folder was created by this start (first launch)
     static void                  EnsureProfilesDir(); // creates it if missing and moves the old profiles (*.ini next to the exe) into it
     static std::vector<std::string> ListProfiles(); // *.ini file names (without imgui.ini)
@@ -445,8 +448,8 @@ struct Options
     void Load(ShaderManager& shaderManager);
 };
 
-// Small trace of what happens around Lossless Scaling's layer (detections, restarts, raises of the overlay): Nbeam_ls.log next to the
-// exe, 256 KB at most. Only used to find out why a capture would start and stop in a loop.
+// Small trace of what happens around Lossless Scaling's layer (detections, restarts, raises of the overlay): Nbeam_ls.log in the log
+// folder next to the exe, 256 KB at most. Only used to find out why a capture would start and stop in a loop.
 void LsLog(const char* fmt, ...);
 // last lines written to the log (formatted like in the file), `ms` milliseconds back: kept for the capture of the O key (see EmitterManager::DumpRecent)
 std::vector<std::string> LsLogRecent(int ms);
@@ -454,6 +457,6 @@ std::vector<std::string> LsLogRecent(int ms);
 extern std::atomic<long long> g_desyncRequestQpc;
 // "Save the event log" (Application): off = nothing is recorded any more (log, O key capture, crash report, emitter reader log)
 extern std::atomic<bool> g_logEnabled;
-void DeleteEventLogs(); // deletes the files of the events: Nbeam_ls.log, Nbeam_desync.log, Nbeam_crash.txt, Nbeam_emitter_input.log
+void DeleteEventLogs(); // deletes the files of the events (log folder, and next to the exe for the ones of older versions): Nbeam_ls.log, Nbeam_desync.log, Nbeam_crash.txt, Nbeam_emitter_input.log
 void LsLogFlush(); // waits until every queued line is in the file (before leaving the process)
-} // namespace ShaderBeam
+} // namespace Nbeam

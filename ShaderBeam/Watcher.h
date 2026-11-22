@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -10,7 +10,7 @@ MIT License
 #include "UI.h"
 #include <atomic>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 #define CHARTS_LEN 1024
@@ -79,4 +79,4 @@ private:
 
     void UpdateSnapshot();
 };
-} // namespace ShaderBeam
+} // namespace Nbeam

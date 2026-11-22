@@ -7,7 +7,7 @@ What is implemented:
   * wake-up, the 6 programming packets (sync rate, open duration, W), 8-byte per-eye packets
   * the wheel and the button of the emitter, read all the time (also without 3D) and used by the 3D mini menu: every 50 ms the emitter is
     asked for the 3 bytes at 0x201F (read + clear, the request of the libnvstusb project) and answers on PIPE03. With the file
-    Nbeam_emitter_probe.txt next to the exe, what is read is also written to Nbeam_emitter_input.log.
+    Nbeam_emitter_probe.txt next to the exe, what is read is also written to log\Nbeam_emitter_input.log.
 What is NOT implemented:
   * Switching official 3D Vision monitors into their 3D mode through the undocumented NvAPI: put the monitor in its 3D mode yourself.
 Requires the NV3DVisionUSB driver (extract it from the 425.31 NVIDIA package, or use 3dvisioncontrollerdriver.exe from WibbleWobble).
@@ -21,6 +21,7 @@ MIT License
 #include <thread>
 #include <mutex>
 #include "Emitter.h"
+#include "Common.h"
 #include "Gamepad.h"
 #include "NvidiaProtocol.h"
 
@@ -28,7 +29,7 @@ MIT License
 #pragma comment(lib, "setupapi.lib")
 #pragma comment(lib, "cfgmgr32.lib")
 
-namespace ShaderBeam
+namespace Nbeam
 {
 extern std::atomic<bool> g_logEnabled; // "Save the event log" (Common.h)
 
@@ -133,7 +134,7 @@ static void KeyLog(const std::string& text)
         std::wstring dir = exe;
         dir.resize(dir.find_last_of(L'\\') + 1);
         enabled = GetFileAttributesW((dir + L"Nbeam_emitter_probe.txt").c_str()) != INVALID_FILE_ATTRIBUTES ? 1 : 0;
-        path    = dir + L"Nbeam_emitter_input.log";
+        path    = ::Nbeam::Options::LogFile(L"Nbeam_emitter_input.log").wstring();
     }
     if(!enabled || !g_logEnabled)
         return;
@@ -391,7 +392,7 @@ class NvidiaEmitter : public IEmitter
     Nv::Timings CurrentTimings() const
     {
         const auto& cfg = m_s->nvidia;
-        return Nv::Timings { (float)m_env.SyncRateHz(*m_s), cfg.openDurationUs };
+        return Nv::Timings { (float)m_env.SyncRateHz(*m_s), cfg.openDurationUs, m_s->expPeriodMarginPct };
     }
 
     // Live tuning: when Open Duration (or the sync rate) changed in the UI, send the programming
@@ -408,7 +409,7 @@ class NvidiaEmitter : public IEmitter
         }
         const Nv::Timings t = CurrentTimings();
         auto differs = [](float a, float b) { return std::fabs(a - b) > 0.001f; };
-        if(!differs(t.syncRateHz, m_programmed.syncRateHz) && !differs(t.openDurationUs, m_programmed.openDurationUs))
+        if(!differs(t.syncRateHz, m_programmed.syncRateHz) && !differs(t.openDurationUs, m_programmed.openDurationUs) && !differs(t.periodMarginPct, m_programmed.periodMarginPct))
             return;
         const ULONGLONG now = GetTickCount64();
         if(now - m_lastProgramTick < 50)
@@ -539,4 +540,4 @@ std::unique_ptr<IEmitter> CreateNvidiaEmitter()
     return std::make_unique<NvidiaEmitter>();
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

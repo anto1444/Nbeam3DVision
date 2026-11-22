@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -12,7 +12,7 @@ MIT License
 
 #define SNAPSHOT_DURATION TICKS_PER_SEC
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 void Chart::Clear()
@@ -143,4 +143,4 @@ void Watcher::UpdateSnapshot()
     }
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

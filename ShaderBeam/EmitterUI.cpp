@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay -- "Stereo Emitter" panel (ImGui)
+Nbeam 3D Vision: shader effect overlay -- "Stereo Emitter" panel (ImGui)
 MIT License
 */
 
@@ -13,7 +13,7 @@ MIT License
 #include <map>
 #include <string>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 static void Help(const char* text)
@@ -114,7 +114,7 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
         }
         else
             wasOpen = false;
-        Help(Tr("Layout of the 3D content you capture.\nOff: 3D is disabled and the emitters are switched off.\nSBS / TB / Checkerboard / Interlaced: each captured frame holds both eyes; Nbeam extracts one eye, scales it to full screen and shows it alternately.\nThe eye changes every SubFrames output frames (eye rate = display Hz / SubFrames, e.g. 240 Hz with SubFrames 4 = 60 Hz), so each eye gets its BFI / CRT sub-frames.\nThe emitters run whenever this is not Off. Changing this rebuilds the 3D renderer."));
+        Help(Tr("Layout of the 3D content you capture.\nOff: 3D is disabled and the emitters are switched off.\nSBS / TB / Checkerboard / Interlaced: each captured frame holds both eyes; Nbeam extracts one eye, scales it to full screen and shows it alternately.\nThe eye changes every SubFrames output frames (eye rate = display Hz / SubFrames, e.g. 240 Hz with SubFrames 4 = 60 Hz), so each eye gets its BFI / MPRT sweep sub-frames.\nThe emitters run whenever this is not Off. Changing this rebuilds the 3D renderer."));
     }
     if(s.sourceFormat == StereoSource::SideBySide)
     {
@@ -271,7 +271,7 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
                     ImGui::EndCombo();
                 }
             }
-            Help(Tr("Rate at which the emitter syncs each eye, picked among the rates that divide the display rate (display Hz / n) and that the glasses can detect (80 to 165 Hz). SubFrames = display Hz / this rate.\nWith BFI/CRT sim (SubFrames 2) the glasses run at half the display rate."));
+            Help(Tr("Rate at which the emitter syncs each eye, picked among the rates that divide the display rate (display Hz / n) and that the glasses can detect (80 to 165 Hz). SubFrames = display Hz / this rate.\nWith BFI / MPRT sweep (SubFrames 2) the glasses run at half the display rate."));
         }
 
         const int range = periodUs > 0 ? (int)periodUs : 10000;
@@ -288,7 +288,15 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
             ImGui::TextColored(ImVec4(1.0f, 0.2f, 0.0f, 1.0f), Tr("Open Duration exceeds the eye period"));
 
         ToggleSwitch(Tr("Offset correction"), &s.offsetCorrection);
-        Help(Tr("At each micro-desync (the display shifts the picture by a refresh or more, the present grid jumps or Windows stops composing the picture) the Open Duration is changed by 1 us at once, which makes the emitter restart its offset (with BFI / CRT sub-frames, in the first black frame, where the glasses re-locking cannot be seen). The value alternates: 1 us less than the value you set, then the value you set again at the next one (only the value you set is saved). At most twice a second, and not while Windows composes the picture. Warning: this setting can cause slight flickering. If you are sensitive to it, switch it off and increase the Queued Frames."));
+        Help(Tr("At each micro-desync (the display shifts the picture by a refresh or more, the present grid jumps or Windows stops composing the picture) the Open Duration is changed by 1 us at once, which makes the emitter restart its offset (with BFI / MPRT sweep sub-frames, in the first black frame, where the glasses re-locking cannot be seen). The value alternates: 1 us less than the value you set, then the value you set again at the next one (only the value you set is saved). At most twice a second, and not while Windows composes the picture. While the screen delay keeps moving (4 changes within 3 s) the correction is paused, and after 5 s Nbeam restarts the renderer by itself (twice a minute at most). Warning: this setting can cause slight flickering. If you are sensitive to it, switch it off and increase the Queued Frames. The Correction method below chooses how the emitter is brought back in step."));
+        if(s.offsetCorrection)
+        {
+            const char* kMethods[] = { Tr("Open Duration -1/+1 us (old method)"), Tr("Early signal sent again (new method)") };
+            int         method     = std::clamp(s.desyncMethod, 0, 1);
+            if(ImGui::Combo(Tr("Correction method"), &method, kMethods, 2))
+                s.desyncMethod = method;
+            Help(Tr("How a micro-desync is corrected.\nOpen Duration -1/+1 us (old method): the Open Duration is changed by 1 us, which makes the emitter restart its offset (slight flicker at each correction).\nEarly signal sent again (new method): after a missed refresh, the signal that already went out too early is sent again at its right time. No change of the Open Duration, so no flicker; it only acts on a screen delay that moves by 1 to 8 refreshes."));
+        }
 
         ToggleSwitch(Tr("Swap Eyes"), &s.swapEyes);
         Help(Tr("Reverses the eye order. With 2D to 3D (AI) it also inverts the depth (near and far are swapped). Saved for each emitter rate. Hotkey: see the Hotkeys section."));
@@ -348,4 +356,4 @@ bool RenderEmitterPanel(StereoEmitterSettings& s, EmitterPanelContext& ctx)
     return restart;
 }
 
-} // namespace ShaderBeam
+} // namespace Nbeam

@@ -18,7 +18,7 @@ MIT License
 #include <thread>
 #include <vector>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 struct DepthParams
@@ -76,4 +76,4 @@ private:
 std::vector<std::string> MissingAiFiles(const std::filesystem::path& dir);
 std::vector<std::string> MissingAiFilesNextToExe();
 
-} // namespace ShaderBeam
+} // namespace Nbeam

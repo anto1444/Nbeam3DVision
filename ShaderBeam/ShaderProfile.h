@@ -1,5 +1,5 @@
 /*
-ShaderBeam: shader effect overlay
+Nbeam 3D Vision: shader effect overlay
 Copyright (C) 2025 mausimus (mausimus.net)
 https://github.com/mausimus/ShaderBeam
 MIT License
@@ -10,7 +10,7 @@ MIT License
 #include "Common.h"
 #include "RenderContext.h"
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 class ShaderProfile
@@ -40,4 +40,4 @@ protected:
     void AddParameter(const char* name, const char* description, int* value, int min, int max);
     void AddParameter(const char* name, const char* description, int* value, int min, int max, const std::map<int, std::string>& dropdown);
 };
-} // namespace ShaderBeam
+} // namespace Nbeam

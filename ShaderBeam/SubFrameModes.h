@@ -15,7 +15,7 @@ SubFrames can be chosen in two ways:
 #include <algorithm>
 #include <cmath>
 
-namespace ShaderBeam
+namespace Nbeam
 {
 
 enum SubFramesMode
@@ -118,4 +118,4 @@ private:
     int                m_req { 0 }; // the requested SubFrames (before the threshold rule)
 };
 
-} // namespace ShaderBeam
+} // namespace Nbeam
