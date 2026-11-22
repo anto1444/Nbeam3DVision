@@ -24,7 +24,7 @@ MIT License
 #include <thread>
 #include <functional>
 #include "UIWidgets.h"
-#include "LogoShaderBeam.h"
+#include "LogoNbeam.h"
 #include "ReleaseNotes.h"
 #include <shellapi.h>
 #include "Lang.h"

@@ -7,7 +7,7 @@ MIT License
 
 #include "stdafx.h"
 
-#include "ShaderBeam.h"
+#include "Nbeam.h"
 #include "Helpers.h"
 #include "CaptureWGC.h"
 #include "Lang.h"
