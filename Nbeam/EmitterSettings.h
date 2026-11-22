@@ -16,7 +16,7 @@ namespace Nbeam
 
 enum class Eye : int { Left = 0, Right = 1 };
 
-// Layout of the captured 3D content (what ShaderBeam receives from the capture)
+// Layout of the captured 3D content (what Nbeam receives from the capture)
 enum class StereoSource : int
 {
     Off             = 0, // 3D disabled: no decoding, emitters off

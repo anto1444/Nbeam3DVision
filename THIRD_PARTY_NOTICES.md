@@ -30,7 +30,7 @@ License: MIT
 
 ## mINI
 
-INI reading and writing (`ShaderBeam/ini.h`).
+INI reading and writing (`Nbeam/ini.h`).
 
 Copyright (c) 2018 Danijel Durakovic - https://github.com/metayeti/mINI
 
@@ -38,7 +38,7 @@ License: MIT
 
 ## ONNX Runtime (C API header)
 
-Header `ShaderBeam/ort/onnxruntime_c_api.h`. `onnxruntime.dll` is NOT distributed with Nbeam: users provide their own copy.
+Header `Nbeam/ort/onnxruntime_c_api.h`. `onnxruntime.dll` is NOT distributed with Nbeam: users provide their own copy.
 
 Copyright (c) Microsoft Corporation - https://github.com/microsoft/onnxruntime
 
@@ -54,7 +54,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Inter (HUD font)
 
-Subset of the Inter font embedded in `ShaderBeam/HudFont.h`.
+Subset of the Inter font embedded in `Nbeam/HudFont.h`.
 
 Copyright (c) The Inter Project Authors (https://github.com/rsms/inter)
 

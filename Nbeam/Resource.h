@@ -1,6 +1,6 @@
 //{{NO_DEPENDENCIES}}
 // Microsoft Visual C++ generated include file.
-// Used by ShaderBeam.rc
+// Used by Nbeam.rc
 //
 #define IDC_MYICON                      2
 #define IDD_NBEAM_DIALOG           102

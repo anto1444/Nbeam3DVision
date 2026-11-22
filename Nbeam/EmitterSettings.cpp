@@ -1,5 +1,5 @@
 /*
-Nbeam 3D Vision: shader effect overlay -- emitter settings <-> ShaderBeam.ini ([emitter] section)
+Nbeam 3D Vision: shader effect overlay -- emitter settings <-> Nbeam ini ([emitter] section)
 MIT License
 */
 

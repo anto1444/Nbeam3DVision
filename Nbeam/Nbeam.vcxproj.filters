@@ -24,7 +24,7 @@
     <ClInclude Include="Resource.h">
       <Filter>Header Files</Filter>
     </ClInclude>
-    <ClInclude Include="ShaderBeam.h">
+    <ClInclude Include="Nbeam.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="RenderThread.h">
@@ -123,7 +123,7 @@
     <ClCompile Include="CarTest.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-    <ClCompile Include="ShaderBeam.cpp">
+    <ClCompile Include="Nbeam.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="Helpers.cpp">
@@ -161,7 +161,7 @@
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
-    <ResourceCompile Include="ShaderBeam.rc">
+    <ResourceCompile Include="Nbeam.rc">
       <Filter>Resource Files</Filter>
     </ResourceCompile>
   </ItemGroup>
@@ -169,7 +169,7 @@
     <Image Include="small.ico">
       <Filter>Resource Files</Filter>
     </Image>
-    <Image Include="ShaderBeam.ico">
+    <Image Include="Nbeam.ico">
       <Filter>Resource Files</Filter>
     </Image>
   </ItemGroup>

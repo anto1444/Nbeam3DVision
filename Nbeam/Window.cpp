@@ -9,7 +9,7 @@ MIT License
 #include "resource.h"
 #include "FrameLimiter.h"
 
-#include "ShaderBeam.h"
+#include "Nbeam.h"
 #include "Lang.h"
 #include "DepthAI.h"
 #include "StereoConvert.h"
